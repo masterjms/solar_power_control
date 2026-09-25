@@ -1,0 +1,34 @@
+# iotlight ACL — 부트스트랩 시드. 사양서 §1.1.2.2 그대로.
+#
+# mosquitto 는 /mosquitto/data/aclfile 을 읽는다. 첫 기동에 그 파일이 없으면
+# entrypoint.sh 가 이 시드를 복사해 시작하고, 2차 백엔드가 뜨면 DB 기준으로
+# 생성한 aclfile.generated 로 교체된다. 운영 확인은 이 파일이 아니라
+# /mosquitto/data/aclfile 을 봐야 한다.
+#
+# 판정 축은 username(%u). username 은 비밀번호로 증명된 값이라 사칭이 안 된다.
+# 2차부터 username = 단말 UUID 24자리 대문자(= Client ID). 단말은 자기 UUID topic 에만 쓴다.
+# ⚠ %u 치환은 `pattern` 지시자에서만 동작한다. 치환 문자가 없는 `pattern` 은
+#   "접속한 모든 클라이언트 공통 허용"으로 동작한다(mosquitto 2.x 실측).
+
+# 서버 계정 — cmd/config 발행은 여기서만.
+user server
+topic readwrite iotlight/#
+
+# 단말 계정 공통 규칙. %u = username = UUID.
+pattern write iotlight/device/%u/register
+pattern write iotlight/device/%u/status
+pattern write iotlight/device/%u/result
+pattern write iotlight/device/%u/event
+pattern read  iotlight/device/%u/cmd
+pattern read  iotlight/device/%u/config
+# group/# 읽기는 전 단말에 열린다. 다른 그룹 명령을 구독해도 실행은 자기 grp 로 걸러진다(§1.1.2.2).
+pattern read  iotlight/group/#
+pattern read  iotlight/all/cmd
+
+# ── 1차 전용 공용 시험 계정 ──────────────────────────────────────────
+# 1차는 모든 단말과 PC 도구가 solarlte-test 하나로 붙고, Client ID 만 UUID 다.
+# 그래서 %u 규칙이 안 맞는다 — 전체 허용으로 둔다.
+# ⚠ 2차 시작과 함께 이 블록을 지운다(사양서 §1.1.2.2 "공용 계정은 2차 시작과 함께 폐기").
+#   백엔드가 생성하는 aclfile.generated 는 MQTT_TEST_ACCOUNT_ENABLED=false 면 이 블록을 넣지 않는다.
+user solarlte-test
+topic readwrite iotlight/#

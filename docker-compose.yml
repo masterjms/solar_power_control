@@ -1,0 +1,126 @@
+# solar_power_control 운영 스택 — 개발 EC2(t3.small) 1대에 이 구성 한 벌.
+#
+# 서비스 3개뿐이다: mosquitto / backend / postgres. Icecast·nginx·TTS 는 없다
+# (마을방송과 다른 제품이다). 관리 화면(3차)이 붙을 때 nginx 를 추가한다.
+#
+# DB 는 개발 중엔 이 파일의 postgres(local-db 프로파일)를 쓰고, 운영 전환 시
+# RDS 로 옮긴다. 그때는 프로파일을 빼고 .env 의 DATABASE_URL 만 바꾼다.
+#
+# 로컬(Windows) 개발은 docker-compose.dev.yml 을 겹쳐 쓴다:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# (.env 의 COMPOSE_PROFILES=local-db 가 postgres 를 항상 켠다)
+
+# t3.small 의 30 GB 디스크를 컨테이너 로그가 채우지 않게 한다.
+# mosquitto 는 connection_messages true 라 1만 대 재접속 폭주 때 로그가 급증한다.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: iotlight-mosquitto
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      # 1883 평문 — 1차~3차 시험 단말 + PC 시험 도구. 인터넷 전체에 열지 말고
+      #            AWS Security Group 에서 시험 접속원 IP 로 제한한다(사양서 §0.3).
+      #            4차부터는 운영 계정을 거부하고(§1.2.4) 결국 호스트 공개를 닫는다.
+      # 8883 TLS  — 4차. infra/certs/server.crt 가 없으면 리스너 자체가 생성되지
+      #            않는다(entrypoint.sh 가 효력 conf 를 조립한다). 포트만 열어 둔다.
+      - "1883:1883"
+      - "8883:8883"
+    # 감시 루프를 얹은 래퍼. 공유 볼륨의 passwd.generated / aclfile.generated 가
+    # 바뀌면 /mosquitto/data/ 로 설치하고 SIGHUP 리로드, aclfile.applied 에 md5 보고.
+    entrypoint: ["/bin/sh", "/mosquitto/entrypoint.sh"]
+    # MQTT 연결 하나 = fd 하나. 기본 한도 1024 면 약 1,000대에서 "Too many open files"
+    # 로 접속이 거절되고 단말 쪽에서는 계정 오류와 구분되지 않는다(aircast 실측).
+    # 목표 1만 대 → 65536.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - ./infra/mosquitto/config:/mosquitto/config:ro
+      - ./infra/mosquitto/entrypoint.sh:/mosquitto/entrypoint.sh:ro
+      # 4차 TLS 인증서 자리. 저장소에는 없다(.gitignore). 비어 있어도 기동된다.
+      - ./infra/certs:/mosquitto/certs:ro
+      - mosquitto-data:/mosquitto/data
+      - mqtt-dynamic:/mosquitto/dynamic
+    healthcheck:
+      # allow_anonymous false 라 익명 접속은 "not authorised" 로 거부된다 — 그 거부 응답이
+      # 오면 브로커가 살아서 1883 을 듣고 있는 것이다. TCP 가 안 열리면 다른 메시지가 난다.
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 1883 -t '$$SYS/#' -C 1 -W 2 -i healthcheck 2>&1 | grep -qi 'not authori'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  backend:
+    build: ./backend
+    container_name: iotlight-backend
+    restart: unless-stopped
+    logging: *default-logging
+    env_file: .env
+    environment:
+      # 컨테이너 네트워크 안에서는 서비스명으로 붙는다(.env 의 값을 덮어쓴다).
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      MQTT_TLS: "false"
+      # 단말별 계정(2차) 내보내기 경로. mosquitto entrypoint 가 감시한다.
+      MOSQUITTO_PASSWD_EXPORT: /var/lib/iotlight/mqtt/passwd.generated
+      MOSQUITTO_ACL_EXPORT: /var/lib/iotlight/mqtt/aclfile.generated
+    volumes:
+      # passwd/aclfile 전달 통로 (backend 쓰기 → mosquitto 읽기).
+      # entrypoint 가 기동 때 소유자를 backend 사용자(uid 10001)로 넘겨준다.
+      - mqtt-dynamic:/var/lib/iotlight/mqtt
+    depends_on:
+      mosquitto:
+        condition: service_started
+    healthcheck:
+      # 이미지에 curl 이 없을 수 있어 python 표준 라이브러리로 확인한다.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # 개발 DB. 운영은 RDS 이므로 프로파일로 감싼다.
+  #   docker compose --profile local-db up -d   또는 .env 의 COMPOSE_PROFILES=local-db
+  postgres:
+    image: postgres:16-alpine
+    container_name: iotlight-postgres
+    restart: unless-stopped
+    logging: *default-logging
+    profiles: ["local-db"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-iotlight}
+      # :? 를 쓰지 않는다 — compose 는 프로파일을 적용하기 전에 파일 전체를 해석하므로
+      # RDS 운영(이 서비스가 안 뜸)에서도 값을 요구해 버린다. 비어 있으면 postgres 가
+      # 기동 시점에 스스로 거부한다.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB:-iotlight}
+    # t3.small(2 GB) 에서 backend·mosquitto 와 같이 산다. 기본값이 무난하지만
+    # telemetry 파티션 적재가 주된 부하라 WAL/체크포인트만 조금 느슨하게 둔다.
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c max_connections=50
+      -c checkpoint_completion_target=0.9
+      -c wal_compression=on
+    volumes:
+      # postgres 16 은 /var/lib/postgresql/data 가 마운트 지점이다(18 부터 상위 디렉터리).
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iotlight} -d ${POSTGRES_DB:-iotlight}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  # 브로커 persistence(retained REGISTER_ACK 포함) + 설치된 passwd/aclfile + 효력 conf
+  mosquitto-data:
+  # 단말별 계정 passwd/aclfile 전달 통로. backend 가 쓰고 mosquitto 가 설치한다.
+  mqtt-dynamic:

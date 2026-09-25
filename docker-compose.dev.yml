@@ -1,0 +1,30 @@
+# 로컬(Windows/맥) 개발용 오버라이드.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# 기본 파일과 다른 점:
+#   - postgres 를 항상 켠다 (.env 의 COMPOSE_PROFILES=local-db 로 프로파일이 켜지고,
+#     여기서는 호스트 5432 를 열어 psql/alembic 을 호스트에서 바로 쓸 수 있게 한다)
+#   - backend 8000 을 호스트로 연다 (브라우저에서 /health, /docs 확인)
+#   - mosquitto 1883/8883 은 기본 파일이 이미 호스트로 열고 있다 (tools/sim 이 붙는 곳)
+#   - 로그 레벨 DEBUG
+#
+# 주의: 오버라이드의 ports 는 기본 파일의 ports 와 합쳐진다(교체가 아님).
+#       그래서 mosquitto 포트는 여기 다시 적지 않는다.
+
+services:
+  backend:
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: DEBUG
+
+  postgres:
+    ports:
+      - "5432:5432"
+
+  mosquitto:
+    # 로컬에서는 fd 65536 이 필요 없지만 값이 달라서 생기는 차이를 없애려고 그대로 둔다.
+    environment:
+      TZ: Asia/Seoul
