@@ -42,6 +42,9 @@ HASH_ITERATIONS = 101
 _SALT_BYTES = 12
 #: 적용 보고 파일 이름. aclfile 내보내기 경로와 같은 디렉터리.
 ACL_APPLIED_MARKER = "aclfile.applied"
+#: passwd 적용 보고. ACL 이 안 바뀐 import(계정 추가만)는 aclfile.applied 가 즉시 일치하는데
+#: passwd 설치는 감시 루프의 다음 1초라, 이것까지 봐야 "지금 접속 가능"이 된다(S2-06).
+PASSWD_APPLIED_MARKER = "passwd.applied"
 
 
 # ── 해시 ────────────────────────────────────────────────────────────────
@@ -265,14 +268,50 @@ def acl_applied_path() -> Path | None:
     return Path(acl_path).with_name(ACL_APPLIED_MARKER) if acl_path else None
 
 
-def read_applied_md5() -> str | None:
-    marker = acl_applied_path()
+def passwd_applied_path() -> Path | None:
+    passwd_path = settings.mosquitto_passwd_export
+    return Path(passwd_path).with_name(PASSWD_APPLIED_MARKER) if passwd_path else None
+
+
+def _read_marker(marker: Path | None) -> str | None:
     if marker is None or not marker.exists():
         return None
     try:
         return marker.read_text(encoding="ascii").strip() or None
     except OSError:
         return None
+
+
+def read_applied_md5() -> str | None:
+    return _read_marker(acl_applied_path())
+
+
+def read_passwd_applied_md5() -> str | None:
+    return _read_marker(passwd_applied_path())
+
+
+async def wait_applied(
+    passwd_md5: str | None, acl_md5: str | None, timeout: float | None = None
+) -> bool:
+    """passwd 와 aclfile 둘 다 브로커에 적용될 때까지 기다린다.
+
+    passwd 보고 파일이 없는 감시 루프(옛 entrypoint)면 ACL 만 본다. 시간 안에 안 오면 False.
+    """
+    timeout = settings.acl_apply_timeout_sec if timeout is None else timeout
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    pw_marker = passwd_applied_path()
+    check_pw = pw_marker is not None and pw_marker.exists() and passwd_md5 is not None
+    while True:
+        acl_ok = read_applied_md5() == acl_md5
+        pw_ok = (not check_pw) or read_passwd_applied_md5() == passwd_md5
+        if acl_ok and pw_ok:
+            return True
+        if loop.time() >= deadline:
+            log.warning("브로커 계정 적용 확인 %.1f초 초과 (acl=%s passwd=%s)",
+                        timeout, acl_ok, pw_ok)
+            return False
+        await asyncio.sleep(0.1)
 
 
 async def wait_acl_applied(

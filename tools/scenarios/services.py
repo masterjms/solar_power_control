@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -263,20 +264,26 @@ class Docker:
 
     def _base(self) -> list[str]:
         cmd = ["docker", "compose"]
-        if self.compose_file:
-            cmd += ["-f", self.compose_file]
+        # COMPOSE_FILE 은 docker 규약대로 여러 파일을 os.pathsep(리눅스 ':', Windows ';')로 잇는다.
+        # 하나의 -f 로 넘기면 "파일 없음"이 된다.
+        for f in re.split(r"[;:](?![\\/])", self.compose_file or ""):
+            if f:
+                cmd += ["-f", f]
         return cmd
 
     async def run(self, *args: str, timeout: float = 120) -> tuple[int, str]:
-        proc = await asyncio.create_subprocess_exec(
-            *self._base(), *args, cwd=str(REPO_ROOT),
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        try:
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            return 124, "timeout"
-        return proc.returncode or 0, out.decode(errors="replace")
+        # asyncio 서브프로세스는 Windows 셀렉터 루프에서 NotImplementedError 다(시뮬레이터가
+        # 셀렉터 루프를 요구한다). 스레드에서 동기 subprocess 로 돌린다.
+        def _run() -> tuple[int, str]:
+            try:
+                cp = subprocess.run(
+                    [*self._base(), *args], cwd=str(REPO_ROOT), timeout=timeout,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            except subprocess.TimeoutExpired:
+                return 124, "timeout"
+            return cp.returncode or 0, cp.stdout.decode(errors="replace")
+
+        return await asyncio.to_thread(_run)
 
     async def available(self) -> bool:
         code, _ = await self.run("version", timeout=20)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 import time
 from datetime import timedelta
@@ -186,7 +187,10 @@ async def s2_03(ctx: Ctx) -> None:
     await ctx.wait_until(wrapped, timeout=FLUSH_WAIT, what="wrap 뒤 last_sq=0")
     w = await ctx.s.db.device(wrapper.uuid)
     ctx.check_eq(w["reboot_count"], 0, "uint32 wrap 은 재부팅이 아님")
-    ctx.check_eq(w["lost_count"], 0, "uint32 wrap 은 유실도 아님(연속 번호)")
+    # 첫 TM 이 2^32-2 라 그 전 기준(0)에서의 점프는 상한(100000)까지 유실로 센다(docs/02 §6).
+    # wrap 자체(2^32-1 → 0)는 유실 0: 점프분을 뺀 나머지가 0 이어야 한다.
+    ctx.check(w["lost_count"] in (0, 100_000),
+              f"uint32 wrap 은 유실도 아님(연속 번호): lost_count={w['lost_count']} ∈ {{0, 100000(점프 상한)}}")
     await _send_tm_and_wait(ctx, wrapper, since)          # 1
     await wrapper.reboot(reconnect_after=0.5)
     await ctx.wait_until(lambda: wrapper.is_connected and wrapper.stats.tm_sent >= 5, timeout=30, what="wrap 뒤 진짜 재부팅")
@@ -215,7 +219,8 @@ async def s2_04(ctx: Ctx) -> None:
     """사양서 2차 합격 기준 4·5. PATCH ti=300 → CONFIG_SET → CONFIG_ACK OK → 다음 TM cv == cv_server.
     PATCH ti=10 은 서버가 4xx 로 거부. 서버를 우회해 CONFIG_SET ti=10 을 직접 쏘면 단말이 RANGE 를 답하고 cv 를 유지."""
     since = await ctx.s.db.now()
-    (dev,) = await make_devices(ctx, 1, ti=600)
+    # CONFIG_SET 은 config topic 으로 가고, 그 topic 은 2차 펌웨어(단말별 계정)만 구독한다(§0.2).
+    (dev,) = await make_devices(ctx, 1, mode="2cha", ti=600)
     await _send_tm_and_wait(ctx, dev, since)
     before = await ctx.s.db.device(dev.uuid)
 
@@ -279,7 +284,7 @@ async def s2_05(ctx: Ctx) -> None:
     """단말이 첫 CONFIG_SET 을 못 받은 척한다. 서버는 타이머 없이 '다음 Telemetry 수신 시점' 에 재전송하되
     같은 단말에 60초 안에는 다시 보내지 않는다(ADR-002). 단말이 받아들이면 더 이상 재전송하지 않는다."""
     since = await ctx.s.db.now()
-    (dev,) = await make_devices(ctx, 1, ti=600, ignore_config_set=1)
+    (dev,) = await make_devices(ctx, 1, mode="2cha", ti=600, ignore_config_set=1)  # config 구독은 2차 모드뿐
     await _send_tm_and_wait(ctx, dev, since)
 
     r = await ctx.s.rest.patch_config(dev.uuid, ti=300)
@@ -413,7 +418,7 @@ async def s2_07(ctx: Ctx) -> None:
 async def s2_08(ctx: Ctx) -> None:
     """dedup_key = uuid:type:seq:sha1(payload) 로 QoS1 재전송 중복을 걸러야 한다(docs/03)."""
     since = await ctx.s.db.now()
-    (dev,) = await make_devices(ctx, 1, ti=600)
+    (dev,) = await make_devices(ctx, 1, mode="2cha", ti=600)  # CONFIG_ACK 중복 시험에 config 구독 필요
     r = await ctx.s.rest.ping(dev.uuid)
     ctx.check(r.status_code < 300, f"POST ping → {r.status_code}")
     seq = r.json()["seq"]
@@ -505,14 +510,21 @@ async def s2_10(ctx: Ctx) -> None:
     since = await ctx.s.db.now()
 
     from tools.scenarios.services import REPO_ROOT
-    proc = await asyncio.create_subprocess_exec(*args, cwd=str(REPO_ROOT))
+    # Windows 셀렉터 루프에서는 asyncio 서브프로세스가 안 된다 → 동기 Popen + 스레드 대기.
+    proc = subprocess.Popen(args, cwd=str(REPO_ROOT))
     t_spawn = time.monotonic()
 
     async def cleanup() -> None:
-        if proc.returncode is None:
-            proc.terminate()
+        if proc.poll() is None:
+            if sys.platform == "win32":
+                # fleet 는 워커 프로세스를 또 띄운다. Windows 의 terminate 는 부모만 죽여
+                # 워커들이 계속 브로커를 두드리므로 트리째 죽인다.
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                proc.terminate()
             try:
-                await asyncio.wait_for(proc.wait(), 15)
+                await asyncio.wait_for(asyncio.to_thread(proc.wait), 15)
             except asyncio.TimeoutError:
                 proc.kill()
         if not getattr(ctx.opt, "keep_rows", False):

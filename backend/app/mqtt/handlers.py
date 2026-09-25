@@ -252,7 +252,16 @@ class Dispatcher:
                 # 단말이 거부했다 = 서버가 범위 밖 값을 보냈다. PATCH 검증이 막았어야 한다.
                 metrics.config_ack_range += 1
                 log.warning("CONFIG_ACK RANGE %s cv=%s — 서버가 보낸 값이 범위 밖", uuid, cv)
-            # OK 는 아무것도 더 하지 않는다 — 다음 Telemetry 의 cv echo 가 진실이다.
+            elif result == "OK" and cv is not None:
+                # 단말이 "전부 적용하고 Flash 에 저장" 했다(§1.1.7). ti 는 TM 에 실리지 않아
+                # 다음 REGISTER(재부팅) 전까지 알 길이 없으므로 여기서 서버 의도값을 적는다.
+                # 단, ack 의 cv 가 지금 서버 cv 와 같을 때만 — 늦게 온 옛 ack 로 덮지 않는다.
+                # cv_device 는 다음 TM echo 가 어차피 다시 쓴다.
+                await db.execute(
+                    update(Device)
+                    .where(Device.uuid == uuid, Device.cv_server == cv)
+                    .values(cv_device=cv, ti_device=Device.ti_server, updated_at=func.now())
+                )
             return
 
         if msg_type == MsgType.CMD_ACK.value:
@@ -314,10 +323,9 @@ class Dispatcher:
         self, db: AsyncSession, uuid: str, msg_type: str, data: dict[str, Any], now: dt.datetime
     ) -> None:
         if msg_type == MsgType.LWT.value:
-            if self._buffer is not None:
-                dropped = self._buffer.discard(uuid)
-                if dropped:
-                    log.info("LWT %s — 대기 중 TM %d건 폐기", uuid, dropped)
+            # 버퍼에 남은 그 단말의 TM 은 버리지 않는다(aircast 와 다른 점). 여기서는 TM 이
+            # 이력이라 한 건도 아깝고, 되살아남 위험도 없다 — TM flush 는 `online` 을 건드리지
+            # 않고 presence 는 "LWT 가 마지막 TM 보다 뒤면 오프라인"으로 판정한다(core/presence.py).
             # seen_at=None: LWT 는 단말이 아니라 브로커가 보낸다.
             await _touch_device(db, uuid, seen_at=None, online=False, offline_at=now)
             await _insert_event(

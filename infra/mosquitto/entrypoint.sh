@@ -63,6 +63,14 @@ report_acl() {  # $1=적용된 aclfile md5
     mv "$DYN/aclfile.applied.tmp" "$DYN/aclfile.applied"
 }
 
+# passwd 도 같은 보고를 한다. ACL 내용이 안 바뀐 import(계정 추가만)는 aclfile.applied 가
+# 즉시 일치해 백엔드가 "적용됨"으로 답하는데, passwd 설치는 이 루프의 다음 1초에 되므로
+# 그 사이 단말 접속이 not authorised 로 거절된다(S2-06 에서 실제 발생). 백엔드는 둘 다 본다.
+report_passwd() {  # $1=적용된 passwd md5
+    echo "$1" > "$DYN/passwd.applied.tmp"
+    mv "$DYN/passwd.applied.tmp" "$DYN/passwd.applied"
+}
+
 # 부트스트랩: generated 가 있으면 그것, 없고 설치본도 없으면 시드(리포 파일)를 쓴다.
 bootstrap() {  # $1=이름(passwd|aclfile)
     if [ -f "$DYN/$1.generated" ]; then
@@ -114,11 +122,13 @@ bootstrap aclfile
     # mosquitto 가 기동하며 이 aclfile 을 읽는다. 기동 직후부터 적용 보고가 있어야 백엔드가
     # 기다릴 기준을 안다.
     report_acl "$last_acl"
+    report_passwd "$last_pw"
     while :; do
         sleep 1
         changed=0
+        pw_changed=0
         if cur="$(install_if_changed "$DYN/passwd.generated" "$DATA/passwd" "$last_pw")"; then
-            last_pw="$cur"; changed=1
+            last_pw="$cur"; changed=1; pw_changed=1
         fi
         acl_changed=0
         if cur="$(install_if_changed "$DYN/aclfile.generated" "$DATA/aclfile" "$last_acl")"; then
@@ -126,7 +136,9 @@ bootstrap aclfile
         fi
         if [ "$changed" = 1 ]; then
             kill -HUP 1
+            # 보고는 HUP 뒤에 한다 — 백엔드가 보고를 보는 순간 브로커는 이미 새 파일을 읽었다.
             [ "$acl_changed" = 1 ] && report_acl "$last_acl"
+            [ "$pw_changed" = 1 ] && report_passwd "$last_pw"
             echo "passwd/aclfile 갱신 설치 + 리로드 완료"
         fi
     done

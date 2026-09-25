@@ -203,7 +203,7 @@ class TelemetryBuffer:
                     events.append({
                         "uuid": uuid, "kind": EventKind.LOST.value,
                         "payload": {"sq": sq_value, "last_sq": self._last_sq.get(uuid),
-                                    "lost": verdict.lost},
+                                    "lost": verdict.lost, "jump": verdict.jump},
                         "received_at": received_at,
                     })
                 if verdict.reboot:

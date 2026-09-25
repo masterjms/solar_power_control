@@ -762,10 +762,12 @@ class SimDevice:
         sock = paho.socket() if paho is not None else None
         if sock is None:
             return
+        # shutdown 만 하고 close 는 하지 않는다. FIN 만 나가도 브로커는 DISCONNECT 패킷 없는
+        # 종료로 보고 LWT 를 발행한다. close 까지 하면 paho/aiomqtt 가 아직 들고 있는 fd 가
+        # 셀렉터에서 무효가 되어 Windows 에서 WinError 10038 / fd -1 로 루프가 죽는다.
+        # 닫기는 paho 가 EOF 를 읽고 자기 절차대로 한다.
         with contextlib.suppress(OSError):
             sock.shutdown(socket.SHUT_RDWR)
-        with contextlib.suppress(OSError):
-            sock.close()
 
     async def disconnect(self, *, hard: bool = True, reconnect: bool = False,
                          reconnect_after: float | None = None) -> None:
@@ -781,13 +783,16 @@ class SimDevice:
             self._session_task.cancel()
 
     async def reboot(self, *, reconnect_after: float = 1.0) -> None:
-        """전원 재인가. sq=0, override·승인 상태 소거, 재접속 후 REGISTER. cv/ti/lat/lon 은 Flash 라 남는다."""
+        """전원 재인가. sq=0, override·승인 상태 소거, 재접속 후 REGISTER. cv/ti/lat/lon 은 Flash 라 남는다.
+
+        절단을 먼저 하고 상태를 지운다 — 순서를 바꾸면 아직 살아 있는 옛 세션의 TM 루프가
+        sq=0 을 한 번 더 보내 서버가 재부팅을 두 번 센다(S2-03 에서 실제 발생)."""
+        await self.disconnect(hard=True, reconnect=True, reconnect_after=reconnect_after)
         self.sq = 0
         self._overrides.clear()
         self._seen_cmd_seq.clear()
         self.gate.reset()
         self.er = 0
-        await self.disconnect(hard=True, reconnect=True, reconnect_after=reconnect_after)
 
     def drop_next_tm(self, count: int = 1) -> None:
         """다음 `count` 건을 못 보낸 것처럼 sq 만 건너뛴다(전송 실패 시에도 sq 는 올라간다)."""

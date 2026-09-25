@@ -79,7 +79,7 @@ DB 를 만지지 않는다. `TelemetryBuffer.offer()` 로 끝. §5 참고.
 | type | device_event | dedup_key | 그 외 |
 |---|---|---|---|
 | `PONG` | `PONG` | `uuid:PONG:<seq>:sha1` | `command` 조회 → target 이 이 uuid 인지 확인(§1.1.5) → `command_ack` 1행(PK 충돌 무시) → `acked_count+1`, 다 모이면 `finished_at`, `result=OK`. seq 를 모르거나 단말이 다르면 `pong_mismatch` |
-| `CONFIG_ACK` | `CONFIG_ACK` | `uuid:CONFIG_ACK:<cv>:sha1` | `OK` → 끝. **진실은 다음 TM 의 cv echo** 다. `RANGE` → 경고 + `config_ack_range` (서버가 범위 밖 값을 보낸 것이므로 PATCH 검증 버그) |
+| `CONFIG_ACK` | `CONFIG_ACK` | `uuid:CONFIG_ACK:<cv>:sha1` | `OK` 이고 `cv == cv_server` 이면 `cv_device=cv, ti_device=ti_server` (ti 는 TM 에 안 실려 여기서만 알 수 있다. 옛 ack 로 덮지 않도록 cv 일치 조건). **동기화 완료 판정은 여전히 다음 TM 의 cv echo** 다. `RANGE` → 경고 + `config_ack_range` (서버가 범위 밖 값을 보낸 것이므로 PATCH 검증 버그) |
 | `CMD_ACK` | `CMD_ACK` | `uuid:CMD_ACK:<seq>:sha1` | PONG 과 같은 command 집계 (5차) |
 
 dedup_key 에 payload 해시가 들어가는 이유: 같은 seq 의 두 번째 결과(내용이 다름)는 남기고,
@@ -88,7 +88,7 @@ QoS1 재전송(바이트 동일)만 걸러진다. `ON CONFLICT DO NOTHING`.
 ### event
 | type | 처리 |
 |---|---|
-| `LWT` | 버퍼의 그 uuid 대기 TM **폐기** → `online=false, offline_at=now` → `device_event(LWT)`. **`last_seen_at` 은 건드리지 않는다** — 브로커가 대신 보내는 사망 통지를 "방금 통신"으로 적으면 죽은 단말이 온라인이 된다. |
+| `LWT` | `online=false, offline_at=now` → `device_event(LWT)`. **`last_seen_at` 은 건드리지 않는다** — 브로커가 대신 보내는 사망 통지를 "방금 통신"으로 적으면 죽은 단말이 온라인이 된다. 버퍼에 남은 그 단말의 TM 은 **버리지 않는다**(이력이라 한 건도 아깝다). TM flush 는 `online` 을 건드리지 않고 presence 가 `offline_at > last_telemetry_at` 로 판정하므로 늦게 적재된 TM 이 단말을 되살리지 않는다(S2-13). |
 | `EV` | `last_seen_at` 갱신 → `device_event(kind=ERR, payload={er,ep,bv,ts})`, dedup `uuid:EV:<ts>:sha1` |
 
 ## 5. TelemetryBuffer — 1초 배치
@@ -129,7 +129,7 @@ offer() ──▶ _rows[(uuid, payload, received_at)…]  (도착 순서, DB 접
 | 관측 | 판정 | 기록 |
 |---|---|---|
 | `sq == last + 1` | 정상 | — |
-| `sq > last + 1` | 유실 `sq - last - 1` | `lost_count += n`, event `LOST{sq,last_sq,lost}` |
+| `sq > last + 1` | 유실 `sq - last - 1` | `lost_count += min(n, 100000)`, event `LOST{sq,last_sq,lost,jump}` — `jump` 가 원값. 상한을 두는 이유: 10만 이상 점프는 유실이 아니라 카운터 이상이고, int4 `lost_count` 가 넘치면 배치 flush 전체가 실패한다 |
 | `sq == last` | 중복 | 무시 |
 | `sq < last` | 재부팅 | `reboot_count += 1`, event `REBOOT{sq,last_sq}` |
 | `last > 2³²-1-1000` 이고 `sq < 1000` | uint32 wrap → 유실로 계산, 재부팅 아님 | 단말 확인 대기(docs/00 §7) |
@@ -154,7 +154,7 @@ offer() ──▶ _rows[(uuid, payload, received_at)…]  (도착 순서, DB 접
   를 싣고 오는 것이 정상 흐름이라(CONFIG_ACK 전에 TM 이 나갈 수 있다) 쿨다운이 없으면
   같은 CONFIG_SET 이 연달아 두 번 나간다. 이미 줄 서 있는 uuid 도 다시 넣지 않는다.
 - 발행 성공 시 `device.config_sent_at` 갱신. 실패(브로커 끊김)는 로그 후 폐기.
-- CONFIG_ACK `OK` 는 아무 상태도 바꾸지 않는다. **동기화 완료 = 다음 TM 의 `cv == cv_server`**.
+- CONFIG_ACK `OK` 는 `ti_device`(와 cv_device)만 적는다. **동기화 완료 = 다음 TM 의 `cv == cv_server`**.
   `RANGE` 는 서버 버그다(PATCH 가 60~3600 을 검증한다).
 
 ## 8. 계정 내보내기 순서 (`core/mqtt_accounts.py`, 사양서 §1.1.2.2)
@@ -169,7 +169,9 @@ CSV(uuid,password) ──▶ PBKDF2 $7$101$ 해시 ──▶ device.mqtt_passwor
         ▼
   mosquitto entrypoint 감시 루프(infra/)가 설치 + SIGHUP → aclfile.applied 에 md5 기록
         │
-        ▼  wait_acl_applied(md5, ACL_APPLY_TIMEOUT_SEC=5)
+        ▼  wait_applied(passwd_md5, acl_md5, ACL_APPLY_TIMEOUT_SEC=5)
+           — passwd.applied / aclfile.applied 둘 다 일치해야 "적용". ACL 이 안 바뀐 import 는
+             aclfile.applied 가 즉시 일치하므로 passwd 보고를 안 보면 접속 거절 구간이 생긴다
   mqtt_account_export(id=1) 에 passwd_md5 / acl_md5 / acl_applied_md5 기록
         │
         ▼

@@ -232,8 +232,9 @@ async def export_broker_accounts(
     await db.execute(update(MqttAccountExport).where(MqttAccountExport.id == 1).values(**values))
 
     applied = False
-    if result.acl_ok and wait_applied:
-        applied = await mqtt_accounts.wait_acl_applied(result.acl_md5)
+    if result.acl_ok and result.passwd_ok and wait_applied:
+        # passwd 와 aclfile 둘 다. ACL 만 보면 계정 추가 직후 접속이 거절된다(S2-06).
+        applied = await mqtt_accounts.wait_applied(result.passwd_md5, result.acl_md5)
     applied_md5 = mqtt_accounts.read_applied_md5()
     if applied_md5:
         await db.execute(

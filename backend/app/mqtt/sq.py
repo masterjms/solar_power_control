@@ -18,6 +18,11 @@ from dataclasses import dataclass
 UINT32_MAX = 4_294_967_295
 #: 이 안쪽에서 되돌아가면 wrap 으로 본다.
 WRAP_MARGIN = 1_000
+#: 한 번에 유실로 세는 상한. 10분 주기 기준 약 2년치다. 이보다 큰 점프는 유실이 아니라
+#: 카운터 이상(펌웨어 교체·시험 도구의 sq 강제 점프)으로 보고, lost_count 는 상한까지만 더한다.
+#: 상한이 없으면 sq 가 0 근처에서 2^32 근처로 뛰었을 때 lost_count(int4) 가 넘쳐 flush 전체가
+#: 실패하고, 같은 배치의 다른 단말 TM 까지 버려진다(S2-03 에서 실제 발생).
+LOST_CAP = 100_000
 
 
 @dataclass(frozen=True)
@@ -25,6 +30,8 @@ class SqVerdict:
     lost: int = 0
     reboot: bool = False
     duplicate: bool = False
+    #: 실제 건너뛴 칸 수(상한 적용 전). 이벤트 payload 에 원값으로 남긴다.
+    jump: int = 0
 
 
 def judge(last_sq: int | None, sq: int) -> SqVerdict:
@@ -37,8 +44,10 @@ def judge(last_sq: int | None, sq: int) -> SqVerdict:
         # status 는 QoS0 이라 브로커 재전송은 없지만 단말이 같은 값을 두 번 보낼 수는 있다.
         return SqVerdict(duplicate=True)
     if sq > last_sq:
-        return SqVerdict(lost=sq - last_sq - 1)
+        gap = sq - last_sq - 1
+        return SqVerdict(lost=min(gap, LOST_CAP), jump=gap)
     # sq < last_sq
     if last_sq > UINT32_MAX - WRAP_MARGIN and sq < WRAP_MARGIN:
-        return SqVerdict(lost=(UINT32_MAX - last_sq) + sq)
+        gap = (UINT32_MAX - last_sq) + sq
+        return SqVerdict(lost=min(gap, LOST_CAP), jump=gap)
     return SqVerdict(reboot=True)
