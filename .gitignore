@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# 환경 변수 — *.example 만 커밋
+.env
+.env.*
+!.env.example
+
+# 런타임 데이터
+/data/
+/var/
+tools/scenarios/out/
+
+# 인증서·비밀번호 파일 — 서버에서 생성
+infra/certs/
+infra/mosquitto/config/passwd
+infra/mosquitto/dynamic/
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
