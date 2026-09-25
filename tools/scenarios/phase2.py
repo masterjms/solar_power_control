@@ -135,10 +135,11 @@ async def s2_02(ctx: Ctx) -> None:
 @scenario("S2-03", "sq 판정 — 유실·재부팅·uint32 wrap", phase=2, timeout=180)
 async def s2_03(ctx: Ctx) -> None:
     """sq 건너뜀 3 → lost_count +3. 재부팅(sq 0) → reboot_count +1, REBOOT 이벤트.
-    wrap(2^32-2 → 2^32-1 → 0): 서버가 터무니없는 lost_count 를 만들지 않아야 한다.
-    기대 동작(가정, docs/06): 큰 점프는 gap 이하로만 lost 증가, 0 으로 되돌아가는 것은 재부팅으로 판정."""
+    wrap 은 별도 단말로 본다: 첫 TM 이 2^32-2 인 단말이 2^32-1 → 0 으로 넘어가면 (backend/app/mqtt/sq.py 규칙대로)
+    재부팅이 아니고 유실도 0 이어야 하며, 그 뒤 진짜 재부팅(1 → 0)은 여전히 재부팅으로 잡혀야 한다.
+    마지막으로 작은 sq 에서 2^32-2 로 크게 점프하는 경우 lost_count 가 int 범위를 넘거나 flush 가 깨지면 안 된다."""
     since = await ctx.s.db.now()
-    (dev,) = await make_devices(ctx, 1, ti=600)
+    dev, wrapper = await make_devices(ctx, 2, ti=600)
     await _send_tm_and_wait(ctx, dev, since)
     base = await ctx.s.db.device(dev.uuid)
     lost0, reboot0 = base["lost_count"], base["reboot_count"]
@@ -151,6 +152,12 @@ async def s2_03(ctx: Ctx) -> None:
     await ctx.wait_until(lost3, timeout=FLUSH_WAIT, what="lost_count +3")
     r = await ctx.s.db.device(dev.uuid)
     ctx.check_eq(r["reboot_count"], reboot0, "유실만으로 reboot_count 불변")
+    # 같은 sq 를 두 번 보내면(duplicate) 유실·재부팅 어느 쪽도 아니다.
+    dev.sq -= 1
+    await dev.send_tm_now()
+    await ctx.hold(1.5, "중복 sq 처리")
+    r = await ctx.s.db.device(dev.uuid)
+    ctx.check(r["lost_count"] == lost0 + 3 and r["reboot_count"] == reboot0, "같은 sq 중복은 카운트 없음")
 
     # 재부팅: sq 0 부터, REGISTER 다시.
     reg_before = dev.stats.register_sent
@@ -166,27 +173,39 @@ async def s2_03(ctx: Ctx) -> None:
     r = await ctx.s.db.device(dev.uuid)
     ctx.check_eq(r["lost_count"], lost0 + 3, "재부팅은 lost_count 에 영향 없음")
     ctx.check_eq(r["last_sq"], 0, "재부팅 후 last_sq=0")
-    lost1, reboot1 = r["lost_count"], r["reboot_count"]
 
-    # wrap: 현재 sq(1) → 2^32-2 점프. 그 다음 2^32-1, 그 다음 0.
+    # wrap: 처음 보는 단말의 첫 TM 이 2^32-2 → 2^32-1 → 0 (uint32 넘김) → 1 → 진짜 재부팅 0.
+    wrapper.sq_wrap()
+    await _send_tm_and_wait(ctx, wrapper, since)          # 2^32-2 (기준 없음, 카운트 없음)
+    await _send_tm_and_wait(ctx, wrapper, since)          # 2^32-1
+    ctx.check_eq(wrapper.sq, 0, "시뮬레이터 sq 가 0 으로 wrap")
+    await _send_tm_and_wait(ctx, wrapper, since)          # 0
+    async def wrapped() -> bool:
+        w = await ctx.s.db.device(wrapper.uuid)
+        return w["last_sq"] == 0
+    await ctx.wait_until(wrapped, timeout=FLUSH_WAIT, what="wrap 뒤 last_sq=0")
+    w = await ctx.s.db.device(wrapper.uuid)
+    ctx.check_eq(w["reboot_count"], 0, "uint32 wrap 은 재부팅이 아님")
+    ctx.check_eq(w["lost_count"], 0, "uint32 wrap 은 유실도 아님(연속 번호)")
+    await _send_tm_and_wait(ctx, wrapper, since)          # 1
+    await wrapper.reboot(reconnect_after=0.5)
+    await ctx.wait_until(lambda: wrapper.is_connected and wrapper.stats.tm_sent >= 5, timeout=30, what="wrap 뒤 진짜 재부팅")
+    async def wrapper_rebooted() -> bool:
+        w2 = await ctx.s.db.device(wrapper.uuid)
+        return w2["reboot_count"] == 1
+    await ctx.wait_until(wrapper_rebooted, timeout=FLUSH_WAIT, what="wrap 뒤에도 재부팅 판정 정상")
+
+    # 큰 점프: dev 의 sq(1) → 2^32-2. gap ≈ 4.29e9 — device.lost_count 는 int 라 넘칠 수 있다.
+    # 서버가 gap 을 상한으로 자르거나 bigint 로 두어야 하며, 어느 쪽이든 flush 가 실패해 TM 이 버려지면 안 된다.
+    lost1 = r["lost_count"]
     prev_sq = dev.sq
     dev.sq_wrap()
     gap = (SQ_MOD - 2) - prev_sq - 1
     await _send_tm_and_wait(ctx, dev, since)
-    await _send_tm_and_wait(ctx, dev, since)          # 2^32-1
     r = await ctx.s.db.device(dev.uuid)
     ctx.check(lost1 <= r["lost_count"] <= lost1 + gap, f"큰 점프 후 lost_count 증가 {r['lost_count'] - lost1} ≤ gap {gap}")
-    ctx.check(r["lost_count"] - lost1 < 2**31, "lost_count 가 int32 를 넘지 않음(오버플로 없음)")
-    ctx.check_eq(r["reboot_count"], reboot1, "단조 증가 구간은 재부팅 아님")
-    ctx.check_eq(dev.sq, 0, "시뮬레이터 sq 가 0 으로 wrap")
-    await _send_tm_and_wait(ctx, dev, since)          # 0
-    async def wrapped() -> bool:
-        r = await ctx.s.db.device(dev.uuid)
-        return r["last_sq"] == 0
-    await ctx.wait_until(wrapped, timeout=FLUSH_WAIT, what="wrap 뒤 last_sq=0")
-    r = await ctx.s.db.device(dev.uuid)
-    ctx.check(r["reboot_count"] == reboot1 + 1, f"wrap(감소)은 재부팅으로 판정 (reboot_count {r['reboot_count']})")
-    ctx.check(r["lost_count"] <= lost1 + gap, "wrap 뒤에도 lost_count 폭증 없음")
+    ctx.check(r["lost_count"] < 2**31, "lost_count 가 int32 안(오버플로 없음)")
+    ctx.check_eq(r["reboot_count"], reboot0 + 1, "큰 점프(증가)는 재부팅 아님")
 
 
 # ── S2-04 ────────────────────────────────────────────────────────────────

@@ -54,9 +54,10 @@ class Env:
             ),
             mqtt_test_account_enabled=_bool("MQTT_TEST_ACCOUNT_ENABLED", True),
             topic_root=os.environ.get("MQTT_TOPIC_ROOT", "iotlight"),
+            # backend 의 .env 는 SQLAlchemy 방언(postgresql+asyncpg://)을 쓴다. asyncpg 는 그걸 모른다.
             database_url=os.environ.get(
-                "DATABASE_URL", "postgresql://solar:solar@localhost:5432/solar"
-            ),
+                "DATABASE_URL", "postgresql://iotlight:iotlight-dev-pw@localhost:5432/iotlight"
+            ).replace("postgresql+asyncpg://", "postgresql://", 1),
             backend_url=os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/"),
             compose_file=os.environ.get("COMPOSE_FILE", ""),
         )

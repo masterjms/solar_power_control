@@ -132,10 +132,11 @@ class Rest:
 
     async def health_ok(self) -> bool:
         h = await self.health()
-        if h is None:
+        if h is None or not isinstance(h, dict):
             return False
-        status = str(h.get("status", "ok")).lower() if isinstance(h, dict) else "ok"
-        return status in {"ok", "healthy", "up"}
+        if "ok" in h:
+            return bool(h["ok"])
+        return str(h.get("status", "ok")).lower() in {"ok", "healthy", "up"}
 
     async def metrics(self) -> dict[str, Any]:
         r = await self.client.get("/api/metrics")
