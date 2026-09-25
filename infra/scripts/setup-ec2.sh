@@ -3,7 +3,7 @@
 # 새 EC2(Ubuntu 24.04, t3.small) 최초 셋업. 여러 번 실행해도 안전하다(멱등).
 #
 #   ssh ubuntu@<EIP>
-#   curl -fsSL https://raw.githubusercontent.com/<org>/solar_power_control/main/infra/scripts/setup-ec2.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/masterjms/solar_power_control/main/infra/scripts/setup-ec2.sh | bash
 #   또는 저장소를 먼저 받아서:  bash infra/scripts/setup-ec2.sh
 #
 # 하는 일:
@@ -18,7 +18,7 @@
 # 끝나면 .env 의 비밀번호를 채우고 docs/04_인프라_운영.md "1차 런북"으로 넘어간다.
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/infontech/solar_power_control.git}"
+REPO_URL="${REPO_URL:-https://github.com/masterjms/solar_power_control.git}"
 APP_DIR="${APP_DIR:-/opt/solar_power_control}"
 SWAP_GB="${SWAP_GB:-2}"
 APP_USER="${SUDO_USER:-ubuntu}"
