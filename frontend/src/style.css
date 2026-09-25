@@ -1,0 +1,21 @@
+/* 개발용 최소 스타일 */
+body { font-family: sans-serif; font-size: 13px; margin: 0; }
+header { padding: 6px 10px; border-bottom: 1px solid #ccc; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+header .warn { color: #b00; }
+nav a { margin-right: 8px; }
+main { display: flex; height: calc(100vh - 40px); }
+.left { width: 46%; overflow: auto; border-right: 1px solid #ccc; padding: 6px; }
+.right { flex: 1; overflow: auto; padding: 6px 10px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #ddd; padding: 2px 5px; text-align: left; white-space: nowrap; font-size: 12px; }
+th { background: #f3f3f3; }
+tr.selected { background: #e6f0ff; }
+tbody tr[data-click] { cursor: pointer; }
+.error { color: #b00; font-weight: bold; }
+.mono { font-family: monospace; white-space: pre-wrap; word-break: break-all; }
+dl { display: grid; grid-template-columns: 140px 1fr; gap: 2px 8px; margin: 4px 0 8px; }
+dt { color: #555; }
+dd { margin: 0; font-family: monospace; }
+fieldset { margin: 6px 0; }
+.toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+.on { color: #090; } .off { color: #999; }
