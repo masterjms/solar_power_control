@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir \
       "sqlalchemy[asyncio]>=2.0.36" "asyncpg>=0.30" "alembic>=1.14" "aiomqtt>=2.3" \
       "apscheduler>=3.10,<4" "python-multipart>=0.0.17"
 
-COPY alembic.ini ./
+COPY alembic.ini entrypoint.sh ./
 COPY alembic ./alembic
 COPY app ./app
 
@@ -38,5 +38,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://localhost:8000/health || exit 1
 
-# 컨테이너 안에서는 0.0.0.0 — 호스트 노출 여부는 compose 의 ports 가 정한다(2차 REST 무인증).
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# entrypoint.sh: DB 대기 → alembic upgrade head → uvicorn(0.0.0.0 — 호스트 노출은 compose ports 가 정한다).
+CMD ["/bin/sh", "/srv/entrypoint.sh"]

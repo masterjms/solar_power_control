@@ -49,11 +49,42 @@ logging.basicConfig(
 log = logging.getLogger("app")
 
 
+async def _wait_for_db(timeout_sec: float = 120.0) -> None:
+    """DB 가 뜰 때까지 기다린다. compose 순서·RDS 재시작 어느 쪽이든 서버가 먼저 뜰 수 있다.
+    시간 안에 안 뜨면 그래도 기동한다 — 수신 경로는 실패를 카운트하며 버티고, /health 가 알린다."""
+    import asyncio
+    import time
+
+    from sqlalchemy import text
+
+    deadline = time.monotonic() + timeout_sec
+    while True:
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            return
+        except Exception as e:  # noqa: BLE001
+            if time.monotonic() > deadline:
+                log.error("DB 대기 시간 초과 — DB 없이 기동한다: %s", e)
+                return
+            log.warning("DB 대기 중... (%s)", e.__class__.__name__)
+            await asyncio.sleep(2)
+
+
+async def _reconcile_accounts() -> None:
+    try:
+        async with session_scope() as db:
+            await device_service.export_broker_accounts(db)
+    except Exception:  # noqa: BLE001
+        log.exception("MQTT 계정 재조정 실패 (5분 뒤 재시도)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── 기동 ────────────────────────────────────────────────────────────
     if settings.app_host == "0.0.0.0":  # noqa: S104
         log.warning("APP_HOST=0.0.0.0 — 2차 REST 는 인증이 없다. 방화벽/compose 로 막았는지 확인")
+    await _wait_for_db()
     await partitions.run()
 
     connection = MqttConnection(on_message=lambda t, raw: dispatcher(t, raw))
@@ -97,6 +128,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         id="daily-rollup", coalesce=True, max_instances=1,
         # 서버가 잠깐 멈췄다 살아나도 밀린 실행이 한꺼번에 터지지 않게 한다.
         misfire_grace_time=3600,
+    )
+    # 계정 재조정: 기동 시 내보내기가 실패했거나(DB 늦게 뜸) 볼륨이 갈렸을 때 DB(정본)와
+    # 브로커 passwd 를 다시 맞춘다. 내용이 같으면 entrypoint 감시 루프가 md5 로 걸러 HUP 안 한다.
+    scheduler.add_job(
+        _reconcile_accounts, "interval", minutes=5, id="accounts-reconcile",
+        coalesce=True, max_instances=1,
     )
     scheduler.start()
     app.state.scheduler = scheduler
