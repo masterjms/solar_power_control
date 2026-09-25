@@ -1,0 +1,300 @@
+"""Telemetry 수신 버퍼 — 1초에 한 번, 두 문장으로 쓴다.
+
+왜 필요한가:
+    메시지마다 트랜잭션을 열면 DB 왕복 지연이 처리량 상한이 된다. 1만 대가 10분 주기면
+    평균 17 msg/s 지만 브로커 재시작 뒤에는 REGISTER 직후 TM 이 한꺼번에 온다. aircast
+    실측: 건별 152 msg/s → 배치 11,928 msg/s.
+
+무엇을 하나 (flush 1회):
+    1. telemetry 이력   — 모인 행 전부 multi-row INSERT (1,000행씩 끊어서. asyncpg 는
+       문장당 바인드 32,767개 한계가 있고 컬럼이 21개다)
+    2. device 최신값    — uuid 별 마지막 1건만 multi-row upsert. last_seen_at /
+       last_telemetry_at 은 GREATEST — 버퍼가 늦게 flush 돼도 시각이 뒤로 가지 않는다
+       (result 메시지가 그 사이 더 최근 값을 썼을 수 있다). lost/reboot 증가분은
+       `lost_count = lost_count + EXCLUDED.lost_count` 로 누적한다
+    3. sq 판정         — 프로세스 내 last_sq 캐시(기동 때 DB 에서 적재)로 판정. DB 를
+       읽지 않는다. REBOOT/LOST 는 device_event 행으로 남긴다
+    4. CONFIG 재전송   — RETURNING 으로 받은 cv_server 와 payload 의 cv 가 다르면
+       ConfigSyncQueue 에 넣는다 (ADR-002 "다음 Telemetry 수신 시점", 60초 쿨다운)
+
+안전장치:
+    · flush 실패 → 그 묶음은 **버린다**. 다시 큐에 넣지 않는다. DB 가 아픈 동안 대기열이
+      무한정 자라는 것이 재기동보다 나쁘다(docs/00 §5). telemetry_dropped 로 센다.
+      last_sq 캐시는 이미 올라가 있으므로 다음 묶음은 그 묶음이 "유실"로 보이지 않는다 —
+      의도한 것이다. 버린 행은 이력에서 빠지지만 카운터가 그 사실을 남긴다.
+    · LWT 가 오면 그 uuid 의 대기분을 버린다. 안 버리면 죽었다고 기록한 뒤 낡은 TM 이
+      덮어써서 죽은 단말이 온라인으로 되살아난다.
+    · 대기 행이 TELEMETRY_FLUSH_MAX_PENDING 을 넘으면 주기를 기다리지 않는다.
+    · 종료 시 남은 것을 flush 한다.
+    · 처음 보는 uuid 는 여기서 device 행이 생긴다(사양서 §4.1 "REGISTER 를 놓쳐도").
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import datetime as dt
+import logging
+import time
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.constants import EventKind
+from app.core.metrics import metrics
+from app.db import session_scope
+from app.models.device import Device
+from app.models.event import DeviceEvent
+from app.models.telemetry import Telemetry
+from app.mqtt import sq as sq_rules
+from app.mqtt.config_sync import ConfigJob, ConfigSyncQueue
+
+log = logging.getLogger(__name__)
+
+#: 문장당 행 수. 21컬럼 × 1000 = 21,000 바인드 < 32,767.
+_CHUNK = 1000
+
+
+def _int(value: Any) -> int | None:
+    """숫자로 읽을 수 있으면 int, 아니면 None. 단말이 문자열로 보내도 죽지 않는다."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def telemetry_row(uuid: str, payload: dict[str, Any], received_at: dt.datetime) -> dict[str, Any]:
+    """TM payload → telemetry 컬럼. 단위 변환 없음, 원본은 raw 에 통째로."""
+    pw = payload.get("pw")
+    if not isinstance(pw, list):
+        pw = []
+    pw = list(pw) + [None, None, None]
+    return {
+        "uuid": uuid,
+        "received_at": received_at,
+        "ts_device": str(payload["ts"]) if payload.get("ts") is not None else None,
+        "sq": _int(payload.get("sq")),
+        "fw": str(payload["fw"]) if payload.get("fw") is not None else None,
+        "ss": _int(payload.get("ss")),
+        "cv": _int(payload.get("cv")),
+        "er": _int(payload.get("er")),
+        "on": _int(payload.get("on")),
+        "md": _int(payload.get("md")),
+        "pw1": _int(pw[0]),
+        "pw2": _int(pw[1]),
+        "pw3": _int(pw[2]),
+        "bv": _int(payload.get("bv")),
+        "bi": _int(payload.get("bi")),
+        "sc": _int(payload.get("sc")),
+        "pp": _int(payload.get("pp")),
+        "li": _int(payload.get("li")),
+        "cs": _int(payload.get("cs")),
+        "raw": payload,
+    }
+
+
+class TelemetryBuffer:
+    def __init__(
+        self,
+        *,
+        interval_sec: float | None = None,
+        max_pending: int | None = None,
+        config_sync: ConfigSyncQueue | None = None,
+    ) -> None:
+        self._interval = interval_sec if interval_sec is not None else settings.flush_interval
+        self._max_pending = max_pending or settings.telemetry_flush_max_pending
+        self._config_sync = config_sync
+        #: 이력 후보. (uuid, payload, received_at) 도착 순서대로.
+        self._rows: list[tuple[str, dict[str, Any], dt.datetime]] = []
+        #: uuid → 마지막 last_sq. 기동 시 warm() 으로 채운다.
+        self._last_sq: dict[str, int] = {}
+        self._wake = asyncio.Event()
+        self._task: asyncio.Task | None = None
+        self._stopping = False
+
+    # ── 적재 ────────────────────────────────────────────────────────────
+    def offer(self, uuid: str, *, payload: dict[str, Any], received_at: dt.datetime) -> None:
+        """TM 한 건을 대기열에 넣는다. DB 를 만지지 않는다."""
+        self._rows.append((uuid, payload, received_at))
+        if len(self._rows) >= self._max_pending:
+            self._wake.set()
+
+    def discard(self, uuid: str) -> int:
+        """대기 중인 그 단말의 TM 을 버린다. LWT 처리가 먼저 이겨야 할 때 쓴다."""
+        before = len(self._rows)
+        self._rows = [row for row in self._rows if row[0] != uuid]
+        return before - len(self._rows)
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._rows)
+
+    def last_sq_of(self, uuid: str) -> int | None:
+        return self._last_sq.get(uuid)
+
+    # ── 수명주기 ────────────────────────────────────────────────────────
+    async def warm(self, db: AsyncSession) -> int:
+        """DB 의 last_sq 로 캐시를 채운다. 재기동 직후 첫 TM 이 전부 '처음 보는 단말'로
+        판정되어 유실·재부팅을 놓치는 일을 막는다."""
+        rows = await db.execute(
+            select(Device.uuid, Device.last_sq).where(Device.last_sq.is_not(None))
+        )
+        self._last_sq = {uuid: int(last_sq) for uuid, last_sq in rows}
+        return len(self._last_sq)
+
+    async def start(self) -> None:
+        self._stopping = False
+        self._task = asyncio.create_task(self._run(), name="telemetry-buffer")
+
+    async def stop(self) -> None:
+        """주기 태스크를 접고 남은 것을 마지막으로 쓴다."""
+        self._stopping = True
+        self._wake.set()
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+        try:
+            await self.flush()
+        except Exception:  # noqa: BLE001 - 종료 경로에서 예외를 올리지 않는다
+            log.exception("종료 시 telemetry flush 실패 (마지막 1초분 유실)")
+
+    async def _run(self) -> None:
+        while not self._stopping:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._wake.wait(), timeout=self._interval)
+            self._wake.clear()
+            try:
+                await self.flush()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - 한 번 실패해도 루프는 계속 돈다
+                log.exception("telemetry flush 실패")
+
+    # ── 판정 (순수, DB 없음) ────────────────────────────────────────────
+    def _judge_batch(
+        self, batch: list[tuple[str, dict[str, Any], dt.datetime]]
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+        """묶음을 훑으며 uuid 별 최신값 행과 REBOOT/LOST 이벤트 행을 만든다.
+
+        last_sq 캐시를 여기서 갱신한다 — flush 가 실패해도 되돌리지 않는다(모듈 docstring).
+        """
+        latest: dict[str, dict[str, Any]] = {}
+        events: list[dict[str, Any]] = []
+        for uuid, payload, received_at in batch:
+            entry = latest.setdefault(uuid, {"lost": 0, "reboot": 0})
+            sq_value = _int(payload.get("sq"))
+            if sq_value is not None:
+                verdict = sq_rules.judge(self._last_sq.get(uuid), sq_value)
+                if verdict.lost:
+                    entry["lost"] += verdict.lost
+                    events.append({
+                        "uuid": uuid, "kind": EventKind.LOST.value,
+                        "payload": {"sq": sq_value, "last_sq": self._last_sq.get(uuid),
+                                    "lost": verdict.lost},
+                        "received_at": received_at,
+                    })
+                if verdict.reboot:
+                    entry["reboot"] += 1
+                    events.append({
+                        "uuid": uuid, "kind": EventKind.REBOOT.value,
+                        "payload": {"sq": sq_value, "last_sq": self._last_sq.get(uuid)},
+                        "received_at": received_at,
+                    })
+                self._last_sq[uuid] = sq_value
+            entry["payload"] = payload
+            entry["received_at"] = received_at
+            entry["sq"] = sq_value
+        return latest, events
+
+    # ── 쓰기 ────────────────────────────────────────────────────────────
+    async def flush(self) -> int:
+        """대기분을 한 트랜잭션에 쓰고, cv 불일치 단말을 CONFIG 큐에 넣는다. 반환값은 행 수."""
+        if not self._rows:
+            return 0
+        batch = self._rows
+        self._rows = []
+        started = time.perf_counter()
+
+        latest, events = self._judge_batch(batch)
+        history = [telemetry_row(uuid, payload, at) for uuid, payload, at in batch]
+        device_rows = [
+            {
+                "uuid": uuid,
+                "last_telemetry": e["payload"],
+                "last_telemetry_at": e["received_at"],
+                "last_seen_at": e["received_at"],
+                "last_sq": e["sq"],
+                "cv_device": _int(e["payload"].get("cv")),
+                "ss_device": _int(e["payload"].get("ss")),
+                "fw": str(e["payload"]["fw"]) if e["payload"].get("fw") is not None else None,
+                "lost_count": e["lost"],
+                "reboot_count": e["reboot"],
+            }
+            for uuid, e in latest.items()
+        ]
+
+        stale: list[ConfigJob] = []
+        try:
+            async with session_scope() as db:
+                for i in range(0, len(history), _CHUNK):
+                    await db.execute(
+                        pg_insert(Telemetry).values(history[i:i + _CHUNK]).on_conflict_do_nothing()
+                    )
+                for i in range(0, len(device_rows), _CHUNK):
+                    stmt = pg_insert(Device).values(device_rows[i:i + _CHUNK])
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=[Device.uuid],
+                        set_={
+                            "last_telemetry": stmt.excluded.last_telemetry,
+                            "last_telemetry_at": func.greatest(
+                                Device.last_telemetry_at, stmt.excluded.last_telemetry_at
+                            ),
+                            "last_seen_at": func.greatest(
+                                Device.last_seen_at, stmt.excluded.last_seen_at
+                            ),
+                            "last_sq": stmt.excluded.last_sq,
+                            "cv_device": stmt.excluded.cv_device,
+                            "ss_device": stmt.excluded.ss_device,
+                            # fw 는 TM 마다 오지만 None 이면 기존 값을 유지한다.
+                            "fw": func.coalesce(stmt.excluded.fw, Device.fw),
+                            "lost_count": Device.lost_count + stmt.excluded.lost_count,
+                            "reboot_count": Device.reboot_count + stmt.excluded.reboot_count,
+                            "updated_at": func.now(),
+                        },
+                    ).returning(
+                        Device.uuid, Device.cv_server, Device.ti_server, Device.lat, Device.lon
+                    )
+                    for uuid, cv_server, ti_server, lat, lon in (await db.execute(stmt)).all():
+                        reported = _int(latest[uuid]["payload"].get("cv"))
+                        if reported is not None and reported != cv_server:
+                            stale.append(
+                                ConfigJob(uuid, cv_server, ti_server, lat, lon, "telemetry")
+                            )
+                if events:
+                    await db.execute(pg_insert(DeviceEvent).values(events))
+        except Exception:  # noqa: BLE001
+            metrics.telemetry_dropped += len(history)
+            metrics.flush_failures += 1
+            log.exception("telemetry flush 실패 — %d행 폐기 (단말 %d대)", len(history), len(latest))
+            return 0
+
+        metrics.telemetry_flushed += len(history)
+        metrics.record_flush((time.perf_counter() - started) * 1000.0)
+
+        if self._config_sync is not None:
+            for job in stale:
+                self._config_sync.offer(job)
+        return len(history)
