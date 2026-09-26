@@ -25,7 +25,9 @@
 
 ## 브로커 인증 (내부 — go-auth `http` 백엔드만 호출)
 
-컨테이너 네트워크 안에서만 닿는다. 헤더 `X-Auth-Secret: <MQTT_AUTH_SHARED_SECRET>` 가 다르면 403.
+컨테이너 네트워크 안에서만 닿는다(운영 compose 는 backend 포트를 호스트에 열지 않는다 — 이것이 보호 장치다).
+`MQTT_AUTH_SHARED_SECRET` 가 비어 있지 않을 때만 헤더 `X-Auth-Secret` 를 검사한다. go-auth 의 http 백엔드는
+사용자 정의 헤더를 못 보내므로 기본은 비워 둔다(리버스 프록시를 끼울 때 쓸 수 있게만 남김).
 go-auth 설정: `params_mode json`, `response_mode status` (200 = 허용, 그 외 = 거부).
 
 ### `POST /internal/mqtt/auth` `{"username","password","clientid"}`
