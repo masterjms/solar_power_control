@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>태양광 조명 통합관제 — 대시보드 v15</title>
+<!--
+  v15: 등록은 승인+설치 정보만, 설정은 템플릿 선택/신규/삭제, 모든 단말 통신에 시간 제한과 취소
+
+  디자인 규칙 (새 화면을 만들 때도 이 규칙만 쓴다)
+    글자 크기 4종   12 보조·라벨 / 13 본문 / 15 카드 제목 / 20 페이지 제목·핵심 숫자
+    굵기 2종        400 / 600
+    간격 4종        4 / 8 / 12 / 16   (카드 안쪽 여백 16, 카드 사이 16)
+    모서리 3종      카드 12 / 안쪽 요소 8 / 알약형 999
+    그리드          왼쪽 넓은 열 : 오른쪽 좁은 열 = 2.4 : 1. 모든 행이 같은 세로선에 맞는다
+    행 높이         요약 행, 지도 행(500), 에너지 행은 각 행 안의 카드 높이가 같다
+
+  데이터 출처는 v12와 같다. 발전과 사용은 Telemetry 누적 카운터(2차 규격 추가)가 전제다.
+-->
+<script>
+(function(){var t;try{t=localStorage.getItem("slc-theme")}catch(e){}
+if(!t)t=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";
+document.documentElement.setAttribute("data-theme",t);})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root, :root[data-theme="dark"]{
+  --bg:#0d1420; --panel:#162238; --soft:#111c2e; --line:#26364f; --line2:#1f2e46;
+  --text:#eef3f9; --muted:#9fb0c7; --muted2:#8193ab;
+  --blue:#4f8ff7; --blue-soft:#182a47;
+  --ok:#2fa36b; --warn:#e2a62a; --alarm:#e35751; --off:#8a96a7; --lamp:#f2c04a; --use:#5b7fbf;
+  --thead:#121f32; --hover:#18263b; --seg-off:#33445f; --ov:rgba(5,10,18,.55);
+  --bg-alarm:#3b1d20; --bg-warn:#3a2c11; --bg-off:#252d3a; --bg-ok:#143426; --bd-off:#4a5566;
+  --shadow:0 10px 24px rgba(0,0,0,.35);
+  color-scheme:dark;
+}
+:root[data-theme="light"]{
+  --bg:#f2f4f7; --panel:#ffffff; --soft:#f6f8fb; --line:#dbe1e8; --line2:#e9edf2;
+  --text:#16233a; --muted:#5b687c; --muted2:#7a8699;
+  --blue:#2f6fe0; --blue-soft:#e7eefc;
+  --ok:#22845a; --warn:#c7820f; --alarm:#d0413a; --off:#8792a2; --lamp:#e8ae1f; --use:#4a6daa;
+  --thead:#f6f8fa; --hover:#f3f6fa; --seg-off:#d3dae4; --ov:rgba(20,30,45,.35);
+  --bg-alarm:#fdecea; --bg-warn:#fdf3e1; --bg-off:#eef0f3; --bg-ok:#e6f4ec; --bd-off:#c3cad4;
+  --shadow:0 10px 24px rgba(20,35,60,.14);
+  color-scheme:light;
+}
+:root{
+  --f1:12px; --f2:13px; --f3:15px; --f4:20px;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px;
+  --r1:8px; --r2:12px;
+  --font:"Noto Sans KR","Segoe UI","Apple SD Gothic Neo",sans-serif;
+  --mono:ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg); color:var(--text); font-family:var(--font); font-size:var(--f2); line-height:1.5; font-variant-numeric:tabular-nums}
+button,input,select{font:inherit; color:inherit}
+button{cursor:pointer} button:disabled{cursor:default; opacity:.55}
+:focus-visible{outline:2px solid var(--blue); outline-offset:2px}
+b,strong{font-weight:600}
+.muted{color:var(--muted)} .cap{font-size:var(--f1); color:var(--muted)}
+.dot{width:8px; height:8px; border-radius:50%; display:inline-block; flex:none}
+
+/* ===== 틀 ===== */
+.shell{display:grid; grid-template-columns:216px minmax(0,1fr); min-height:100vh}
+.side{background:var(--panel); border-right:1px solid var(--line); display:flex; flex-direction:column; padding:var(--s4) var(--s3); position:sticky; top:0; height:100vh}
+.logo{padding:var(--s1) var(--s3) var(--s4)} .logo b{display:block; font-size:var(--f3)} .logo span{font-size:var(--f1); color:var(--muted)}
+.nav{display:flex; flex-direction:column; gap:var(--s1)}
+.nav a{display:flex; align-items:center; gap:var(--s3); height:36px; padding:0 var(--s3); border-radius:var(--r1); color:var(--muted); text-decoration:none}
+.nav a:hover{background:var(--soft); color:var(--text)}
+.nav a.on{background:var(--blue-soft); color:var(--blue); font-weight:600}
+.nav .ico{width:16px; text-align:center}
+.nav .cnt{margin-left:auto; font-size:var(--f1); font-weight:600; line-height:18px; padding:0 7px; border-radius:999px; background:var(--alarm); color:#fff}
+.nav .cnt.b{background:var(--blue)}
+.side .foot{margin-top:auto; border-top:1px solid var(--line2); padding:var(--s3) var(--s3) 0; font-size:var(--f1); color:var(--muted); display:grid; gap:var(--s1)}
+.side .foot div{display:flex; align-items:center; gap:var(--s2)}
+
+.top{position:sticky; top:0; z-index:20; height:64px; background:var(--panel); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:var(--s2); padding:0 var(--s4)}
+.top h1{font-size:var(--f4); font-weight:600; margin:0; line-height:1.3} .top .sub{font-size:var(--f1); color:var(--muted)} .top .sp{flex:1}
+.pill{display:flex; align-items:center; gap:var(--s2); height:32px; padding:0 var(--s3); border:1px solid var(--line); border-radius:999px; font-size:var(--f1); color:var(--muted)}
+.btn{height:32px; padding:0 var(--s3); border:1px solid var(--line); border-radius:var(--r1); background:var(--panel); font-size:var(--f1)}
+.btn:hover:not(:disabled){background:var(--soft)}
+.btn.pri{background:var(--blue); border-color:var(--blue); color:#fff}
+.btn.pri:hover:not(:disabled){background:var(--blue); filter:brightness(1.08)}
+.btn.icon{width:32px; padding:0; font-size:var(--f3)}
+select,input[type=search]{height:32px; border:1px solid var(--line); border-radius:var(--r1); background:var(--soft); padding:0 var(--s2); font-size:var(--f1)}
+
+/* ===== 그리드: 2열 고정 ===== */
+.content{padding:var(--s4); display:grid; gap:var(--s4); grid-template-columns:minmax(0,2.4fr) minmax(300px,1fr); align-items:stretch}
+.pair{display:grid; grid-template-columns:minmax(0,1.25fr) minmax(0,1fr); gap:var(--s4)}
+.full{grid-column:1/-1}
+.card{background:var(--panel); border:1px solid var(--line); border-radius:var(--r2); min-width:0; display:flex; flex-direction:column}
+.ch{display:flex; align-items:center; justify-content:space-between; gap:var(--s2); min-height:56px; padding:var(--s4) var(--s4) var(--s3)}
+.ch h2{font-size:var(--f3); font-weight:600; margin:0; line-height:1.3}
+.ch .meta{font-size:var(--f1); color:var(--muted); display:flex; align-items:center; gap:var(--s2)}
+.cb{padding:0 var(--s4) var(--s4); flex:1; display:flex; flex-direction:column; gap:var(--s3); min-height:0}
+.h500{height:500px}
+
+/* 요약 타일 */
+.sbar{display:flex; height:10px; border-radius:999px; overflow:hidden; background:var(--soft)}
+.sbar i{display:block; min-width:3px}
+.keys{display:grid; grid-template-columns:repeat(4,1fr); gap:var(--s2); margin-top:auto}
+.keys.k3{grid-template-columns:repeat(3,1fr)}
+.keys.k2{grid-template-columns:repeat(2,1fr)}
+.key{background:var(--soft); border:1px solid var(--line2); border-radius:var(--r1); padding:var(--s3); text-align:left; display:flex; flex-direction:column; gap:var(--s1); min-width:0}
+button.key:hover{border-color:var(--line)}
+.key .l{display:flex; align-items:center; gap:6px; font-size:var(--f1); color:var(--muted); white-space:nowrap}
+.key .v{font-size:var(--f4); font-weight:600; line-height:1.2; white-space:nowrap}
+.key .v small{font-size:var(--f1); font-weight:400; color:var(--muted); margin-left:var(--s1)}
+.key .m{font-size:var(--f1); color:var(--muted2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.bulb{width:10px; height:10px; border-radius:50%; border:2px solid var(--off); display:inline-block; flex:none}
+.bulb.on{background:var(--lamp); border-color:var(--lamp); box-shadow:0 0 6px var(--lamp)}
+.hist{display:grid; gap:var(--s2); margin-top:auto}
+.hist button{display:grid; grid-template-columns:56px 1fr 48px; gap:var(--s2); align-items:center; height:22px; border:0; background:none; padding:0; font-size:var(--f1); text-align:left; color:var(--muted)}
+.hist .tr{height:8px; background:var(--soft); border-radius:999px; overflow:hidden}
+.hist .tr i{display:block; height:100%; border-radius:999px}
+.hist b{text-align:right; color:var(--text)}
+
+/* 지도 */
+.map{position:relative; flex:1; min-height:0; border:1px solid var(--line); border-radius:var(--r1); overflow:hidden; background:#f2efe9}
+#kmap{position:absolute; inset:0}
+.mchips{position:absolute; left:var(--s2); top:var(--s2); display:flex; gap:var(--s1); flex-wrap:wrap; z-index:5}
+.mchips button{display:flex; align-items:center; gap:6px; height:28px; padding:0 var(--s3); border-radius:999px; border:1px solid #d5dbe3; background:#fff; color:#16233a; font-size:var(--f1); box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.mchips button[aria-pressed="false"]{opacity:.45}
+.mnote{position:absolute; left:var(--s2); bottom:var(--s2); z-index:5; font-size:var(--f1); color:#16233a; background:rgba(255,255,255,.92); border:1px solid #d5dbe3; border-radius:6px; padding:2px var(--s2)}
+.kov-pin{position:relative; transform:translate(-50%,-100%); cursor:pointer; font-family:var(--font)}
+.kov-pin i{display:block; width:18px; height:18px; border-radius:50% 50% 50% 0; transform:rotate(-45deg); background:var(--c); border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.35)}
+.kov-pin.alarm i{width:22px; height:22px}
+.kov-pin span{display:none; position:absolute; bottom:calc(100% + 6px); left:50%; transform:translateX(-50%); white-space:nowrap; background:#16233a; color:#fff; font-size:12px; padding:3px 8px; border-radius:6px}
+.kov-pin:hover span{display:block}
+.kprev{position:absolute; inset:0}
+.kprev svg{position:absolute; inset:0; width:100%; height:100%}
+.kdot{position:absolute; width:8px; height:8px; border-radius:50%; background:#22845a; border:1.5px solid #fff; transform:translate(-50%,-50%); cursor:pointer}
+.kclu{position:absolute; transform:translate(-50%,-50%); display:flex; align-items:center; justify-content:center; cursor:pointer; font-family:var(--font)}
+.kctl{position:absolute; right:var(--s2); top:var(--s2); z-index:5; display:flex; flex-direction:column; gap:6px; align-items:flex-end}
+.kctl .grp{background:#fff; border:1px solid #c9cfd8; border-radius:4px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.15); display:flex}
+.kctl .grp.v{flex-direction:column}
+.kctl button{border:0; background:#fff; color:#333; font-size:12px; height:28px; padding:0 var(--s2); min-width:30px}
+.kctl .grp.v button{font-size:15px; line-height:1}
+.kctl .grp:not(.v) button + button{border-left:1px solid #e3e6ea}
+.kctl .grp.v button + button{border-top:1px solid #e3e6ea}
+.kctl button[aria-pressed="true"]{background:#3a7bd5; color:#fff}
+
+/* 조치 필요: 가볍게 */
+.tabs{display:flex; gap:var(--s1)}
+.tabs button{height:28px; border:1px solid var(--line); background:none; border-radius:999px; padding:0 var(--s3); font-size:var(--f1); color:var(--muted)}
+.tabs button[aria-pressed="true"]{background:var(--soft); color:var(--text); border-color:var(--muted2); font-weight:600}
+.tabs b{margin-left:var(--s1)}
+.queue{list-style:none; margin:0 calc(var(--s4) * -1); padding:0; overflow:auto; flex:1; min-height:0}
+.queue li{display:grid; grid-template-columns:8px minmax(0,1fr) auto; gap:var(--s3); align-items:start; padding:var(--s3) var(--s4); border-top:1px solid var(--line2); cursor:pointer}
+.queue li:hover{background:var(--hover)}
+.queue .dot{margin-top:6px}
+.queue .t{font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.queue .d{font-size:var(--f1); color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.queue .w{font-size:var(--f1); color:var(--muted2); white-space:nowrap}
+
+/* 발전과 사용 */
+.legend{display:flex; gap:var(--s3); font-size:var(--f1); color:var(--muted)}
+.legend i{display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:6px}
+svg.chart{width:100%; flex:1; min-height:180px; display:block}
+svg.chart text{fill:var(--muted2); font-size:12px; font-family:var(--font)}
+
+/* 목록 */
+.tool{display:flex; gap:var(--s2); flex-wrap:wrap; align-items:center}
+.tool .sp{flex:1}
+.chip{display:none; align-items:center; gap:var(--s1); height:28px; font-size:var(--f1); background:var(--soft); border:1px solid var(--line); border-radius:999px; padding:0 var(--s1) 0 var(--s3)}
+.chip button{border:0; background:none; font-size:var(--f3); line-height:1; padding:0 6px}
+.tw{overflow-x:auto; margin:0 calc(var(--s4) * -1)}
+table.list{width:100%; border-collapse:collapse; min-width:820px}
+.list th{background:var(--thead); text-align:left; font-size:var(--f1); font-weight:400; color:var(--muted); height:36px; padding:0 var(--s4); border-top:1px solid var(--line2); border-bottom:1px solid var(--line2); white-space:nowrap}
+.list td{height:44px; padding:0 var(--s4); border-bottom:1px solid var(--line2); white-space:nowrap}
+.list tbody tr{cursor:pointer}
+.list tbody tr:hover{background:var(--hover)}
+.badge{display:inline-flex; align-items:center; height:22px; font-size:var(--f1); font-weight:600; padding:0 var(--s2); border-radius:999px; border:1px solid}
+.b-alarm{color:var(--alarm); border-color:var(--alarm); background:var(--bg-alarm)}
+.b-warn{color:var(--warn); border-color:var(--warn); background:var(--bg-warn)}
+.b-off{color:var(--off); border-color:var(--bd-off); background:var(--bg-off)}
+.b-ok{color:var(--ok); border-color:var(--ok); background:var(--bg-ok)}
+.sig{display:inline-flex; gap:2px; align-items:flex-end; height:12px; margin-right:6px; vertical-align:-1px}
+.sig i{width:3px; background:var(--line); border-radius:1px} .sig i.on{background:var(--text)}
+.bt{display:inline-block; width:44px; height:6px; border-radius:999px; background:var(--line); margin-right:var(--s2); vertical-align:2px; overflow:hidden}
+.bt i{display:block; height:100%}
+.md{font-size:var(--f1); color:var(--muted2); margin-left:6px}
+.pager{display:flex; align-items:center; gap:6px; justify-content:flex-end; font-size:var(--f1); color:var(--muted)}
+.pager button{min-width:28px; height:28px; border:1px solid var(--line); background:none; border-radius:6px; font-size:var(--f1)}
+.pager button.on{background:var(--blue); border-color:var(--blue); color:#fff}
+
+/* ===== 오른쪽 패널 ===== */
+.ov{position:fixed; inset:0; background:var(--ov); display:none; z-index:90}
+.drawer{position:fixed; top:0; right:-620px; width:460px; max-width:100vw; height:100vh; background:var(--panel); border-left:1px solid var(--line); z-index:100; transition:right .2s ease; display:flex; flex-direction:column}
+.drawer.open{right:0}
+.dh{min-height:64px; padding:var(--s3) var(--s4); border-bottom:1px solid var(--line); display:flex; gap:var(--s2); align-items:center}
+.dh h3{margin:0; font-size:var(--f3); font-weight:600}
+.dh .u{font-size:var(--f1); color:var(--muted2); word-break:break-all}
+.dh .x{margin-left:auto; border:0; background:none; font-size:var(--f3); color:var(--muted); width:32px; height:32px}
+.db{overflow:auto; padding:var(--s4); display:grid; gap:var(--s4); align-content:start}
+.sec h4{font-size:var(--f2); font-weight:600; margin:0 0 var(--s2); display:flex; justify-content:space-between; align-items:baseline; gap:var(--s2)}
+.sec h4 span{font-weight:400; font-size:var(--f1); color:var(--muted)}
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:var(--s2)}
+.met{background:var(--soft); border:1px solid var(--line2); border-radius:var(--r1); padding:var(--s2) var(--s3)}
+.met .l{font-size:var(--f1); color:var(--muted)} .met .v{font-size:var(--f2); font-weight:600; word-break:break-all}
+.met .h{font-size:var(--f1); color:var(--muted2)}
+.met.a .v{color:var(--alarm)} .met.o .v{color:var(--off)}
+svg.spark{width:100%; height:72px; display:block; background:var(--soft); border-radius:var(--r1)}
+.ctl{display:grid; grid-template-columns:repeat(4,1fr); gap:var(--s2)}
+.ctl button{height:36px; border:1px solid var(--line); background:var(--soft); border-radius:var(--r1); font-size:var(--f2)}
+.ctl button[aria-pressed="true"]{border-color:var(--blue); background:var(--blue-soft); color:var(--blue); font-weight:600}
+.ctlrow{display:grid; grid-template-columns:56px 1fr 40px; gap:var(--s3); align-items:center; margin-top:var(--s3); font-size:var(--f1)}
+.dur{display:flex; gap:var(--s2); margin-top:var(--s3); flex-wrap:wrap; align-items:center; font-size:var(--f1)}
+.dur button{height:28px; border:1px solid var(--line); background:none; border-radius:999px; padding:0 var(--s3); font-size:var(--f1)}
+.dur button[aria-pressed="true"]{background:var(--text); color:var(--panel); border-color:var(--text)}
+.send{width:100%; margin-top:var(--s3); height:40px; font-size:var(--f2)}
+.warnline{margin-top:var(--s3); font-size:var(--f1); color:var(--warn)}
+.hist-cmd{list-style:none; margin:var(--s2) 0 0; padding:0; font-size:var(--f1)}
+.hist-cmd li{display:grid; grid-template-columns:52px 1fr auto; gap:var(--s2); padding:6px 0; border-bottom:1px solid var(--line2)}
+.st-wait{color:var(--warn)} .st-ok{color:var(--ok)} .st-fail{color:var(--alarm)}
+details.info summary{cursor:pointer; font-size:var(--f2); font-weight:600}
+details.info .grid2{margin-top:var(--s2)}
+.payload{display:block; margin-top:var(--s3); padding:var(--s2) var(--s3); background:var(--soft); border:1px solid var(--line2); border-radius:var(--r1); font-family:var(--mono); font-size:var(--f1); word-break:break-all}
+.topic{margin-top:var(--s3); font-size:var(--f1); color:var(--muted)}
+.topic code{font-family:var(--mono); font-size:var(--f1); color:var(--text)}
+.tree{border:1px solid var(--line2); border-radius:var(--r1); background:var(--soft); max-height:252px; overflow:auto; padding:var(--s1) 0}
+.tn{display:grid; grid-template-columns:20px minmax(0,1fr) auto; align-items:center; gap:var(--s1); height:32px; padding:0 var(--s3) 0 6px; cursor:pointer; border-left:3px solid transparent}
+.tn:hover{background:var(--hover)}
+.tn.on{background:var(--blue-soft); border-left-color:var(--blue); font-weight:600}
+.tn .tc{border:0; background:none; color:var(--muted); font-size:var(--f1); width:20px; height:20px; padding:0}
+.tnm small{font-weight:400; color:var(--muted2); font-size:var(--f1); margin-left:6px; font-family:var(--mono)}
+.tct{font-size:var(--f1); color:var(--muted); white-space:nowrap}
+.tct em{font-style:normal; color:var(--off); margin-left:6px}
+.tpath{margin:var(--s2) 0 var(--s3); font-size:var(--f1); color:var(--muted)} .tpath b{color:var(--text)}
+.confirm{border:1px solid var(--warn); background:var(--bg-warn); border-radius:var(--r1); padding:var(--s3); font-size:var(--f2)}
+.confirm .row{display:flex; gap:var(--s2); margin-top:var(--s3); justify-content:flex-end}
+.confirm input{height:32px; border:1px solid var(--line); border-radius:6px; background:var(--panel); padding:0 var(--s2); width:100%; margin-top:var(--s2)}
+.pbar{display:flex; height:10px; border-radius:999px; overflow:hidden; background:var(--soft); margin:var(--s2) 0}
+.pbar i{display:block}
+.plg{display:flex; gap:var(--s3); flex-wrap:wrap; font-size:var(--f1); color:var(--muted)} .plg b{color:var(--text)}
+.toast{position:fixed; left:50%; bottom:var(--s4); transform:translateX(-50%); background:var(--text); color:var(--panel); padding:var(--s2) var(--s3); border-radius:var(--r1); font-size:var(--f1); display:none; z-index:200}
+
+/* ===== v14 추가 ===== */
+.view[hidden]{display:none}
+.drawer.wide{width:600px; right:-620px}
+.drawer.wide.open{right:0}
+.chrow{display:flex; gap:var(--s2); margin-top:var(--s3); align-items:center; flex-wrap:wrap}
+.chk2{display:inline-flex; align-items:center; gap:6px; height:32px; padding:0 var(--s3); border:1px solid var(--line); border-radius:999px; font-size:var(--f1); cursor:pointer; background:var(--soft); user-select:none}
+.chk2:has(input:checked){border-color:var(--blue); background:var(--blue-soft); color:var(--blue)}
+.chk2 input{accent-color:var(--blue); margin:0}
+.chk2 b{font-weight:600}
+.col{display:grid; gap:var(--s4); align-content:start; min-width:0}
+.fld{display:grid; grid-template-columns:132px minmax(0,1fr) 48px; gap:var(--s3); align-items:center; min-height:40px}
+.fld > label{font-size:var(--f2); display:flex; align-items:center; gap:6px; min-width:0}
+.fld > label small{font-size:var(--f1); color:var(--muted)}
+.fld .in{display:flex; gap:var(--s2); align-items:center; min-width:0}
+.fld .unit{font-size:var(--f1); color:var(--muted)}
+.fld input[type=range]{flex:1; min-width:0; accent-color:var(--blue)}
+.fld .help{grid-column:2 / -1; margin-top:-6px; font-size:var(--f1); color:var(--muted2)}
+.num,.inp{height:32px; border:1px solid var(--line); border-radius:var(--r1); background:var(--soft); padding:0 var(--s2); font-size:var(--f2)}
+.num{width:80px; text-align:right}
+.inp{width:100%}
+input[type=time].num{width:104px; text-align:left}
+.mk{width:8px; height:8px; border-radius:50%; display:inline-block; flex:none}
+.mk.edit{background:var(--warn)} .mk.ram{background:var(--blue)}
+.fld.bad .num{border-color:var(--alarm)}
+.off-row{opacity:.55}
+.err{font-size:var(--f1); color:var(--alarm)} .okl{font-size:var(--f1); color:var(--ok)}
+.state{height:28px; padding:0 var(--s3); border-radius:999px; font-size:var(--f1); display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line); color:var(--muted)}
+.state.edit{border-color:var(--warn); color:var(--warn); background:var(--bg-warn)}
+.state.ram{border-color:var(--blue); color:var(--blue); background:var(--blue-soft)}
+.state.ok{border-color:var(--ok); color:var(--ok); background:var(--bg-ok)}
+.bar2{display:flex; gap:var(--s2); flex-wrap:wrap; align-items:center}
+.bar2 .sp{flex:1}
+.vsep{width:1px; height:20px; background:var(--line)}
+.out{display:flex; gap:var(--s2); flex-wrap:wrap}
+.out span{height:28px; padding:0 var(--s3); display:inline-flex; align-items:center; gap:6px; border-radius:999px; background:var(--soft); border:1px solid var(--line2); font-size:var(--f1)}
+.out b{font-weight:600}
+.tl{display:flex; height:28px; border-radius:6px; overflow:hidden; border:1px solid var(--line2)}
+.tl i{display:flex; align-items:center; justify-content:center; font-size:var(--f1); font-style:normal; color:#1b1b1b; white-space:nowrap; overflow:hidden; min-width:0}
+.tlx{display:flex; justify-content:space-between; font-size:var(--f1); color:var(--muted2)}
+table.mini{width:100%; border-collapse:collapse; font-size:var(--f1)}
+.mini th{font-weight:400; color:var(--muted); text-align:left; height:28px; border-bottom:1px solid var(--line2); padding:0 var(--s2)}
+.mini td{height:28px; border-bottom:1px solid var(--line2); padding:0 var(--s2); white-space:nowrap}
+.mini td.n,.mini th.n{text-align:right}
+.log{list-style:none; margin:0; padding:0; font-family:var(--mono); font-size:var(--f1); overflow:auto; flex:1; min-height:120px}
+.log li{padding:6px 0; border-bottom:1px solid var(--line2); display:grid; grid-template-columns:56px 16px minmax(0,1fr); gap:var(--s2)}
+.log .t{color:var(--muted2)} .log .dn{color:var(--blue)} .log .up{color:var(--ok)} .log .er{color:var(--alarm)}
+.steps{list-style:none; margin:0; padding:0; display:grid; gap:var(--s2)}
+.steps li{display:grid; grid-template-columns:24px minmax(0,1fr) auto; gap:var(--s2); align-items:start}
+.steps .no{width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:var(--f1); background:var(--soft); border:1px solid var(--line); color:var(--muted)}
+.steps li.run .no{border-color:var(--warn); color:var(--warn)}
+.steps li.done .no{background:var(--ok); border-color:var(--ok); color:#fff}
+.steps li.fail .no{background:var(--alarm); border-color:var(--alarm); color:#fff}
+.steps .s{font-size:var(--f1); color:var(--muted)}
+.steps code{font-family:var(--mono); font-size:var(--f1)}
+.steps .r{font-size:var(--f1); white-space:nowrap}
+.form2{display:grid; grid-template-columns:1fr 1fr; gap:var(--s3)}
+.form2 label{display:grid; gap:var(--s1); font-size:var(--f1); color:var(--muted)}
+.form2 .w2{grid-column:1/-1}
+.chips{display:flex; gap:var(--s1); flex-wrap:wrap}
+.chips span{font-size:var(--f1); padding:2px var(--s2); border-radius:999px; background:var(--soft); border:1px solid var(--line2)}
+.tn.dis{cursor:default}
+.tn.dis .tnm{color:var(--muted)}
+
+/* v15 */
+.row3{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.3fr) minmax(0,1fr); gap:var(--s4)}
+.fld{grid-template-columns:96px minmax(0,1fr) 44px; min-height:36px}
+.fld .num{width:64px}
+input.tm{width:104px !important; text-align:left}
+.comm{display:flex; align-items:center; gap:var(--s3); height:40px; padding:0 var(--s3); border:1px solid var(--warn); border-radius:var(--r1); background:var(--bg-warn); font-size:var(--f1)}
+.comm b{font-weight:600}
+.comm .btn{height:28px}
+.spin{width:14px; height:14px; border:2px solid var(--warn); border-top-color:transparent; border-radius:50%; animation:sp 1s linear infinite; flex:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.pbar2{flex:1; height:4px; background:var(--line); border-radius:999px; overflow:hidden}
+.pbar2 i{display:block; height:100%; width:0; background:var(--warn)}
+.bgrid{display:grid; grid-template-columns:72px 1fr 1fr; gap:var(--s2) var(--s3); align-items:center}
+.vin{display:flex; align-items:center; gap:6px; min-width:0} .vin .num{width:100%} .vin.bad .num{border-color:var(--alarm)}
+.form5{display:grid; grid-template-columns:2fr 1fr 1fr 1fr 1fr; gap:var(--s3)}
+.form5 label{display:grid; gap:var(--s1); font-size:var(--f1); color:var(--muted); min-width:0}
+.form5 label span{display:flex; align-items:center; gap:6px; white-space:nowrap}
+#tplNew{gap:var(--s2)} #tplNew[hidden],#tplList[hidden]{display:none}
+.tplrow{display:grid; grid-template-columns:minmax(0,1fr) 96px 64px; gap:var(--s3); align-items:center; height:40px; border-bottom:1px solid var(--line2); font-size:var(--f2)}
+.tplrow .u{font-size:var(--f1); color:var(--muted)}
+#tplList{border:1px solid var(--line2); border-radius:var(--r1); padding:0 var(--s3)}
+.form5.sub2{grid-template-columns:1fr 1fr 2fr}
+@media (prefers-reduced-motion: reduce){ .spin{animation:none} }
+@media (max-width:1280px){ .row3{grid-template-columns:1fr} .form5{grid-template-columns:1fr 1fr} }
+@media (max-width:1280px){ .content{grid-template-columns:1fr} .pair{grid-template-columns:1fr 1fr} .h500{height:460px} }
+@media (max-width:860px){ .shell{grid-template-columns:1fr} .side{display:none} .pair{grid-template-columns:1fr} .keys{grid-template-columns:repeat(2,1fr)} .top .pill{display:none} }
+@media (prefers-reduced-motion: reduce){ .drawer{transition:none} }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="logo"><b>Solar Light Control</b><span>태양광 조명 통합관제</span></div>
+    <nav class="nav">
+      <a class="on" href="#" data-view="dash"><span class="ico">▦</span>대시보드</a>
+      <a href="#" data-view="cfg"><span class="ico">≣</span>단말 설정</a>
+      <a href="#"><span class="ico">!</span>알람 / 이벤트<span class="cnt">27</span></a>
+      <a href="#" data-view="pending"><span class="ico">＋</span>승인 대기<span class="cnt b">37</span></a>
+      <a href="#"><span class="ico">⚙</span>시스템 설정</a>
+    </nav>
+    <div class="foot">
+      <div><span class="dot" style="background:var(--ok)"></span>MQTT Broker 정상</div>
+      <div><span class="dot" style="background:var(--ok)"></span>수집 서버 정상</div>
+    </div>
+  </aside>
+
+  <main>
+    <header class="top">
+      <div><h1 id="pageTitle">통합 관제 대시보드</h1><div class="sub" id="upd"></div></div>
+      <span class="sp"></span>
+      <span class="pill"><span class="dot" style="background:var(--ok)"></span>자동 갱신 30초</span>
+      <button class="btn icon" id="themeBtn"></button>
+    </header>
+
+    <div class="content view" id="vDash">
+      <!-- 1행 -->
+      <div class="pair">
+        <section class="card">
+          <div class="ch"><h2>단말 상태</h2><div class="meta"><span>30,218대 운영</span><button class="btn" data-view="pending" style="height:24px;padding:0 8px;color:var(--blue)">승인 대기 37</button></div></div>
+          <div class="cb">
+            <div class="sbar" aria-label="상태 비율">
+              <i style="flex:27;background:var(--alarm)"></i><i style="flex:816;background:var(--off)"></i>
+              <i style="flex:164;background:var(--warn)"></i><i style="flex:29211;background:var(--ok)"></i>
+            </div>
+            <div class="keys">
+              <button class="key" data-f="alarm"><span class="l"><span class="dot" style="background:var(--alarm)"></span>알람</span><span class="v" style="color:var(--alarm)">27</span><span class="m">즉시 점검</span></button>
+              <button class="key" data-f="off"><span class="l"><span class="dot" style="background:var(--off)"></span>통신 두절</span><span class="v" style="color:var(--off)">816</span><span class="m">2.7%</span></button>
+              <button class="key" data-f="warn"><span class="l"><span class="dot" style="background:var(--warn)"></span>경고</span><span class="v" style="color:var(--warn)">164</span><span class="m">잔량 부족 등</span></button>
+              <button class="key" data-f="ok"><span class="l"><span class="dot" style="background:var(--ok)"></span>정상</span><span class="v" style="color:var(--ok)">29,211</span><span class="m">96.7%</span></button>
+            </div>
+          </div>
+        </section>
+        <section class="card">
+          <div class="ch"><h2>조명 상태</h2><div class="meta">온라인 29,402대</div></div>
+          <div class="cb">
+            <div class="sbar"><i style="flex:18624;background:var(--lamp)"></i><i style="flex:10759;background:var(--seg-off)"></i><i style="flex:19;background:var(--alarm)"></i></div>
+            <div class="keys k3">
+              <button class="key" data-f="lampon"><span class="l"><span class="bulb on"></span>점등</span><span class="v">18,624</span><span class="m">원격 제어 42</span></button>
+              <button class="key" data-f="lampoff"><span class="l"><span class="bulb"></span>소등</span><span class="v">10,759</span><span class="m">스케줄 포함</span></button>
+              <button class="key" data-f="cut"><span class="l"><span class="dot" style="background:var(--alarm)"></span>점등 차단</span><span class="v" style="color:var(--alarm)">19</span><span class="m">저전압 17</span></button>
+            </div>
+          </div>
+        </section>
+      </div>
+      <section class="card">
+        <div class="ch"><h2>배터리 잔량</h2><div class="meta">평균 <b style="color:var(--text)">69%</b></div></div>
+        <div class="cb"><div class="hist" id="hist"></div></div>
+      </section>
+
+      <!-- 2행 -->
+      <section class="card h500">
+        <div class="ch"><h2>지도</h2><div class="meta"><span>알람은 항상, 통신 두절·경고는 확대 시 표시</span><button class="btn" id="grpBtn2">그룹 제어</button></div></div>
+        <div class="cb">
+          <div class="map">
+            <div id="kmap"></div>
+            <div class="kprev" id="kprev"></div>
+            <div class="mchips" id="mchips"></div>
+            <span class="mnote" id="mnote">지도 API 키 입력 전 미리보기</span>
+          </div>
+        </div>
+      </section>
+      <section class="card h500">
+        <div class="ch"><h2>조치 필요</h2><div class="meta"><button class="btn">알람 화면</button></div></div>
+        <div class="cb">
+          <div class="tabs" id="tabs"></div>
+          <ul class="queue" id="queue"></ul>
+        </div>
+      </section>
+
+      <!-- 3행 -->
+      <section class="card">
+        <div class="ch"><h2>발전과 사용</h2><div class="meta legend"><span><i style="background:var(--lamp)"></i>발전량</span><span><i style="background:var(--use)"></i>사용량</span><span>최근 7일, MWh</span></div></div>
+        <div class="cb"><svg class="chart" id="chart" role="img" aria-label="최근 7일 발전량과 사용량"></svg></div>
+      </section>
+      <section class="card">
+        <div class="ch"><h2>에너지 합계</h2><div class="meta">전체 단말</div></div>
+        <div class="cb">
+          <div class="keys k2" style="margin-top:0">
+            <div class="key"><span class="l"><i class="dot" style="background:var(--lamp);border-radius:2px"></i>금일 발전</span><span class="v">16.6<small>MWh</small></span></div>
+            <div class="key"><span class="l"><i class="dot" style="background:var(--use);border-radius:2px"></i>금일 사용</span><span class="v">12.1<small>MWh</small></span></div>
+            <div class="key"><span class="l">누적 발전</span><span class="v">4,812<small>MWh</small></span></div>
+            <div class="key"><span class="l">누적 감축</span><span class="v">2,300<small>tCO₂eq</small></span></div>
+          </div>
+          <div class="cap" style="margin-top:auto">감축 = 누적 발전 × 배출계수 0.4781 (서버 설정)</div>
+        </div>
+      </section>
+
+      <!-- 목록 -->
+      <section class="card full">
+        <div class="ch"><h2>단말 목록</h2><div class="meta"><span id="cnt"></span></div></div>
+        <div class="cb">
+          <div class="tool">
+            <select id="fSel" aria-label="상태"><option value="all">전체 상태</option><option value="alarm">알람</option><option value="off">통신 두절</option><option value="warn">경고</option><option value="ok">정상</option><option value="cut">점등 차단</option></select>
+            <select id="rSel" aria-label="법정동"></select>
+            <input type="search" id="q" placeholder="시설명 / UUID 검색" aria-label="검색">
+            <span class="chip" id="chip"><span id="chipT"></span><button id="chipX" aria-label="필터 해제">×</button></span>
+            <span class="sp"></span>
+            <button class="btn pri" id="grpBtn">그룹 제어</button>
+            <button class="btn">CSV 내보내기</button>
+          </div>
+          <div class="tw"><table class="list">
+            <thead><tr><th>상태</th><th>시설명</th><th>통신</th><th>조명</th><th>배터리</th><th>법정동</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+          <div class="pager"><span id="range"></span><button class="on">1</button><button>2</button><button>3</button><span>…</span><button>2,519</button></div>
+        </div>
+      </section>
+    </div>
+    <!-- ===== 승인 대기 ===== -->
+    <div class="content view" id="vPending" hidden>
+      <section class="card">
+        <div class="ch"><h2>승인 대기 단말</h2><div class="meta">37대</div></div>
+        <div class="cb">
+          <div class="cap">서버에 처음 접속했지만 아직 등록하지 않은 단말이다. 등록 전에는 Telemetry를 보내지 않고, 조명은 펌웨어 기본 스케줄로 점등한다. 행을 눌러 설치할 법정동과 초기 설정을 지정한다.</div>
+          <div class="tw"><table class="list">
+            <thead><tr><th>UUID</th><th>모델</th><th>펌웨어</th><th>IMEI</th><th>최초 접속</th><th>신호</th><th></th></tr></thead>
+            <tbody id="pRows"></tbody>
+          </table></div>
+          <div class="pager"><span>1–6 / 37</span><button class="on">1</button><button>2</button><button>…</button><button>7</button></div>
+        </div>
+      </section>
+      <section class="card">
+        <div class="ch"><h2>승인하면 보내는 것</h2><div class="meta">승인 + 설치 정보</div></div>
+        <div class="cb">
+          <ol class="steps">
+            <li><span class="no">1</span><div><div>승인</div><div class="s"><code>REGISTER_ACK</code> state = ACTIVE, 시설명</div></div></li>
+            <li><span class="no">2</span><div><div>설치 정보</div><div class="s"><code>CONFIG_SET</code> 법정동코드(grp), 좌표, 주기 → <code>CONFIG_ACK</code> 대기 (30초, 취소 가능)</div></div></li>
+          </ol>
+          <div class="cap">응답이 없거나 취소하면 <code style="font-family:var(--mono)">REGISTER_ACK state=PENDING</code>을 다시 보내 되돌린다.</div>
+          <div class="cap">설정값, 1년 스케줄, Flash 저장은 등록 뒤 단말 설정 화면에서 한다.</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===== 단말 설정 ===== -->
+    <div class="content view" id="vCfg" hidden>
+      <section class="card full">
+        <div class="ch"><div class="bar2" style="gap:12px"><h2>단말 설정</h2><select id="cSel" aria-label="단말 선택" style="min-width:220px"></select><span class="state" id="cState"></span></div>
+          <div class="meta" id="cMeta"></div></div>
+        <div class="cb">
+          <div class="bar2">
+            <button class="btn" id="cRead">단말에서 읽기</button>
+            <button class="btn pri" id="cWrite">단말에 쓰기</button>
+            <button class="btn" id="cSave">Flash 저장</button>
+            <button class="btn" id="cReload">되돌리기</button>
+            <span class="vsep"></span>
+            <span class="cap">템플릿</span>
+            <select id="cTpl" aria-label="템플릿" style="min-width:200px"></select>
+            <button class="btn" id="cTplMgr" aria-expanded="false">템플릿 관리</button>
+            <span class="bar2" id="tplNew" hidden><input class="inp" id="tplName" placeholder="새 템플릿 이름" style="width:180px"><button class="btn pri" id="tplSave">템플릿 저장</button><button class="btn" id="tplCancel">취소</button></span>
+            <span class="sp"></span>
+            <span class="cap"><span class="mk edit"></span> 편집, 안 보냄 &nbsp; <span class="mk ram"></span> 단말 적용, 저장 전</span>
+          </div>
+          <div id="tplMsg" class="cap"></div>
+          <div id="tplList" hidden></div>
+          <div id="cComm"></div>
+          <div class="err" id="cErr"></div>
+        </div>
+      </section>
+      <div class="row3 full">
+        <section class="card"><div class="ch"><h2>밝기</h2><div class="meta">채널 기준</div></div><div class="cb" id="cBright"></div></section>
+        <section class="card"><div class="ch"><h2>다단계 밝기</h2><div class="meta">밤사이 변경 시각</div></div><div class="cb" id="cStage"></div></section>
+        <section class="card"><div class="ch"><h2>배터리 보호</h2><div class="meta">V / 분</div></div><div class="cb" id="cBatt"></div></section>
+      </div>
+      <section class="card"><div class="ch"><h2>1년 스케줄</h2><div class="meta" id="sSrc"></div></div><div class="cb" id="cSch"></div></section>
+      <section class="card"><div class="ch"><h2>통신 기록</h2><div class="meta">config / result</div></div><div class="cb"><ul class="log" id="cLog"></ul></div></section>
+    </div>
+  </main>
+</div>
+
+<div class="ov" id="ov"></div>
+
+<aside class="drawer" id="drawer" aria-label="단말 상세">
+  <div class="dh"><div><h3 id="dName"></h3><div class="u" id="dUuid"></div></div><span id="dBadge"></span><button class="btn" id="dCfgBtn">단말 설정</button><button class="x" data-close aria-label="닫기">✕</button></div>
+  <div class="db">
+    <div class="sec"><h4>현재 상태 <span id="dLast"></span></h4><div class="grid2" id="dMet"></div></div>
+    <div class="sec"><h4>배터리 24시간 <span>잔량 %, 점선 20%</span></h4><svg class="spark" id="spark" viewBox="0 0 400 70" preserveAspectRatio="none"></svg></div>
+    <div class="sec">
+      <h4>원격 제어 <span>유지시간 뒤 스케줄로 자동 복귀</span></h4>
+      <div id="dBox" data-scope="d"></div>
+      <div class="warnline" id="cutWarn" style="display:none">저전압 차단 중이다. 차단이 원격 명령보다 우선하므로 켜기·밝기는 단말이 거부한다.</div>
+      <button class="btn pri send" id="dSend"></button>
+      <ul class="hist-cmd" id="dHist"></ul>
+    </div>
+    <details class="sec info"><summary>단말기 정보</summary><div class="grid2" id="dInfo"></div></details>
+  </div>
+</aside>
+
+<aside class="drawer" id="gdrawer" aria-label="그룹 제어">
+  <div class="dh"><div><h3>그룹 제어</h3><div class="u">개별 > 그룹 > 전체 순으로 우선. 유지시간 뒤 스케줄로 복귀</div></div><button class="x" data-close aria-label="닫기">✕</button></div>
+  <div class="db">
+    <div class="sec" id="gTarget"></div>
+    <div class="sec">
+      <h4>명령</h4>
+      <div id="gBox" data-scope="g"></div>
+      <code class="payload" id="gPayload"></code>
+    </div>
+    <div class="sec" id="gAction"></div>
+    <div class="sec" id="gProg" style="display:none"></div>
+    <div class="sec"><h4>그룹 명령 이력</h4><ul class="hist-cmd" id="gHist"><li><span class="muted">#1038</span><span>경기도 군포시 금정동, 끄기 3시간</span><span class="st-ok">2,971 적용</span></li></ul></div>
+  </div>
+</aside>
+
+<aside class="drawer wide" id="rdrawer" aria-label="단말 등록">
+  <div class="dh"><div><h3>단말 등록</h3><div class="u" id="rUuid"></div></div><button class="x" data-close aria-label="닫기">✕</button></div>
+  <div class="db">
+    <div class="sec"><h4>단말 정보 <span>REGISTER로 받은 값</span></h4><div class="grid2" id="rInfo"></div></div>
+    <div class="sec">
+      <h4>설치 위치 <span>법정동(말단)을 고르고 시설명을 넣는다</span></h4>
+      <div class="tree" id="rTree" role="tree"></div>
+      <div class="tpath" id="rPath"></div>
+      <div class="form2">
+        <label class="w2">시설명<input class="inp" id="rName" placeholder="예: 산본동 22번 가로등"></label>
+        <label>위도<input class="inp" id="rLat" inputmode="decimal"></label>
+        <label>경도<input class="inp" id="rLon" inputmode="decimal"></label>
+      </div>
+      <div class="cap" style="margin-top:8px">법정동을 고르면 그 중심 좌표가 들어간다. 실제 설치 좌표로 고친다.</div>
+    </div>
+    <div class="sec" id="rAct"></div>
+  </div>
+</aside>
+
+<div class="toast" id="toast"></div>
+<script>
+const $=id=>document.getElementById(id);
+const nf=n=>n.toLocaleString("ko-KR");
+const S={alarm:["알람","var(--alarm)","b-alarm",0],off:["통신 두절","var(--off)","b-off",1],warn:["경고","var(--warn)","b-warn",2],ok:["정상","var(--ok)","b-ok",3]};
+const MD=["스케줄","현장 수동","원격"];
+const ACT={on:"켜기",off:"끄기",pwm:"밝기",auto:"스케줄 복귀"};
+const DUR={1800:"30분",3600:"1시간",10800:"3시간",43200:"12시간"};
+let seq=1041;
+function rng(s){return()=>(s=(s*16807)%2147483647)/2147483647}
+function toast(m){ const t=$("toast"); t.textContent=m; t.style.display="block"; clearTimeout(window._t); window._t=setTimeout(()=>t.style.display="none",1800); }
+
+/* ---------- 법정동 트리 (코드는 목업, 실제는 주소 검색 API 의 법정동코드) ---------- */
+const REGIONS=[ // 말단 법정동별 집계 + 지도 좌표 (서버 집계 결과로 대체)
+  {lat:37.3950,lng:126.9050,c:{ok:4210,warn:22,alarm:3,off:61}},
+  {lat:37.4000,lng:126.9600,c:{ok:5980,warn:31,alarm:4,off:88}},
+  {lat:37.3550,lng:126.9200,c:{ok:3870,warn:18,alarm:6,off:52}},
+  {lat:37.3720,lng:126.9500,c:{ok:2940,warn:40,alarm:9,off:41}},
+  {lat:37.3800,lng:127.0000,c:{ok:3120,warn:15,alarm:1,off:42}},
+  {lat:37.3220,lng:126.9650,c:{ok:2210,warn:12,alarm:2,off:398}},
+  {lat:37.4350,lng:127.0100,c:{ok:2130,warn:9,alarm:0,off:84}},
+  {lat:37.4250,lng:126.8800,c:{ok:4751,warn:17,alarm:2,off:50}},
+];
+const TREE={name:"전체",children:[
+  {name:"경기도",code:"41",children:[
+    {name:"안양시 만안구",code:"41171",children:[{name:"안양동",code:"4117110100",ri:0},{name:"석수동",code:"4117110600",ri:7}]},
+    {name:"안양시 동안구",code:"41173",children:[{name:"비산동",code:"4117310100",ri:1}]},
+    {name:"군포시",code:"41410",children:[{name:"산본동",code:"4141010400",ri:2},{name:"금정동",code:"4141010300",ri:3}]},
+    {name:"의왕시",code:"41430",children:[{name:"내손동",code:"4143010800",ri:4},{name:"부곡동",code:"4143010200",ri:5}]},
+    {name:"과천시",code:"41290",children:[{name:"과천동",code:"4129010900",ri:6}]},
+  ]}
+]};
+const NODES=[];
+(function walk(n,d,p){ n.id=NODES.length; n.depth=d; n.parent=p; NODES.push(n); (n.children||[]).forEach(c=>walk(c,d+1,n)); })(TREE,0,null);
+const leaves=n=>n.children?n.children.flatMap(leaves):[n];
+const LEAF_BY_RI={}; NODES.filter(n=>!n.children).forEach(n=>LEAF_BY_RI[n.ri]=n);
+const pathName=n=>{ const p=[]; for(let x=n;x&&x.depth>0;x=x.parent) p.unshift(x.name); return p.join(" ")||"전체"; };
+function agg(n){ const c={ok:0,warn:0,alarm:0,off:0}; leaves(n).forEach(l=>{ for(const k in c) c[k]+=REGIONS[l.ri].c[k]; }); return {c,tot:c.ok+c.warn+c.alarm+c.off}; }
+
+/* ---------- 목록 목업 ---------- */
+const devices=[
+  {n:"금정동 02번 가로등",ri:3,st:"alarm",ago:"10분 전",lte:2,on:0,cut:"저전압",sc:9,bv:2380,pp:0,md:0},
+  {n:"금정동 04번 가로등",ri:3,st:"alarm",ago:"13분 전",lte:3,on:0,cut:"저전압",sc:14,bv:2410,pp:0,md:0},
+  {n:"산본동 06번 가로등",ri:2,st:"alarm",ago:"12분 전",lte:3,on:0,cut:"시각 미확보",sc:63,bv:2560,pp:0,md:0},
+  {n:"금정동 08번 가로등",ri:3,st:"alarm",ago:"11분 전",lte:2,on:0,sc:71,bv:2590,pp:0,md:0},
+  {n:"금정동 03번 가로등",ri:3,st:"off",ago:"4시간 20분 전",lte:0,on:null,sc:53,bv:2540,pp:0,md:0},
+  {n:"부곡동 112번 가로등",ri:5,st:"off",ago:"22분 전",lte:0,on:null,sc:74,bv:2600,pp:0,md:0},
+  {n:"산본동 12번 가로등",ri:2,st:"warn",ago:"9분 전",lte:3,on:1,sc:27,bv:2470,pp:0,md:0},
+  {n:"산본동 21번 가로등",ri:2,st:"warn",ago:"6분 전",lte:3,on:1,sc:58,bv:2550,pp:0,md:0},
+  {n:"금정동 13번 가로등",ri:3,st:"warn",ago:"8분 전",lte:4,on:1,sc:66,bv:2570,pp:0,md:0},
+  {n:"산본동 03번 가로등",ri:2,st:"ok",ago:"4분 전",lte:4,on:1,sc:83,bv:2620,pp:0,md:2},
+  {n:"금정동 14번 가로등",ri:3,st:"ok",ago:"7분 전",lte:4,on:1,sc:78,bv:2610,pp:0,md:0},
+  {n:"안양동 045번 가로등",ri:0,st:"ok",ago:"2분 전",lte:3,on:0,sc:88,bv:2640,pp:3400,md:0},
+];
+devices.forEach((d,i)=>d.uuid="34FF6A06455034362028"+(2300+i*37).toString(16).toUpperCase().padStart(4,"0"));
+
+/* ---------- 요약 ---------- */
+const BK=[["0~20%",312,"var(--alarm)",0,20],["20~40%",1146,"#df8a25",20,40],["40~60%",6480,"#a2bd62",40,60],["60~80%",12905,"var(--ok)",60,80],["80~100%",8559,"var(--ok)",80,101]];
+function drawHist(){ const m=Math.max(...BK.map(b=>b[1]));
+  $("hist").innerHTML=BK.map((b,i)=>`<button data-f="b${i}"><span>${b[0]}</span><span class="tr"><i style="width:${b[1]/m*100}%;background:${b[2]}"></i></span><b>${nf(b[1])}</b></button>`).join(""); }
+
+/* ---------- 발전과 사용 (Telemetry 누적 카운터의 일별 차분 합) ---------- */
+function drawChart(){
+  const days=["9/20","9/21","9/22","9/23","9/24","9/25","9/26"], g=[15.1,6.3,8.4,16.0,17.2,16.9,16.6], u=[12.0,12.3,12.1,12.4,12.2,12.2,12.1];
+  const el=$("chart"), W=el.clientWidth||720, H=el.clientHeight||200, L=36, B=24, T=8, max=20, ph=H-B-T, cw=(W-L)/days.length, bw=Math.min(22,cw*.26);
+  let s="";
+  [0,10,20].forEach(v=>{ const y=T+ph-v/max*ph; s+=`<line x1="${L}" x2="${W}" y1="${y}" y2="${y}" stroke="var(--line2)"/><text x="${L-8}" y="${y+4}" text-anchor="end">${v}</text>`; });
+  days.forEach((d,i)=>{ const cx=L+cw*i+cw/2, hg=g[i]/max*ph, hu=u[i]/max*ph, last=i===days.length-1;
+    s+=`<rect x="${cx-bw-2}" y="${T+ph-hg}" width="${bw}" height="${hg}" rx="3" fill="var(--lamp)" ${last?'opacity=".55"':""}><title>발전 ${g[i]} MWh</title></rect>
+        <rect x="${cx+2}" y="${T+ph-hu}" width="${bw}" height="${hu}" rx="3" fill="var(--use)" ${last?'opacity=".55"':""}><title>사용 ${u[i]} MWh</title></rect>
+        <text x="${cx}" y="${H-6}" text-anchor="middle">${last?"오늘":d}</text>`; });
+  el.setAttribute("viewBox",`0 0 ${W} ${H}`); el.innerHTML=s;
+}
+new ResizeObserver(()=>drawChart()).observe(document.getElementById("chart"));
+
+/* ---------- 조치 필요 ---------- */
+const issues=[
+  {sev:"alarm",t:"저전압으로 점등 차단",di:0,a:"잔량 9%. 패널 오염, 배터리 상태 점검",w:"2분 전"},
+  {sev:"alarm",t:"저전압으로 점등 차단",di:1,a:"잔량 14%. 충전 상태 확인",w:"5분 전"},
+  {sev:"alarm",t:"시각 미확보로 점등 차단",di:2,a:"LTE 망시각 수신 확인",w:"12분 전"},
+  {sev:"alarm",t:"충전기 통신 두절",di:3,a:"RS485 배선 확인",w:"11분 전"},
+  {sev:"off",t:"통신 두절 4시간 20분",di:4,a:"현장 전원과 모뎀 상태 확인",w:"4시간 전"},
+  {sev:"off",t:"통신 두절 22분",di:5,a:"현장 전원과 모뎀 상태 확인",w:"22분 전"},
+  {sev:"warn",t:"잔량 27%",di:6,a:"충전 상태 확인",w:"9분 전"},
+  {sev:"warn",t:"기본 스케줄로 운전 중",di:8,a:"저장된 스케줄 손상",w:"15분 전"},
+];
+let tab="all";
+function drawQueue(){
+  const c=k=>k==="all"?issues.length:issues.filter(i=>i.sev===k).length;
+  $("tabs").innerHTML=[["all","전체"],["alarm","알람"],["off","통신 두절"],["warn","경고"]].map(([k,l])=>`<button data-t="${k}" aria-pressed="${tab===k}">${l}<b>${c(k)}</b></button>`).join("");
+  $("queue").innerHTML=issues.filter(i=>tab==="all"||i.sev===tab).map(i=>`<li data-u="${i.di}" tabindex="0" title="${i.a}">
+    <span class="dot" style="background:${S[i.sev][1]}"></span>
+    <div style="min-width:0"><div class="t">${i.t}</div><div class="d">${devices[i.di].n}</div></div><span class="w">${i.w}</span></li>`).join("");
+}
+
+/* ---------- 목록 ---------- */
+let filter="all", q="", regionF=0;
+const FL={all:[()=>true,"전체"],alarm:[d=>d.st==="alarm","알람"],off:[d=>d.st==="off","통신 두절"],warn:[d=>d.st==="warn","경고"],ok:[d=>d.st==="ok","정상"],
+  cut:[d=>!!d.cut,"점등 차단"],lampon:[d=>d.on===1,"점등"],lampoff:[d=>d.on===0&&!d.cut,"소등"]};
+BK.forEach((b,i)=>FL["b"+i]=[d=>d.on!==null&&d.sc>=b[3]&&d.sc<b[4],"잔량 "+b[0]]);
+const TOT={all:30218,alarm:27,off:816,warn:164,ok:29211,cut:19,lampon:18624,lampoff:10759,b0:312,b1:1146,b2:6480,b3:12905,b4:8559};
+const bc=sc=>sc<20?"var(--alarm)":sc<30?"var(--warn)":"var(--ok)";
+const sig=n=>`<span class="sig">${[1,2,3,4].map(i=>`<i class="${i<=n?"on":""}" style="height:${i*3}px"></i>`).join("")}</span>`;
+function lampTxt(d){ if(d.on===null) return `<span class="bulb"></span> 알 수 없음`;
+  if(d.cut) return `<span class="bulb"></span> <span style="color:var(--alarm)">점등 차단</span>`;
+  return d.on?`<span class="bulb on"></span> 점등`:`<span class="bulb"></span> 소등`; }
+function inNode(d,id){ return id===0 || leaves(NODES[id]).some(l=>l.ri===d.ri); }
+function drawList(){
+  const L=devices.map((d,i)=>({...d,i})).filter(d=>FL[filter][0](d)&&inNode(d,regionF)&&(!q||d.n.includes(q)||d.uuid.includes(q.toUpperCase())));
+  L.sort((a,b)=>S[a.st][3]-S[b.st][3]||a.sc-b.sc);
+  const tot=(q||regionF)?L.length:TOT[filter];
+  $("cnt").textContent=`${nf(tot)}대 표시`; $("range").textContent=`1–${L.length} / ${nf(tot)}`;
+  $("chip").style.display=filter==="all"?"none":"inline-flex"; $("chipT").textContent=FL[filter][1];
+  $("rows").innerHTML=L.length?L.map(d=>`<tr data-u="${d.i}" tabindex="0">
+    <td><span class="badge ${S[d.st][2]}">${S[d.st][0]}</span></td><td>${d.n}</td>
+    <td>${sig(d.lte)}${d.ago}</td><td>${lampTxt(d)}<span class="md">${d.on===null?"":MD[d.md]}</span></td>
+    <td><span class="bt"><i style="width:${d.sc}%;background:${bc(d.sc)}"></i></span>${d.sc}%</td>
+    <td class="muted">${pathName(LEAF_BY_RI[d.ri]).replace("경기도 ","")}</td></tr>`).join("")
+    :`<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">조건에 맞는 단말이 없습니다. 필터를 바꿔 보세요.</td></tr>`;
+}
+
+/* ---------- 제어 버튼 공통 (개별 d / 그룹 g) ---------- */
+/* ---------- 제어 공통 (개별 d / 그룹 g) ----------
+  채널: PWM1 주등(기본), PWM2 입간판(선택). PWM3 는 하드웨어에 있으나 쓰지 않는다.
+  CMD payload (서버 사양 §3.10.7 에 ch 추가 필요)
+    {"type":"CMD","seq":n,"exp":30,"act":"on|off|auto","ch":[1,2],"dur":3600}
+    {"type":"CMD","seq":n,"exp":30,"act":"pwm","ch":[1,2],"pwm":[70,40],"dur":3600}
+  ch 에 없는 채널은 건드리지 않는다. */
+const CHN={1:"주등",2:"입간판"};
+const newC=()=>({act:"on",ch:{1:true,2:false},pwm:{1:70,2:70},dur:3600});
+const C={d:newC(), g:newC()};
+const selCh=c=>[1,2].filter(k=>c.ch[k]);
+function drawCtl(sc){
+  const c=C[sc];
+  let h=`<div class="ctl">${Object.entries(ACT).map(([k,l])=>`<button data-a="${k}" aria-pressed="${c.act===k}">${l}</button>`).join("")}</div>
+    <div class="chrow"><span class="cap">채널</span>${[1,2].map(k=>`<label class="chk2"><input type="checkbox" data-ch="${k}" ${c.ch[k]?"checked":""}><b>PWM${k}</b> ${CHN[k]}</label>`).join("")}</div>`;
+  if(c.act==="pwm") h+=selCh(c).map(k=>`<div class="ctlrow"><span>${CHN[k]}</span><input type="range" min="0" max="100" value="${c.pwm[k]}" data-pw="${k}" aria-label="${CHN[k]} 밝기"><b>${c.pwm[k]}%</b></div>`).join("");
+  if(c.act!=="auto") h+=`<div class="dur"><span class="muted">유지</span>${Object.entries(DUR).map(([k,l])=>`<button data-d="${k}" aria-pressed="${+k===c.dur}">${l}</button>`).join("")}</div>`;
+  $(sc+"Box").innerHTML=h;
+}
+function cmdLabel(c){
+  const ch=selCh(c); if(!ch.length) return "채널 없음";
+  if(c.act==="auto") return `${ch.map(k=>CHN[k]).join("+")} 스케줄 복귀`;
+  if(c.act==="pwm") return `밝기 ${ch.map(k=>`${CHN[k]} ${c.pwm[k]}%`).join(", ")} ${DUR[c.dur]}`;
+  return `${ch.map(k=>CHN[k]).join("+")} ${ACT[c.act]} ${DUR[c.dur]}`;
+}
+const payload=c=>{ const ch=selCh(c), p={type:"CMD",seq:seq+1,exp:30,act:c.act,ch};
+  if(c.act==="pwm") p.pwm=ch.map(k=>c.pwm[k]); if(c.act!=="auto") p.dur=c.dur; return JSON.stringify(p); };
+function ctlChanged(sc){ if(sc==="d") drawSendD(); else { G.stage="idle"; $("gPayload").textContent=payload(C.g); drawGAction(); } }
+
+/* ---------- 개별 제어 ---------- */
+let cur=null, curI=0;
+function openD(i){
+  closeAll(); cur=devices[i]; curI=i; const d=cur; const pw=d.pw||[70,d.ri%2?60:0];
+  $("dName").textContent=d.n; $("dUuid").textContent="UUID "+d.uuid;
+  $("dBadge").innerHTML=`<span class="badge ${S[d.st][2]}">${S[d.st][0]}</span>`;
+  $("dLast").textContent=`마지막 수신 ${d.ago}`;
+  const chTxt=k=>d.on===null?"알 수 없음":d.cut?`점등 차단`:d.on&&pw[k-1]?`점등 ${pw[k-1]}%`:"소등";
+  const met=[["주등 (PWM1)",chTxt(1)],["입간판 (PWM2)",chTxt(2)],["운전",d.on===null?"-":MD[d.md]],
+    ["배터리",`${d.sc}%  ${(d.bv/100).toFixed(2)}V`],["LTE 신호",d.lte?`${d.lte}/4`:"-"],
+    ["발전 전력 (현재)",d.on===null?"-":`${(d.pp/100).toFixed(1)} W`]];
+  $("dMet").innerHTML=met.map(([l,v])=>`<div class="met"><div class="l">${l}</div><div class="v">${v}</div></div>`).join("");
+  // 배터리 24시간 (telemetry 테이블 조회로 대체)
+  const r=rng(i*97+5); let v=Math.min(95,d.sc+30); const pts=[];
+  for(let h=0;h<=24;h++){ const day=h>=7&&h<=17; v+=day?(r()*4+1)*(d.sc>30?1:.1):-(r()*2+1); v=Math.max(3,Math.min(100,v)); pts.push(v); }
+  const sh=d.sc-pts[24], line=pts.map((p,h)=>`${(h/24*400).toFixed(1)},${(66-Math.max(2,Math.min(100,p+sh))/100*62).toFixed(1)}`).join(" ");
+  $("spark").innerHTML=`<rect x="${7/24*400}" y="0" width="${10/24*400}" height="70" fill="rgba(242,192,74,.08)"/>
+    <polyline points="0,70 ${line} 400,70" fill="rgba(79,143,247,.14)"/>
+    <polyline points="${line}" fill="none" stroke="var(--blue)" stroke-width="2" vector-effect="non-scaling-stroke"/>
+    <line x1="0" x2="400" y1="${66-.2*62}" y2="${66-.2*62}" stroke="var(--alarm)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>`;
+  const leaf=LEAF_BY_RI[d.ri];
+  $("dInfo").innerHTML=[["모델","RMCB-1100M"],["모뎀","WD-N522S"],["펌웨어","1.0.0"],["설정 버전 (cv)","3"],
+    ["IMEI","3542"+String(1e10+i*7919).slice(-11)],["ICCID","898205"+String(1e13+i*104729).slice(-13)],["법정동코드",leaf.code],["설치일","2026-10-02"]]
+    .map(([l,v])=>`<div class="met"><div class="l">${l}</div><div class="v">${v}</div></div>`).join("");
+  $("dHist").innerHTML=""; C.d=newC(); drawD();
+  $("ov").style.display="block"; $("drawer").classList.add("open");
+}
+function drawD(){ drawCtl("d"); drawSendD(); }
+function drawSendD(){ $("cutWarn").style.display=cur.cut==="저전압"?"block":"none";
+  const none=!selCh(C.d).length; $("dSend").disabled=none; $("dSend").textContent=none?"채널을 하나 이상 고른다":`${cmdLabel(C.d)} 보내기`; }
+function sendD(){
+  const c=JSON.parse(JSON.stringify(C.d)), s=++seq, li=document.createElement("li");
+  li.innerHTML=`<span class="muted">#${s}</span><span>${cmdLabel(c)}</span><span class="st-wait">응답 대기</span>`; $("dHist").prepend(li);
+  const d=cur, off=d.on===null, rej=d.cut==="저전압"&&(c.act==="on"||c.act==="pwm");
+  setTimeout(()=>{ const x=li.lastChild;
+    if(off){x.className="st-fail"; x.textContent="응답 없음";}
+    else if(rej){x.className="st-fail"; x.textContent="거부: 저전압";}
+    else { x.className="st-ok"; x.textContent="적용됨"; if(c.act==="auto") d.md=0; else { d.pw=d.pw||[70,d.ri%2?60:0]; selCh(c).forEach(k=>d.pw[k-1]=c.act==="off"?0:c.act==="pwm"?c.pwm[k]:(d.pw[k-1]||90)); d.on=d.pw[0]||d.pw[1]?1:0; d.md=2; } drawList(); }
+  }, off?2500:1200);
+  toast(`${d.n}에 명령 #${s} 보냄`);
+}
+
+/* ---------- 그룹 제어 ----------
+  단말은 자기 법정동코드 topic 1개만 구독한다.
+  전체 = iotlight/all/cmd 1회, 상위 노드 = 하위 법정동 topic 마다 1회, 법정동 = 그 topic 1회 */
+const G={node:0,stage:"idle"};
+const expanded=new Set([0,1]);
+function gStats(){
+  const n=NODES[G.node], a=agg(n), root=n.depth===0, cutOn=C.g.act==="on"||C.g.act==="pwm";
+  const cut=Math.round(a.c.alarm*.7);
+  return {tot:a.tot, off:a.c.off, online:a.tot-a.c.off, cut:cutOn?cut:0, cutAll:cut, root,
+    topics: root?["iotlight/all/cmd"]:leaves(n).map(l=>`iotlight/group/${l.code}/cmd`),
+    label: root?"전체 단말":pathName(n)+(n.children?"":` (${n.code})`)};
+}
+function treeHTML(n){
+  const a=agg(n), open=expanded.has(n.id), has=!!n.children;
+  return `<div class="tn ${G.node===n.id?"on":""}" data-node="${n.id}" style="padding-left:${6+n.depth*16}px" role="treeitem" aria-selected="${G.node===n.id}" ${has?`aria-expanded="${open}"`:""} tabindex="0">
+    <button class="tc" data-tog="${n.id}" ${has?"":"disabled"} aria-label="${open?"접기":"펼치기"}">${has?(open?"▾":"▸"):""}</button>
+    <span class="tnm">${n.name}${!has?`<small>${n.code}</small>`:""}</span>
+    <span class="tct">${nf(a.tot)}${a.c.off?`<em>두절 ${nf(a.c.off)}</em>`:""}</span></div>`+(has&&open?n.children.map(treeHTML).join(""):"");
+}
+function drawGTarget(){
+  const st=gStats(), cutOn=C.g.act==="on"||C.g.act==="pwm", tp=st.topics.length;
+  $("gTarget").innerHTML=`<h4>대상 <span>상위를 고르면 하위 전체가 대상</span></h4>
+    <div class="tree" role="tree" id="gTree">${treeHTML(TREE)}</div>
+    <div class="tpath">선택: <b>${st.label}</b></div>
+    <div class="grid2">
+      <div class="met"><div class="l">대상</div><div class="v">${nf(st.tot)}대</div></div>
+      <div class="met"><div class="l">전달 가능 (온라인)</div><div class="v">${nf(st.online)}대</div></div>
+      <div class="met o"><div class="l">전달 안 됨 (통신 두절)</div><div class="v">${nf(st.off)}대</div><div class="h">복귀해도 이 명령은 적용되지 않는다</div></div>
+      <div class="met ${cutOn&&st.cutAll?"a":""}"><div class="l">켜기 거부 예상 (저전압 차단)</div><div class="v">${cutOn?nf(st.cutAll)+"대":"해당 없음"}</div></div>
+    </div>
+    <div class="topic">발행: <code>${st.topics[0]}</code>${tp>1?` 외 ${tp-1}개, 법정동마다 1회씩 ${tp}회`:" 1회"}</div>`;
+}
+function drawGAction(){
+  const st=gStats(), a=$("gAction");
+  if(G.stage==="confirm"){
+    a.innerHTML=`<div class="confirm"><b>${st.label}</b>에 <b>${cmdLabel(C.g)}</b>을 보낸다.<br>
+      온라인 ${nf(st.online)}대가 받는다${st.cut?`, 이 중 ${nf(st.cut)}대는 거부할 것으로 예상된다`:""}.
+      ${st.root?`<input id="gType" placeholder="확인하려면 '전체'를 입력" aria-label="확인 문구">`:""}
+      <div class="row"><button class="btn" id="gCancel">취소</button><button class="btn pri" id="gFire">보내기</button></div></div>`;
+    return;
+  }
+  const none=!selCh(C.g).length;
+  a.innerHTML=`<button class="btn pri send" id="gSend" ${G.stage==="run"||none?"disabled":""}>${none?"채널을 하나 이상 고른다":`${st.label}에 ${cmdLabel(C.g)} 보내기`}</button>`;
+}
+function drawG(){ drawGTarget(); drawCtl("g"); $("gPayload").textContent=payload(C.g); drawGAction(); }
+function openG(node){
+  closeAll(); if(node!=null){ G.node=node; expanded.add(node); for(let x=NODES[node].parent;x;x=x.parent) expanded.add(x.id); }
+  G.stage="idle"; $("gProg").style.display="none"; drawG();
+  $("ov").style.display="block"; $("gdrawer").classList.add("open");
+  const on=document.querySelector("#gTree .tn.on"); if(on) on.scrollIntoView({block:"nearest"});
+}
+function fireG(){
+  const st=gStats(), s=++seq; G.stage="run"; drawGAction();
+  const target=st.online, rej=st.cut, miss=Math.max(1,Math.round(target*.004)), okN=target-rej-miss;
+  const pr=$("gProg"); pr.style.display="block";
+  const li=document.createElement("li"); li.innerHTML=`<span class="muted">#${s}</span><span>${st.label}, ${cmdLabel(C.g)}</span><span class="st-wait">집계 중</span>`; $("gHist").prepend(li);
+  let k=0; const N=12;
+  const tick=()=>{ k++; const f=k/N, e=1-Math.pow(1-f,2), done=k>=N;
+    const o=Math.round(okN*e), r=Math.round(rej*Math.min(1,f*1.4)), w=target-o-r;
+    pr.innerHTML=`<h4>응답 집계 #${s} <span>${done?"완료":"CMD_ACK 수신 중"}</span></h4>
+      <div class="pbar"><i style="flex-grow:${o};background:var(--ok)"></i><i style="flex-grow:${r};background:var(--alarm)"></i><i style="flex-grow:${w};background:${done?"var(--off)":"var(--line)"}"></i></div>
+      <div class="plg"><span>적용 <b>${nf(o)}</b></span><span>거부 <b>${nf(r)}</b></span><span>${done?"무응답":"대기"} <b>${nf(w)}</b></span><span>대상 ${nf(target)}</span></div>`;
+    if(!done){ setTimeout(tick,200); return; }
+    li.lastChild.className="st-ok"; li.lastChild.textContent=`${nf(o)} 적용`;
+    G.stage="idle"; drawGAction(); $("gPayload").textContent=payload(C.g);
+    devices.forEach(d=>{ if(!inNode(d,G.node)||d.on===null) return; if(d.cut==="저전압"&&(C.g.act==="on"||C.g.act==="pwm")) return;
+      if(C.g.act==="auto"){ d.md=0; return; } if(d.md===2) return; d.on=C.g.act==="off"?0:1; d.md=2; });
+    drawList(); toast(`명령 #${s} 집계 완료`);
+  };
+  tick();
+}
+
+function closeAll(){ $("ov").style.display="none"; ["drawer","gdrawer","rdrawer"].forEach(x=>$(x).classList.remove("open")); }
+
+/* ================= 지도: 카카오맵 =================
+  KAKAO_APPKEY 에 JavaScript 키를 넣으면 실제 카카오맵, 비우면 같은 규칙의 미리보기.
+  키는 카카오 개발자 콘솔에 사이트 도메인을 등록해야 동작한다.
+  사용 기능 (Kakao Maps JS API 공식 기능만)
+    Map, LatLng, ZoomControl, MapTypeControl
+    MarkerClusterer (libraries=clusterer) : 정상 단말. 개수 구간별 스타일만 지원
+    Marker + MarkerImage                   : 정상 단말 점
+    CustomOverlay                          : 이상 단말 핀. zIndex 로 알람이 맨 위
+    event zoom_changed                     : 넓게 볼 때 알람 핀만, 확대하면 통신 두절·경고 핀도
+  카카오맵에는 다크 스타일이 없어 어두운 화면에서도 지도는 밝게 나온다.
+  설치 대수가 수천 대를 넘으면 map.getBounds() 로 영역 안 단말만 받도록 바꾼다.
+*/
+const KAKAO_APPKEY="";
+const CLUSTER={gridSize:60, minLevel:3, calculator:[10,100,1000],
+  styles:[30,38,46,56].map(w=>({width:w+"px",height:w+"px",lineHeight:w+"px",borderRadius:w/2+"px",background:"rgba(34,132,90,.85)",color:"#fff",textAlign:"center",fontWeight:"700",fontSize:"12px",border:"2px solid #fff"}))};
+const DOT_SVG="data:image/svg+xml;utf8,"+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"><circle cx="6" cy="6" r="4.5" fill="#22845a" stroke="#fff" stroke-width="1.5"/></svg>');
+const PIN={alarm:"#d0413a",warn:"#e0961a",off:"#7d8898",ok:"#22845a"};
+const Z={alarm:30,off:20,warn:10};
+const DETAIL_LEVEL=6;   // 이 레벨 이하(확대)에서 통신 두절·경고 핀 표시
+const pinVisible=(st,lv)=>mapOn[st]&&(st==="alarm"||lv<=DETAIL_LEVEL);
+let mapOn={alarm:true,off:true,warn:true,ok:true}, mapRefresh=()=>{};
+
+/* 지도용 단말 목업 (서버 조회로 대체) */
+let MAPDEV=null;
+function mapDevices(){
+  if(MAPDEV) return MAPDEV; MAPDEV=[];
+  REGIONS.forEach((r,ri)=>{ const R=rng(ri*131+7), g=()=>{let u=0;for(let k=0;k<3;k++)u+=R();return (u/3-.5)*2;}, sp=ri===5?.7:1; let no=0;
+    ["ok","off","warn","alarm"].forEach(st=>{ for(let k=0;k<r.c[st];k++) MAPDEV.push({st,ri,lat:r.lat+g()*.02*sp,lng:r.lng+g()*.025*sp,name:`${LEAF_BY_RI[ri].name} ${String(++no).padStart(4,"0")}번`}); }); });
+  // 목록 목업 단말과 연결
+  devices.forEach((d,di)=>{ const m=MAPDEV.find(x=>x.ri===d.ri&&x.st===d.st&&x.link==null); if(m){ m.link=di; m.name=d.n; } });
+  return MAPDEV;
+}
+function openPin(m){
+  if(m.link!=null) return openD(m.link);
+  const base={alarm:{cut:"저전압",sc:12,on:0},warn:{sc:26,on:1},off:{sc:60,on:null},ok:{sc:80,on:1}}[m.st];
+  devices.push({n:m.name,ri:m.ri,st:m.st,ago:m.st==="off"?"2시간 10분 전":"7분 전",lte:m.st==="off"?0:3,bv:2450,pp:0,md:0,
+    uuid:"34FF6A0645503436"+Math.floor(Math.random()*1e8).toString(16).toUpperCase().padStart(8,"0"),...base});
+  m.link=devices.length-1; openD(m.link);
+}
+function pinEl(m){
+  const el=document.createElement("div"); el.className="kov-pin "+m.st; el.style.setProperty("--c",PIN[m.st]);
+  el.innerHTML=`<i></i><span>${m.name}, ${S[m.st][0]}</span>`;
+  el.addEventListener("click",e=>{ e.stopPropagation(); openPin(m); }); return el;
+}
+function drawChips(){
+  const tot=st=>REGIONS.reduce((a,r)=>a+r.c[st],0);
+  $("mchips").innerHTML=["alarm","off","warn","ok"].map(st=>`<button data-m="${st}" aria-pressed="${mapOn[st]}"><span class="dot" style="background:${PIN[st]}"></span>${S[st][0]} ${nf(tot(st))}</button>`).join("");
+}
+
+function initKakao(){
+  const K=kakao.maps;
+  const map=new K.Map($("kmap"),{center:new K.LatLng(37.378,126.945),level:8});
+  map.addControl(new K.MapTypeControl(),K.ControlPosition.TOPRIGHT);
+  map.addControl(new K.ZoomControl(),K.ControlPosition.RIGHT);
+  const clusterer=new K.MarkerClusterer({map,averageCenter:true,gridSize:CLUSTER.gridSize,minLevel:CLUSTER.minLevel,calculator:CLUSTER.calculator,styles:CLUSTER.styles});
+  const img=new K.MarkerImage(DOT_SVG,new K.Size(12,12),{offset:new K.Point(6,6)});
+  const all=mapDevices();
+  const okMarkers=all.filter(m=>m.st==="ok").map(m=>{ const mk=new K.Marker({position:new K.LatLng(m.lat,m.lng),image:img,title:m.name}); K.event.addListener(mk,"click",()=>openPin(m)); return mk; });
+  const pins=all.filter(m=>m.st!=="ok").map(m=>({m,ov:new K.CustomOverlay({position:new K.LatLng(m.lat,m.lng),content:pinEl(m),zIndex:Z[m.st],clickable:true})}));
+  function redraw(){
+    clusterer.clear(); if(mapOn.ok) clusterer.addMarkers(okMarkers);
+    const lv=map.getLevel(); pins.forEach(p=>p.ov.setMap(pinVisible(p.m.st,lv)?map:null));
+  }
+  K.event.addListener(map,"zoom_changed",redraw);
+  $("mnote").style.display="none"; mapRefresh=redraw; redraw();
+}
+
+/* 미리보기: 키가 없을 때. 타일만 가짜이고 표시 규칙은 위와 같다 */
+const PV={level:8,center:{lat:37.378,lng:126.945},sky:false};
+const SPAN={8:.15,5:.05,3:.02};
+const ROADS=[[[37.44,126.905],[37.405,126.925],[37.378,126.945],[37.35,126.955],[37.31,126.962]],[[37.40,126.86],[37.393,126.93],[37.39,126.97],[37.385,127.03]],
+  [[37.36,126.87],[37.364,126.93],[37.37,126.96],[37.38,127.02]],[[37.45,126.99],[37.41,126.985],[37.38,126.98],[37.34,126.975],[37.30,126.97]],
+  [[37.33,126.88],[37.328,126.94],[37.32,127.0]],[[37.425,126.86],[37.42,126.94],[37.43,127.02]]];
+const RIVER=[[37.45,126.875],[37.42,126.895],[37.40,126.912],[37.385,126.925],[37.36,126.935],[37.33,126.945],[37.30,126.95]];
+const PARKS=[[37.358,126.895,.018,.02],[37.395,126.99,.012,.016],[37.44,126.955,.012,.022],[37.335,126.92,.014,.02]];
+function proj(){ const b=$("kprev").getBoundingClientRect(), W=b.width, H=b.height, la=SPAN[PV.level], lo=la*W/H*1.26;
+  return {W,H,la,lo,x:g=>(g-(PV.center.lng-lo/2))/lo*W,y:a=>((PV.center.lat+la/2)-a)/la*H}; }
+function initPreview(){
+  const el=$("kprev");
+  el.innerHTML=`<svg id="pvBase"></svg><div id="pvLayer" style="position:absolute;inset:0;z-index:1"></div>
+    <div class="kctl"><div class="grp"><button data-sky="0" aria-pressed="true">지도</button><button data-sky="1" aria-pressed="false">스카이뷰</button></div>
+    <div class="grp v"><button id="zin" aria-label="확대">+</button><button id="zout" aria-label="축소">−</button></div></div>`;
+  el.querySelectorAll("[data-sky]").forEach(b=>b.onclick=()=>{ PV.sky=b.dataset.sky==="1"; el.querySelectorAll("[data-sky]").forEach(x=>x.setAttribute("aria-pressed",x===b)); drawPreview(); });
+  $("zin").onclick=()=>{ PV.level=PV.level===8?5:3; drawPreview(); };
+  $("zout").onclick=()=>{ PV.level=PV.level===3?5:8; if(PV.level===8) PV.center={lat:37.378,lng:126.945}; drawPreview(); };
+  mapRefresh=drawPreview; drawPreview(); new ResizeObserver(drawPreview).observe(el);
+}
+function drawPreview(){
+  const P=proj(); if(!P.W) return;
+  const path=pts=>pts.map((p,i)=>`${i?"L":"M"}${P.x(p[1]).toFixed(1)} ${P.y(p[0]).toFixed(1)}`).join(" ");
+  const sky=PV.sky, w={8:1,5:1.8,3:2.6}[PV.level];
+  let s=`<rect width="100%" height="100%" fill="${sky?"#4d5a45":"#f2efe9"}"/>`;
+  PARKS.forEach(([a,g,da,dg])=>s+=`<ellipse cx="${P.x(g)}" cy="${P.y(a)}" rx="${Math.abs(P.x(g+dg)-P.x(g))}" ry="${Math.abs(P.y(a+da)-P.y(a))}" fill="${sky?"#3f5236":"#d9ead0"}"/>`);
+  s+=`<path d="${path(RIVER)}" stroke="${sky?"#3c5d70":"#aad3df"}" stroke-width="${7*w}" fill="none" stroke-linecap="round"/>`;
+  ROADS.forEach(r=>s+=`<path d="${path(r)}" stroke="${sky?"rgba(0,0,0,.25)":"#d6d0c4"}" stroke-width="${6*w+2}" fill="none" stroke-linecap="round"/><path d="${path(r)}" stroke="${sky?"rgba(255,255,255,.55)":"#fff"}" stroke-width="${6*w}" fill="none" stroke-linecap="round"/>`);
+  REGIONS.forEach((r,ri)=>s+=`<text x="${P.x(r.lng)}" y="${P.y(r.lat)-28}" text-anchor="middle" font-size="12" font-weight="600" fill="${sky?"#fff":"#5a5a5a"}" style="font-family:var(--font)">${LEAF_BY_RI[ri].name}</text>`);
+  $("pvBase").innerHTML=s;
+  const layer=$("pvLayer"); layer.innerHTML="";
+  const vis=mapDevices().filter(m=>{const x=P.x(m.lng),y=P.y(m.lat); return x>-10&&x<P.W+10&&y>-10&&y<P.H+10;});
+  if(mapOn.ok){ // 카카오 클러스터러와 같은 격자 방식
+    const cells={}, G=CLUSTER.gridSize;
+    vis.filter(m=>m.st==="ok").forEach(m=>{ const x=P.x(m.lng),y=P.y(m.lat),k=Math.floor(x/G)+","+Math.floor(y/G);
+      (cells[k]=cells[k]||{n:0,x:0,y:0,m}).n++; cells[k].x+=x; cells[k].y+=y; });
+    Object.values(cells).forEach(c=>{ const x=c.x/c.n, y=c.y/c.n;
+      if(c.n===1){ const d=document.createElement("div"); d.className="kdot"; d.style.left=x+"px"; d.style.top=y+"px"; d.title=c.m.name; d.onclick=()=>openPin(c.m); layer.appendChild(d); return; }
+      let i=CLUSTER.calculator.findIndex(t=>c.n<t); if(i<0) i=CLUSTER.calculator.length;
+      const el=document.createElement("div"); el.className="kclu"; Object.assign(el.style,CLUSTER.styles[i]); el.style.left=x+"px"; el.style.top=y+"px"; el.textContent=nf(c.n);
+      el.onclick=()=>{ if(PV.level===3) return; PV.center={lat:PV.center.lat+(P.H/2-y)/P.H*P.la, lng:PV.center.lng+(x-P.W/2)/P.W*P.lo}; PV.level=PV.level===8?5:3; drawPreview(); };
+      layer.appendChild(el); });
+  }
+  vis.filter(m=>m.st!=="ok"&&pinVisible(m.st,PV.level)).sort((a,b)=>Z[a.st]-Z[b.st]).forEach(m=>{
+    const el=pinEl(m); el.style.position="absolute"; el.style.left=P.x(m.lng)+"px"; el.style.top=P.y(m.lat)+"px"; el.style.zIndex=Z[m.st]; layer.appendChild(el); });
+}
+function startMap(){
+  drawChips();
+  if(!KAKAO_APPKEY){ initPreview(); return; }
+  const sc=document.createElement("script");
+  sc.src=`https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_APPKEY}&libraries=clusterer&autoload=false`;
+  sc.onload=()=>kakao.maps.load(()=>{ $("kprev").remove(); initKakao(); });
+  sc.onerror=initPreview; document.head.appendChild(sc);
+}
+
+/* ================= 화면 전환 ================= */
+const TITLE={dash:"통합 관제 대시보드",pending:"승인 대기",cfg:"단말 설정"};
+function showView(v){
+  closeAll();
+  [["dash","vDash"],["pending","vPending"],["cfg","vCfg"]].forEach(([k,id])=>$(id).hidden=k!==v);
+  document.querySelectorAll(".nav a[data-view]").forEach(a=>a.classList.toggle("on",a.dataset.view===v));
+  $("pageTitle").textContent=TITLE[v]; window.scrollTo(0,0);
+  if(v==="dash") drawChart();
+}
+
+/* ================= 단말 통신: 모든 요청은 시간 제한 + 취소 =================
+  서버→단말 요청 하나마다 응답을 기다린다. 제한 시간이 지나면 실패, 사용자는 언제든 취소할 수 있다.
+  취소·시간 초과는 "서버가 기다리기를 멈춘 것"이다. 단말이 이미 처리했을 수 있으므로 쓰기 계열은 다시 읽어 확인한다.
+  제한 시간 (LTE 기준, PC 도구 값보다 길게): 읽기 10초, 쓰기 10초, Flash 저장 15초, 표 만들기 15초, 등록 30초 */
+const TO={CFG_GET:10,CFG_SET:10,CFG_SAVE:15,CFG_RELOAD:10,SCH_GEN:15,SCH_INFO:10,CONFIG_SET:30};
+function comm({box,req,type,ok,writes,alive,onOk,onEnd}){
+  const to=TO[type]*1000, t0=Date.now(), job={done:false};
+  const finish=(kind,msg)=>{ if(job.done) return; job.done=true; clearInterval(job.iv); clearTimeout(job.rt);
+    box.innerHTML=kind==="ok"?`<span class="okl">${msg}</span>`:`<span class="err">${msg}</span>`; onEnd&&onEnd(kind); };
+  job.cancel=()=>{ finish("cancel",`${type} 취소함.${writes?" 단말이 이미 받았을 수 있다. 단말에서 읽기로 확인한다.":""}`); job.log&&job.log("✕",`${type} 취소`,"er"); };
+  box.innerHTML=`<div class="comm"><span class="spin"></span><span><b>${type}</b> 응답 대기 <span class="tt">0.0</span> / ${TO[type]}초</span><span class="pbar2"><i></i></span><button class="btn" data-cancel>취소</button></div>`;
+  box.querySelector("[data-cancel]").onclick=()=>job.cancel();
+  job.iv=setInterval(()=>{ const s=(Date.now()-t0)/1000; const tt=box.querySelector(".tt"); if(tt){ tt.textContent=s.toFixed(1); box.querySelector(".pbar2 i").style.width=Math.min(100,s/TO[type]*100)+"%"; }
+    if(Date.now()-t0>=to){ finish("timeout",`${type} 시간 초과 (${TO[type]}초). 단말 응답이 없다.${writes?" 단말에서 읽기로 적용 여부를 확인한다.":""}`); job.log&&job.log("✕",`${type} 시간 초과`,"er"); } },100);
+  if(alive) job.rt=setTimeout(()=>{ if(job.done) return; const m=onOk(); finish("ok",m); }, 700+Math.random()*900);
+  return job;
+}
+
+/* ================= 설정 항목 (ui_items.json, F/W 1.4.0) =================
+  MQTT 설정 메시지 (서버 사양에 추가 필요. 펌웨어의 cfg / sch 처리기에 연결)
+    서버→단말 config topic                     단말→서버 result topic
+    {"type":"CFG_GET"}                          {"type":"CFG_REPORT","v":[25개, KEYS 순서]}
+    {"type":"CFG_SET","k":{"start_pwm":80}}     {"type":"CFG_ACK","ok":[…],"err":[]}
+    {"type":"CFG_SAVE"}                         {"type":"CFG_SAVED","seq":42,"crc":"…"}
+    {"type":"CFG_RELOAD"}                       {"type":"CFG_RELOADED"}
+    {"type":"SCH_GEN","lat":…,"lon":…,"on":0,"off":0,"reg":"<hex>"}   {"type":"SCH_ACK","crc":"…"}
+    {"type":"SCH_INFO"}                         {"type":"SCH_INFO","src":2,"lat":…,…}
+  CFG_SET 은 RAM 반영(즉시 운전 적용), CFG_SAVE 를 받아야 전원을 꺼도 남는다. */
+const ITEMS={
+  start_ofst:{l:"점등 Offset",u:"분",min:-60,max:60,d:0},
+  stop_ofst:{l:"소등 Offset",u:"분",min:-60,max:60,d:0},
+  start_pwm:{l:"시작 밝기",u:"%",min:0,max:100,d:100},
+  manual_40w:{l:"PWM1 주등",u:"%",min:10,max:99,d:90},
+  manual_5w1:{l:"PWM2 입간판",u:"%",min:10,max:99,d:90},
+  manual_5w2:{l:"PWM3",u:"%",min:10,max:99,d:90},
+  fade:{l:"Fade",u:"×0.1초",min:1,max:20,d:10},
+  stage1_h:{min:0,max:23,d:20},stage1_m:{min:0,max:59,d:0},stage1_pwm:{min:0,max:100,d:70},
+  stage2_h:{min:0,max:23,d:0},stage2_m:{min:0,max:59,d:0},stage2_pwm:{min:0,max:100,d:40},
+  stage3_h:{min:0,max:23,d:2},stage3_m:{min:0,max:59,d:0},stage3_pwm:{min:0,max:100,d:30},
+  stage4_h:{min:0,max:23,d:4},stage4_m:{min:0,max:59,d:0},stage4_pwm:{min:0,max:100,d:60},
+  cut12:{sc:100,min:1100,max:1500,d:1275},rtn12:{sc:100,min:1100,max:1500,d:1315},
+  cut24:{sc:100,min:2200,max:3000,d:2550},rtn24:{sc:100,min:2200,max:3000,d:2630},
+  cut_time:{min:1,max:60,d:10},rtn_time:{min:1,max:60,d:30},
+};
+const KEYS=Object.keys(ITEMS);
+const DEF=Object.fromEntries(KEYS.map(k=>[k,ITEMS[k].d]));
+/* 템플릿: 서버에 저장하는 이름 붙은 설정값 묶음. 만들기와 지우기만 있다(수정은 지우고 다시 만든다) */
+const TEMPLATES=[
+  {name:"군포시 표준 (주등만)",v:{...DEF,manual_40w:85,manual_5w1:10}},
+  {name:"안양 입간판 포함",v:{...DEF,manual_40w:85,manual_5w1:70}},
+  {name:"의왕 절전형",v:{...DEF,manual_40w:75,manual_5w1:10,stage2_pwm:30,stage3_pwm:20}},
+];
+const effPwm=(base,sp)=>{ let v=Math.round(base*sp/100); if(v>99) v=99; if(v>0&&v<10) v=10; return v; };
+function validate(v){
+  const e=[];
+  if(!(v.cut12<v.rtn12)) e.push({k:["cut12","rtn12"],t:"12V 차단 전압은 복귀 전압보다 낮아야 한다. 어기면 단말이 저장 때 기본값으로 조용히 바꾼다."});
+  if(!(v.cut24<v.rtn24)) e.push({k:["cut24","rtn24"],t:"24V 차단 전압은 복귀 전압보다 낮아야 한다. 어기면 단말이 저장 때 기본값으로 조용히 바꾼다."});
+  const rel=i=>((v[`stage${i}_h`]*60+v[`stage${i}_m`])-720+1440)%1440;
+  if(!(rel(1)<rel(2)&&rel(2)<rel(3)&&rel(3)<rel(4))) e.push({k:["stage"],t:"다단계 시각은 1→2→3→4 순서로 저녁에서 밤으로 이어져야 한다. 어기면 Flash 저장이 거부된다."});
+  KEYS.forEach(k=>{ const it=ITEMS[k]; if(!(v[k]>=it.min&&v[k]<=it.max)) e.push({k:[k],t:`${it.l||k} 값이 범위(${it.min/(it.sc||1)}~${it.max/(it.sc||1)})를 벗어났다.`}); });
+  return e;
+}
+
+/* ================= 일출·일몰 (미리보기 근사) ================= */
+function sunKST(lat,lon,doy){
+  const g=2*Math.PI/365*(doy-1), rad=Math.PI/180;
+  const eq=229.18*(0.000075+0.001868*Math.cos(g)-0.032077*Math.sin(g)-0.014615*Math.cos(2*g)-0.040849*Math.sin(2*g));
+  const dc=0.006918-0.399912*Math.cos(g)+0.070257*Math.sin(g)-0.006758*Math.cos(2*g)+0.000907*Math.sin(2*g)-0.002697*Math.cos(3*g)+0.00148*Math.sin(3*g);
+  const ha=Math.acos(Math.cos(90.833*rad)/(Math.cos(lat*rad)*Math.cos(dc))-Math.tan(lat*rad)*Math.tan(dc))/rad;
+  return {rise:720-4*(lon+ha)-eq+540, set:720-4*(lon-ha)-eq+540};
+}
+const hm=m=>{ m=Math.round((m+1440)%1440); return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0"); };
+const DOY1=[1,32,60,91,121,152,182,213,244,274,305,335];
+function schRows(lat,lon,on,off,months){
+  return months.map(mi=>[1,15].map(day=>{ const s=sunKST(lat,lon,DOY1[mi]+day-1), a=s.set+on, b=s.rise+off;
+    return {on:hm(a),off:hm(b),len:hm((b+1440-a)%1440)}; }));
+}
+const utf8len=s=>new TextEncoder().encode(s).length;
+const hexOf=s=>[...new TextEncoder().encode(s)].map(b=>b.toString(16).toUpperCase().padStart(2,"0")).join("");
+const fakeCrc=s=>{ let h=0x811c9dc5; for(const ch of s){ h^=ch.charCodeAt(0); h=Math.imul(h,16777619)>>>0; } return h.toString(16).toUpperCase().padStart(8,"0"); };
+
+/* ================= 단말 설정 화면 ================= */
+const CFGDB={};
+function cfgOf(i){
+  const d=devices[i];
+  if(!CFGDB[d.uuid]){
+    const t=d.ri===0||d.ri===1||d.ri===7?TEMPLATES[1]:d.ri===4||d.ri===5?TEMPLATES[2]:TEMPLATES[0];
+    const f={...t.v}, leaf=LEAF_BY_RI[d.ri], r=REGIONS[d.ri];
+    CFGDB[d.uuid]={flash:f, ram:{...f}, edit:{...f}, seq:40+i, readAt:null, tpl:t.name,
+      sch:{region:leaf.parent.name.split(" ")[0].replace(/시$/,"")+" "+leaf.name, lat:r.lat, lon:r.lng, on:0, off:0, src:"서버"}};
+  }
+  return CFGDB[d.uuid];
+}
+let ci=0, job=null, newTpl=false;
+function logC(dir,txt,cls){ const n=new Date(), li=document.createElement("li");
+  li.innerHTML=`<span class="t">${n.toTimeString().slice(0,8)}</span><span class="${cls||(dir==="→"?"dn":"up")}">${dir}</span><span>${txt}</span>`; $("cLog").prepend(li); }
+const fieldState=(c,k)=>c.edit[k]!==c.ram[k]?"edit":c.ram[k]!==c.flash[k]?"ram":"";
+const mark=st=>st?`<span class="mk ${st}"></span>`:"";
+function openCfg(i){
+  showView("cfg"); if(job&&!job.done) job.cancel(); ci=i; $("cSel").value=i; newTpl=false;
+  $("cLog").innerHTML=""; drawCfg(); runComm("CFG_GET");
+}
+function runComm(type){
+  const c=cfgOf(ci), d=devices[ci], s=c.sch, alive=d.on!==null;
+  const req={CFG_GET:"CFG_GET",CFG_RELOAD:"CFG_RELOAD",CFG_SAVE:"CFG_SAVE",SCH_INFO:"SCH_INFO"}[type]
+    || (type==="CFG_SET"?`CFG_SET ${JSON.stringify(Object.fromEntries(KEYS.filter(k=>c.edit[k]!==c.ram[k]).map(k=>[k,c.edit[k]])))}`
+    : `SCH_GEN lat=${Math.round(s.lat*1e6)} lon=${Math.round(s.lon*1e6)} on=${s.on} off=${s.off} reg=${hexOf(s.region)}`);
+  logC("→",req);
+  const onOk={
+    CFG_GET:()=>{ c.edit={...c.ram}; c.readAt=new Date(); logC("←",`CFG_REPORT v[${KEYS.length}] fw=1.4.0`); return "단말 값을 읽었다."; },
+    CFG_SET:()=>{ const ch=KEYS.filter(k=>c.edit[k]!==c.ram[k]); ch.forEach(k=>c.ram[k]=c.edit[k]); if(c.tplPending){ c.tpl=c.tplPending; c.tplPending=null; }
+      logC("←",`CFG_ACK ok=${ch.length} err=0`); return `${ch.length}개 적용됨. 운전에 바로 반영된다. Flash 저장 전이다.`; },
+    CFG_SAVE:()=>{ c.flash={...c.ram}; c.schDirty=false; c.seq++; logC("←",`CFG_SAVED seq=${c.seq} crc=${fakeCrc(JSON.stringify(c.flash))}`); return `Flash 저장 완료 (seq ${c.seq}).`; },
+    CFG_RELOAD:()=>{ c.ram={...c.flash}; c.edit={...c.flash}; c.schDirty=false; logC("←","CFG_RELOADED"); return "Flash 값으로 되돌렸다."; },
+    SCH_GEN:()=>{ const crc=fakeCrc(`${Math.round(s.lat*1e6)},${Math.round(s.lon*1e6)},${s.on},${s.off}`); s.src="서버"; c.schDirty=true; logC("←",`SCH_ACK crc=${crc} · 서버 계산과 일치`); return "단말이 표를 만들었다. CRC 일치. Flash 저장 전이다."; },
+    SCH_INFO:()=>{ logC("←",`SCH_INFO src=2 lat=${Math.round(s.lat*1e6)} lon=${Math.round(s.lon*1e6)} on=${s.on} off=${s.off}`); return "단말 표 정보를 읽었다."; },
+  }[type];
+  job=comm({box:$("cComm"),type,alive,writes:["CFG_SET","CFG_SAVE","SCH_GEN","CFG_RELOAD"].includes(type),onOk,onEnd:()=>drawCfg()});
+  job.log=logC; drawCfgHead();
+}
+function drawCfgHead(){
+  const c=cfgOf(ci), d=devices[ci], busy=job&&!job.done;
+  const ne=KEYS.filter(k=>c.edit[k]!==c.ram[k]).length, nr=KEYS.filter(k=>c.ram[k]!==c.flash[k]).length+(c.schDirty?1:0);
+  const st=$("cState");
+  if(ne){ st.className="state edit"; st.textContent=`편집 ${ne}개, 아직 안 보냄`; }
+  else if(nr){ st.className="state ram"; st.textContent=`단말 적용, 저장 전 ${nr}개`; }
+  else { st.className="state ok"; st.textContent="단말 Flash와 일치"; }
+  $("cMeta").textContent=`F/W 1.4.0 · 저장 seq ${c.seq} · 템플릿 ${c.tpl||"없음"}${c.readAt?` · 읽음 ${c.readAt.toTimeString().slice(0,5)}`:""}`;
+  const errs=validate(c.edit);
+  $("cErr").innerHTML=errs.map(e=>`<div>${e.t}</div>`).join("")+(d.on===null?`<div class="warnline" style="margin:0">통신 두절 단말이다. 요청을 보내면 응답 없이 시간 초과로 끝난다.</div>`:"");
+  $("cRead").disabled=busy; $("cWrite").disabled=busy||!ne||errs.length>0; $("cSave").disabled=busy||ne>0||!nr||errs.length>0; $("cReload").disabled=busy||(!ne&&!nr);
+  const sg=$("sGen"); if(sg) sg.disabled=busy||utf8len(c.sch.region)>47; const si=$("sInfo"); if(si) si.disabled=busy;
+  drawTplBar();
+}
+function drawTplBar(){
+  const c=cfgOf(ci), sel=$("cTpl").value;
+  $("cTpl").innerHTML=`<option value="">템플릿 선택</option>`+TEMPLATES.map((t,i)=>`<option value="${i}">${t.name}</option>`).join("")+`<option value="new">＋ 신규 등록</option>`;
+  $("cTpl").value=newTpl?"new":(TEMPLATES.some((t,i)=>String(i)===sel)?sel:"");
+  $("tplNew").hidden=!newTpl; $("cTplMgr").hidden=newTpl;
+  const nm=$("tplName").value.trim(), errs=validate(c.edit).length;
+  $("tplSave").disabled=!nm||TEMPLATES.some(t=>t.name===nm)||errs>0;
+}
+function fld(c,k,label,opt={}){
+  const it=ITEMS[k], bad=validate(c.edit).some(e=>e.k.includes(k));
+  return `<div class="fld ${bad?"bad":""}" title="${it.min}~${it.max}"><label>${mark(fieldState(c,k))}${label||it.l}</label><div class="in">
+    ${opt.slider?`<input type="range" min="${it.min}" max="${it.max}" value="${c.edit[k]}" data-k="${k}" aria-label="${label||it.l}">`:""}
+    <input class="num" type="number" min="${it.min}" max="${it.max}" value="${c.edit[k]}" data-k="${k}"></div><span class="unit">${it.u||""}</span></div>`;
+}
+function vIn(c,k){ const it=ITEMS[k], bad=validate(c.edit).some(e=>e.k.includes(k));
+  return `<span class="vin ${bad?"bad":""}">${mark(fieldState(c,k))}<input class="num" type="number" step="${it.sc?"0.01":"1"}" min="${it.min/(it.sc||1)}" max="${it.max/(it.sc||1)}" value="${it.sc?(c.edit[k]/it.sc).toFixed(2):c.edit[k]}" data-k="${k}" data-sc="${it.sc||1}" aria-label="${k}"></span>`; }
+function drawCfg(){
+  const c=cfgOf(ci), e=c.edit;
+  $("cBright").innerHTML=fld(c,"manual_40w","PWM1 주등",{slider:true})+fld(c,"manual_5w1","PWM2 입간판",{slider:true})+fld(c,"start_pwm","시작 밝기",{slider:true})+fld(c,"fade","Fade")
+    +`<div class="out" style="margin-top:auto"><span>실제 출력</span><span>주등 <b>${effPwm(e.manual_40w,e.start_pwm)}%</b></span><span>입간판 <b>${effPwm(e.manual_5w1,e.start_pwm)}%</b></span></div>
+      <details class="info"><summary class="cap" style="font-weight:400">PWM3 미사용 채널 · 값 ${e.manual_5w2}%</summary>${fld(c,"manual_5w2","PWM3")}</details>`;
+  const bad=validate(e).some(x=>x.k.includes("stage"));
+  $("cStage").innerHTML=[1,2,3,4].map(i=>{ const st=["h","m","pwm"].map(x=>fieldState(c,`stage${i}_${x}`)).find(Boolean)||"";
+    return `<div class="fld ${bad?"bad":""}"><label>${mark(st)}${i}단계</label><div class="in"><input class="num tm" type="time" value="${String(e[`stage${i}_h`]).padStart(2,"0")}:${String(e[`stage${i}_m`]).padStart(2,"0")}" data-stage="${i}" aria-label="${i}단계 시각">
+      <input type="range" min="0" max="100" value="${e[`stage${i}_pwm`]}" data-k="stage${i}_pwm" aria-label="${i}단계 밝기"><input class="num" type="number" min="0" max="100" value="${e[`stage${i}_pwm`]}" data-k="stage${i}_pwm"></div><span class="unit">%</span></div>`; }).join("")
+    +`<div style="margin-top:auto">${stageTimeline(c)}</div>`;
+  $("cBatt").innerHTML=`<div class="bgrid"><span></span><span class="cap">차단</span><span class="cap">복귀</span>
+      <span>12V</span>${vIn(c,"cut12")}${vIn(c,"rtn12")}
+      <span>24V</span>${vIn(c,"cut24")}${vIn(c,"rtn24")}
+      <span>유지 (분)</span>${vIn(c,"cut_time")}${vIn(c,"rtn_time")}</div>
+    <div class="cap" style="margin-top:auto">전압 아래(위)로 유지 시간만큼 지나면 소등(재점등). 계통에 맞는 줄만 쓰인다.</div>`;
+  drawSch(); drawCfgHead();
+}
+function stageTimeline(c){
+  const e=c.edit, s=c.sch, doy=Math.floor((Date.now()-new Date(new Date().getFullYear(),0,0))/864e5), sun=sunKST(+s.lat,+s.lon,doy);
+  const on=sun.set+(+s.on)+e.start_ofst, off=sun.rise+(+s.off)+e.stop_ofst+1440;
+  const pts=[{t:on,p:effPwm(e.manual_40w,e.start_pwm)}];
+  [1,2,3,4].forEach(i=>{ let t=e[`stage${i}_h`]*60+e[`stage${i}_m`]; if(t<720) t+=1440; pts.push({t,p:e[`stage${i}_pwm`]}); });
+  const segs=[]; for(let i=0;i<pts.length;i++){ const a=Math.max(pts[i].t,on), b=Math.min(i+1<pts.length?pts[i+1].t:off,off); if(b>a) segs.push({a,b,p:pts[i].p}); }
+  const tot=off-on;
+  return `<div class="tl">${segs.map(g=>`<i style="flex:${g.b-g.a};background:rgba(242,192,74,${(.2+g.p/100*.8).toFixed(2)})" title="${hm(g.a)}~${hm(g.b)} ${g.p}%">${(g.b-g.a)/tot>.1?g.p+"%":""}</i>`).join("")}</div>
+    <div class="tlx"><span>점등 ${hm(on)}</span><span>오늘 밤 주등</span><span>소등 ${hm(off)}</span></div>`;
+}
+function drawSch(){
+  const c=cfgOf(ci), s=c.sch;
+  $("sSrc").textContent=`근거: ${s.region} · ${(+s.lat).toFixed(4)}, ${(+s.lon).toFixed(4)} · 보정 ${s.on>=0?"+":""}${s.on}/${s.off>=0?"+":""}${s.off}분 · ${s.src}`;
+  const R=schRows(+s.lat,+s.lon,+s.on,+s.off,[...Array(12).keys()]);
+  $("cSch").innerHTML=`<div class="form5">
+      <label><span>지역 · ${utf8len(s.region)}/47B</span><input class="inp" data-s="region" value="${s.region}"></label>
+      <label><span>위도</span><input class="inp" data-s="lat" value="${s.lat}"></label><label><span>경도</span><input class="inp" data-s="lon" value="${s.lon}"></label>
+      <label><span>점등 보정 (표)</span><input class="inp" type="number" min="-180" max="180" data-s="on" value="${s.on}"></label><label><span>소등 보정 (표)</span><input class="inp" type="number" min="-180" max="180" data-s="off" value="${s.off}"></label></div>
+    <div class="form5 sub2"><label><span>${mark(fieldState(c,"start_ofst"))}점등 Offset (운전 중, 분)</span><input class="inp" type="number" min="-60" max="60" value="${c.edit.start_ofst}" data-k="start_ofst"></label>
+      <label><span>${mark(fieldState(c,"stop_ofst"))}소등 Offset (운전 중, 분)</span><input class="inp" type="number" min="-60" max="60" value="${c.edit.stop_ofst}" data-k="stop_ofst"></label>
+      <span class="cap" style="align-self:end">보정은 표에 들어가고(SCH_GEN), Offset은 설정값으로 운전 중에 더한다(CFG_SET).</span></div>
+    ${utf8len(s.region)>47?`<div class="err">지역 이름이 47바이트를 넘는다.</div>`:""}
+    <div class="tw" style="margin:0"><table class="mini"><thead><tr><th>월</th><th>1일 점등</th><th>소등</th><th class="n">점등 시간</th><th>15일 점등</th><th>소등</th><th class="n">점등 시간</th></tr></thead>
+      <tbody>${R.map((r,m)=>`<tr><td>${m+1}월</td><td>${r[0].on}</td><td>${r[0].off}</td><td class="n">${r[0].len}</td><td>${r[1].on}</td><td>${r[1].off}</td><td class="n">${r[1].len}</td></tr>`).join("")}</tbody></table></div>
+    <div class="bar2"><button class="btn" id="sInfo">단말 표 정보 읽기</button><button class="btn pri" id="sGen">단말에 표 만들기</button><span class="sp"></span>
+      <span class="cap">${c.schDirty?`${mark("ram")} 단말 적용, Flash 저장 전`:"미리보기 근사값. 실제 표는 suntable 정수 계산"}</span></div>`;
+}
+function tplUsers(name){ devices.forEach((d,k)=>cfgOf(k)); return devices.filter(d=>CFGDB[d.uuid]&&CFGDB[d.uuid].tpl===name).map(d=>d.n); }
+function drawTplList(){
+  $("tplList").innerHTML=TEMPLATES.map((t,i)=>{ const u=tplUsers(t.name);
+    return `<div class="tplrow"><span>${t.name}</span><span class="u">${u.length?`사용 ${u.length}대`:"사용 안 함"}</span><button class="btn" data-tdel="${i}">삭제</button></div>`; }).join("")
+    +`<div class="cap" style="padding:8px 0">수정은 없다. 지우고 신규 등록으로 다시 만든다.</div>`;
+}
+function tplDelete(i){
+  const t=TEMPLATES[i], users=tplUsers(t.name);
+  if(users.length){ $("tplMsg").innerHTML=`<span class="err">"${t.name}"은 사용 중이라 지울 수 없다. 사용 단말: ${users.slice(0,5).join(", ")}${users.length>5?` 외 ${users.length-5}대`:""}</span>`; return; }
+  if(!confirm(`템플릿 "${t.name}"을 지운다.`)) return;
+  TEMPLATES.splice(i,1); $("cTpl").value=""; $("tplMsg").innerHTML=`<span class="okl">"${t.name}"을 지웠다.</span>`; drawTplBar(); drawTplList();
+}
+/* ================= 승인 대기 → 등록 (승인 + 설치 정보만) ================= */
+const PENDING=[
+  {uuid:"34FF6A064550343620282A11",fw:"1.4.0",imei:"354210000871193",iccid:"8982050000012345671",first:"오늘 07:42",lte:3},
+  {uuid:"34FF6A064550343620282A4C",fw:"1.4.0",imei:"354210000871284",iccid:"8982050000012345689",first:"오늘 07:40",lte:4},
+  {uuid:"34FF6A064550343620282B02",fw:"1.4.0",imei:"354210000871375",iccid:"8982050000012345697",first:"어제 16:12",lte:2},
+  {uuid:"34FF6A064550343620282B3D",fw:"1.3.2",imei:"354210000871466",iccid:"8982050000012345705",first:"어제 16:05",lte:3},
+  {uuid:"34FF6A064550343620282B78",fw:"1.4.0",imei:"354210000871557",iccid:"8982050000012345713",first:"9/24 11:20",lte:4},
+  {uuid:"34FF6A064550343620282C1E",fw:"1.4.0",imei:"354210000871648",iccid:"8982050000012345721",first:"9/24 11:18",lte:1,silent:true},
+];
+function drawPending(){
+  $("pRows").innerHTML=PENDING.map((p,i)=>`<tr data-pu="${i}" tabindex="0"><td style="font-family:var(--mono)">${p.uuid}</td><td>RMCB-1100M</td><td>${p.fw}</td><td>${p.imei}</td><td>${p.first}</td><td>${sig(p.lte)}</td><td style="text-align:right"><button class="btn" data-pu="${i}">등록</button></td></tr>`).join("")
+    ||`<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">승인 대기 단말이 없다.</td></tr>`;
+  document.querySelectorAll(".nav .cnt.b").forEach(x=>x.textContent=31+PENDING.length);
+}
+const R={pi:0,node:null,exp:new Set([0,1]),stage:"edit",job:null};
+function rTreeHTML(n){
+  const open=R.exp.has(n.id), has=!!n.children, a=agg(n);
+  return `<div class="tn ${R.node===n.id?"on":""}" data-rnode="${n.id}" style="padding-left:${6+n.depth*16}px" role="treeitem" tabindex="0">
+    <button class="tc" data-rtog="${n.id}" ${has?"":"disabled"}>${has?(open?"▾":"▸"):""}</button>
+    <span class="tnm">${n.name}${!has?`<small>${n.code}</small>`:""}</span><span class="tct">${has?"":nf(a.tot)+"대"}</span></div>`+(has&&open?n.children.map(rTreeHTML).join(""):"");
+}
+function openR(pi){
+  closeAll(); R.pi=pi; R.node=null; R.stage="edit"; const p=PENDING[pi];
+  $("rUuid").textContent="UUID "+p.uuid;
+  $("rInfo").innerHTML=[["모델","RMCB-1100M"],["펌웨어",p.fw],["IMEI",p.imei],["ICCID",p.iccid],["최초 접속",p.first],["LTE 신호",`${p.lte}/4`]]
+    .map(([l,v])=>`<div class="met"><div class="l">${l}</div><div class="v">${v}</div></div>`).join("");
+  $("rName").value=""; $("rLat").value=""; $("rLon").value="";
+  drawR(); $("ov").style.display="block"; $("rdrawer").classList.add("open");
+}
+function drawR(){
+  $("rTree").innerHTML=rTreeHTML(TREE);
+  const n=R.node!=null?NODES[R.node]:null;
+  $("rPath").innerHTML=n?`선택: <b>${pathName(n)}</b> · 법정동코드 <b>${n.code}</b>`:"선택: 없음. 말단 법정동만 고를 수 있다";
+  ["rName","rLat","rLon"].forEach(id=>$(id).disabled=R.stage!=="edit");
+  if(R.stage==="edit"){
+    const ok=n&&$("rName").value.trim()&&isFinite(parseFloat($("rLat").value))&&isFinite(parseFloat($("rLon").value));
+    $("rAct").innerHTML=`<button class="btn pri send" id="rGo" ${ok?"":"disabled"}>승인하기</button>
+      <div class="cap" style="margin-top:8px">${ok?"승인과 설치 정보(법정동코드, 좌표)만 보낸다. 설정값과 1년 스케줄은 등록 뒤 단말 설정에서 한다.":"법정동, 시설명, 좌표를 채우면 승인할 수 있다."}</div>`;
+  }
+}
+function runR(){
+  const p=PENDING[R.pi], n=NODES[R.node], name=$("rName").value.trim(), lat=+$("rLat").value, lon=+$("rLon").value;
+  R.stage="run"; drawR();
+  $("rAct").innerHTML=`<h4>진행</h4><ol class="steps">
+      <li class="done"><span class="no">1</span><div><div>승인</div><div class="s"><code>REGISTER_ACK</code> state=ACTIVE, site="${name}" (retain)</div></div><span class="r st-ok">발행</span></li>
+      <li class="run" id="rS2"><span class="no">2</span><div><div>설치 정보</div><div class="s"><code>CONFIG_SET</code> grp="${n.code}", lat, lon, ti=600</div></div><span class="r muted">응답 대기</span></li>
+    </ol><div id="rComm" style="margin-top:12px"></div><div id="rEnd"></div>`;
+  $("rAct").scrollIntoView({behavior:"smooth",block:"start"});
+  R.job=comm({box:$("rComm"),type:"CONFIG_SET",alive:!p.silent,writes:false,
+    onOk:()=>{ return `CONFIG_ACK 받음. ${pathName(n)} 아래로 등록했다.`; },
+    onEnd:kind=>{
+      const s2=$("rS2"); if(!s2) return;
+      if(kind==="ok"){
+        s2.className="done"; s2.querySelector(".r").className="r st-ok"; s2.querySelector(".r").textContent="CONFIG_ACK";
+        devices.push({n:name,ri:n.ri,st:"ok",ago:"방금",lte:p.lte,on:0,sc:80,bv:2600,pp:0,md:0,pw:[0,0],uuid:p.uuid});
+        const di=devices.length-1, r=REGIONS[n.ri];
+        CFGDB[p.uuid]={flash:{...DEF},ram:{...DEF},edit:{...DEF},seq:1,readAt:null,tpl:null,
+          sch:{region:n.parent.name.split(" ")[0].replace(/시$/,"")+" "+n.name,lat,lon,on:0,off:0,src:"펌웨어 기본 표"}};
+        PENDING.splice(R.pi,1); drawPending(); drawList(); fillCSel(); R.stage="done";
+        $("rEnd").innerHTML=`<div class="cap" style="margin-top:8px">설정값은 아직 펌웨어 기본값이다. 단말 설정에서 템플릿을 고르고 1년 스케줄을 만든 뒤 Flash 저장한다.</div>
+          <div class="bar2" style="margin-top:12px"><button class="btn pri" data-opencfg="${di}">단말 설정 열기</button><button class="btn" data-close>닫기</button></div>`;
+      } else {
+        s2.className="fail"; s2.querySelector(".r").className="r st-fail"; s2.querySelector(".r").textContent=kind==="cancel"?"취소":"시간 초과";
+        $("rEnd").innerHTML=`<div class="cap" style="margin-top:8px">승인을 되돌렸다: <code style="font-family:var(--mono)">REGISTER_ACK state=PENDING</code> 재발행. 단말은 승인 대기에 남는다.</div>
+          <div class="bar2" style="margin-top:12px"><button class="btn pri" id="rRetry">다시 시도</button><button class="btn" data-close>닫기</button></div>`;
+      }
+    }});
+}
+function fillCSel(){ $("cSel").innerHTML=devices.map((d,i)=>`<option value="${i}">${d.n}</option>`).join(""); $("cSel").value=ci; }
+
+/* ---------- 이벤트 ---------- */
+document.addEventListener("click",e=>{
+  const t=e.target;
+  if(t.closest("[data-close]")||t.id==="ov"){ closeAll(); return; }
+  const m=t.closest("[data-m]"); if(m){ mapOn[m.dataset.m]=!mapOn[m.dataset.m]; drawChips(); mapRefresh(); return; }
+  const tb=t.closest("[data-t]"); if(tb){ tab=tb.dataset.t; drawQueue(); return; }
+  // 제어 버튼 (개별/그룹 공통)
+  const ab=t.closest("[data-a]"), db=t.closest("[data-d]");
+  if(ab||db){ const sc=(ab||db).closest("[data-scope]").dataset.scope; const c=C[sc];
+    if(ab) c.act=ab.dataset.a; else c.dur=+db.dataset.d;
+    if(sc==="d") drawD(); else { G.stage="idle"; drawG(); } return; }
+  const vw=t.closest("[data-view]"); if(vw){ e.preventDefault(); const v=vw.dataset.view; if(v==="cfg") openCfg(ci); else showView(v); return; }
+  if(t.id==="dCfgBtn"){ openCfg(curI); return; }
+  const oc=t.closest("[data-opencfg]"); if(oc){ openCfg(+oc.dataset.opencfg); return; }
+  const pu=t.closest("[data-pu]"); if(pu){ openR(+pu.dataset.pu); return; }
+  const rt=t.closest("[data-rtog]"); if(rt){ const id=+rt.dataset.rtog; R.exp.has(id)?R.exp.delete(id):R.exp.add(id); drawR(); return; }
+  const rn=t.closest("[data-rnode]"); if(rn){ if(R.stage!=="edit") return; const n=NODES[+rn.dataset.rnode];
+    if(n.children){ R.exp.has(n.id)?R.exp.delete(n.id):R.exp.add(n.id); drawR(); return; }
+    R.node=n.id; const r=REGIONS[n.ri]; $("rLat").value=r.lat.toFixed(4); $("rLon").value=r.lng.toFixed(4); drawR(); return; }
+  if(t.id==="rGo"){ runR(); return; }
+  if(t.id==="rRetry"){ R.stage="edit"; drawR(); return; }
+  if(t.id==="cRead"){ runComm("CFG_GET"); return; } if(t.id==="cWrite"){ runComm("CFG_SET"); return; }
+  if(t.id==="cSave"){ if(confirm("단말 Flash에 저장한다. 설정값과 1년 스케줄이 함께 저장된다.")) runComm("CFG_SAVE"); return; }
+  if(t.id==="cReload"){ runComm("CFG_RELOAD"); return; }
+  if(t.id==="cTplMgr"){ const h=!$("tplList").hidden; $("tplList").hidden=h; t.setAttribute("aria-expanded",!h); if(!h) drawTplList(); return; }
+  const td=t.closest("[data-tdel]"); if(td){ tplDelete(+td.dataset.tdel); return; }
+  if(t.id==="tplCancel"){ newTpl=false; $("tplMsg").innerHTML=""; drawTplBar(); return; }
+  if(t.id==="tplSave"){ const nm=$("tplName").value.trim(), c=cfgOf(ci); TEMPLATES.push({name:nm,v:{...c.edit}}); c.tplPending=nm; newTpl=false;
+    drawTplBar(); $("cTpl").value=String(TEMPLATES.length-1); drawTplBar(); if(!$("tplList").hidden) drawTplList(); $("tplMsg").innerHTML=`<span class="okl">"${nm}" 템플릿을 만들었다. 다른 단말에서도 고를 수 있다. 이 단말에는 단말에 쓰기로 적용한다.</span>`; return; }
+  if(t.id==="sGen"){ runComm("SCH_GEN"); return; }
+  if(t.id==="sInfo"){ runComm("SCH_INFO"); return; }
+  if(t.id==="dSend"){ sendD(); return; }
+  const tg=t.closest("[data-tog]"); if(tg){ const id=+tg.dataset.tog; expanded.has(id)?expanded.delete(id):expanded.add(id); drawGTarget(); return; }
+  const nd=t.closest("[data-node]"); if(nd){ G.node=+nd.dataset.node; G.stage="idle"; $("gProg").style.display="none"; drawGTarget(); drawGAction(); return; }
+  if(t.id==="gSend"){ G.stage="confirm"; drawGAction(); return; }
+  if(t.id==="gCancel"){ G.stage="idle"; drawGAction(); return; }
+  if(t.id==="gFire"){ const ty=$("gType"); if(ty&&ty.value.trim()!=="전체"){ ty.focus(); ty.style.borderColor="var(--alarm)"; return; } fireG(); return; }
+  const f=t.closest("[data-f]"); if(f){ filter=f.dataset.f; $("fSel").value=FL[filter]&&["all","alarm","off","warn","ok","cut"].includes(filter)?filter:"all"; drawList();
+    document.querySelector(".list").scrollIntoView({behavior:"smooth",block:"center"}); return; }
+  const u=t.closest("[data-u]"); if(u){ openD(+u.dataset.u); return; }
+});
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape") closeAll();
+  const nd=e.target.closest&&e.target.closest("[data-node]");
+  if(nd){ const id=+nd.dataset.node, n=NODES[id], focus=x=>document.querySelector(`[data-node="${x}"]`).focus();
+    if(e.key==="Enter"||e.key===" "){ e.preventDefault(); G.node=id; drawGTarget(); drawGAction(); focus(id); }
+    if(e.key==="ArrowRight"&&n.children){ expanded.add(id); drawGTarget(); focus(id); }
+    if(e.key==="ArrowLeft"){ if(expanded.has(id)&&n.children){ expanded.delete(id); drawGTarget(); focus(id); } else if(n.parent) focus(n.parent.id); }
+    return; }
+  if(e.key==="Enter"){ const pu=e.target.closest&&e.target.closest("tr[data-pu]"); if(pu){ openR(+pu.dataset.pu); return; } const u=e.target.closest&&e.target.closest("[data-u]"); if(u) openD(+u.dataset.u); }
+});
+/* 입력 이벤트: 제어 채널/밝기, 설정 항목, 등록 입력 */
+document.addEventListener("change",e=>{
+  const t=e.target;
+  if(t.dataset.ch){ const sc=t.closest("[data-scope]").dataset.scope; C[sc].ch[t.dataset.ch]=t.checked; drawCtl(sc); ctlChanged(sc); return; }
+  if(t.dataset.k||t.dataset.stage){ drawCfg(); return; }
+  if(t.dataset.s){ drawCfg(); return; }
+  if(t.id==="cSel"){ openCfg(+t.value); return; }
+  if(t.id==="cTpl"){ const v=t.value, c=cfgOf(ci);
+    if(v==="new"){ newTpl=true; $("tplName").value=""; $("tplMsg").innerHTML="지금 값에서 시작한다. 아래에서 값을 바꾸고 이름을 넣은 뒤 템플릿 저장을 누른다."; drawTplBar(); $("tplName").focus(); return; }
+    newTpl=false; if(v===""){ $("tplMsg").innerHTML=""; drawTplBar(); return; }
+    const tp=TEMPLATES[+v]; c.edit={...c.edit,...tp.v}; c.tplPending=tp.name; drawCfg(); $("cTpl").value=v; drawTplBar();
+    $("tplMsg").innerHTML=`"${tp.name}" 값을 넣었다. 단말에 쓰기를 눌러야 단말에 적용된다.`; return; }
+});
+document.addEventListener("input",e=>{
+  const t=e.target;
+  if(t.dataset.pw){ const sc=t.closest("[data-scope]").dataset.scope; C[sc].pwm[t.dataset.pw]=+t.value; t.nextElementSibling.textContent=t.value+"%"; ctlChanged(sc); return; }
+  if(t.dataset.k){ const c=cfgOf(ci), k=t.dataset.k, sc=+(t.dataset.sc||1); let v=Math.round(parseFloat(t.value)*sc); if(!isFinite(v)) return;
+    c.edit[k]=v; const bx=t.closest(".in"); if(bx) bx.querySelectorAll(`[data-k="${k}"]`).forEach(x=>{ if(x!==t) x.value=v; }); liveCfg(); return; }
+  if(t.id==="tplName"){ drawTplBar(); return; }
+  if(t.dataset.stage){ const c=cfgOf(ci), i=t.dataset.stage, [h,m]=(t.value||"0:0").split(":").map(Number); c.edit[`stage${i}_h`]=h; c.edit[`stage${i}_m`]=m; liveCfg(); return; }
+  if(t.dataset.s){ const s=cfgOf(ci).sch, k=t.dataset.s; s[k]=k==="region"?t.value:k==="on"||k==="off"?(parseInt(t.value)||0):(parseFloat(t.value)||0); return; }
+  if(["rName","rLat","rLon"].includes(t.id)){ drawR(); return; }
+});
+function liveCfg(){ const c=cfgOf(ci), e=c.edit;
+  const o=document.querySelector("#cBright .out"); if(o) o.innerHTML=`<span>실제 출력</span><span>주등 <b>${effPwm(e.manual_40w,e.start_pwm)}%</b></span><span>입간판 <b>${effPwm(e.manual_5w1,e.start_pwm)}%</b></span>`;
+  const tl=document.querySelector("#cStage .tl"); if(tl){ const w=document.createElement("div"); w.innerHTML=stageTimeline(c); tl.replaceWith(w.children[0]); document.querySelector("#cStage .tlx").replaceWith(w.children[0]); }
+  drawCfgHead(); }
+$("fSel").addEventListener("change",e=>{ filter=e.target.value; drawList(); });
+$("q").addEventListener("input",e=>{ q=e.target.value.trim(); drawList(); });
+$("chipX").addEventListener("click",()=>{ filter="all"; $("fSel").value="all"; drawList(); });
+$("rSel").innerHTML=NODES.map(n=>`<option value="${n.id}">${"\u00A0\u00A0\u00A0".repeat(n.depth)}${n.depth===0?"전체 법정동":n.name}</option>`).join("");
+$("rSel").addEventListener("change",e=>{ regionF=+e.target.value; $("grpBtn").textContent=regionF===0?"그룹 제어":`${NODES[regionF].name} 전체 제어`; drawList(); });
+$("grpBtn").addEventListener("click",()=>openG(regionF));
+$("grpBtn2").addEventListener("click",()=>openG(G.node));
+
+function setTheme(t){ document.documentElement.setAttribute("data-theme",t);
+  $("themeBtn").textContent=t==="dark"?"☀":"☾"; $("themeBtn").setAttribute("aria-label",t==="dark"?"밝은 화면으로":"어두운 화면으로");
+  try{localStorage.setItem("slc-theme",t)}catch(e){} }
+setTheme(document.documentElement.getAttribute("data-theme"));
+$("themeBtn").addEventListener("click",()=>setTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark"));
+function upd(){ const n=new Date(); $("upd").textContent=`마지막 갱신 ${n.toLocaleDateString("ko-KR")} ${n.toTimeString().slice(0,8)}`; }
+upd(); setInterval(upd,30000);
+fillCSel(); drawPending(); drawHist(); drawQueue(); drawChart(); drawList(); startMap();
+</script>
+</body>
+</html>
