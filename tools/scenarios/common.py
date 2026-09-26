@@ -1,17 +1,22 @@
-"""시나리오들이 같이 쓰는 도우미 — 단말 띄우기·계정 import·metrics 읽기·UUID 네임스페이스."""
+"""시나리오들이 같이 쓰는 도우미 — 단말 띄우기·승인·metrics 읽기·UUID 네임스페이스."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
 from tools.scenarios.framework import Ctx, Fail
-from tools.sim.device import SimDevice, uuid_from_index
-from tools.sim.fleet import write_accounts
+from tools.scenarios.services import error_code
+from tools.sim.device import SimDevice, hmac_key_from_hex, uuid_from_index
 
 OUT_DIR = Path(__file__).resolve().parent / "out"
+
+#: TM 이 DB 에 보이기까지의 여유(백엔드 1초 배치 + 왕복). wait_until 의 상한으로만 쓴다.
+FLUSH_WAIT = 10.0
 
 
 def namespace_of(scenario_id: str) -> int:
@@ -22,61 +27,109 @@ def namespace_of(scenario_id: str) -> int:
     return (int(m.group(1)) << 8) | int(m.group(2))
 
 
+def uuid_prefix(scenario_id: str) -> str:
+    return f"51A0{namespace_of(scenario_id):04X}"
+
+
 def sim_mode(ctx: Ctx) -> str:
-    """--sim-mode auto 면 공용 계정이 살아 있을 때 1cha, 아니면 2cha(계정 import 필요)."""
+    """--sim-mode auto 는 2cha(1.4.0 — HMAC 계정, 서버 준비 불필요). 1cha 는 공용 계정이 살아 있을 때만 뜻이 있다."""
     mode = getattr(ctx.opt, "sim_mode", "auto")
-    if mode != "auto":
-        return mode
-    return "1cha" if ctx.s.env.mqtt_test_account_enabled else "2cha"
+    return "2cha" if mode == "auto" else mode
 
 
-async def import_accounts(ctx: Ctx, uuids: list[str], *, offset: int = 0, wait_acl: bool = True) -> dict[str, str]:
-    """uuid,password CSV 를 만들어 REST 로 import 하고 ACL 적용을 기다린다. {uuid: password}."""
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUT_DIR / f"accounts_{ctx.scenario.id}_{offset}.csv"
-    ns = namespace_of(ctx.scenario.id)
-    # write_accounts 는 순번으로 만든다 — uuids 가 uuid_from_index(offset+i, ns) 순서라고 가정.
-    rows = write_accounts(path, len(uuids), ns, offset)
-    accounts = dict(rows)
-    if set(accounts) != set(uuids):
-        raise ValueError("uuids 가 uuid_from_index(i, namespace) 순서가 아니다")
-    r = await ctx.s.rest.import_accounts(path)
-    if r.status_code >= 400:
-        raise Fail(f"계정 import 실패 {r.status_code}: {r.text[:200]}")
-    body = r.json()
-    ctx.log(f"계정 import: {body}")
-    imported = body.get("imported")
-    if imported is not None and int(imported) != len(uuids):
-        raise Fail(f"imported={imported}, 기대 {len(uuids)}")
-    if wait_acl and not body.get("acl_applied"):
-        # 응답에 acl_applied=false 면 entrypoint 감시 루프가 HUP 할 때까지 기다린다.
-        # 상태 조회 API 가 없으므로 실제 접속으로 확인한다.
-        probe_uuid = uuids[0]
+def hmac_key(ctx: Ctx) -> bytes:
+    return hmac_key_from_hex(ctx.s.env.mqtt_hmac_key)
 
-        async def try_connect() -> bool:
-            ok, _ = await ctx.s.broker.can_connect(probe_uuid, accounts[probe_uuid], f"{probe_uuid}")
-            return ok
 
-        await ctx.wait_until(try_connect, timeout=60, interval=2, what="ACL 적용(단말 계정으로 접속 가능)")
-    return accounts
+def payload_of(event: dict[str, Any]) -> dict[str, Any]:
+    """device_event.payload (jsonb → dict 또는 str)."""
+    p = event.get("payload")
+    if isinstance(p, str):
+        try:
+            p = json.loads(p)
+        except ValueError:
+            return {}
+    return p if isinstance(p, dict) else {}
+
+
+def _describe(r) -> str:
+    return f"{r.status_code} {error_code(r) or r.text[:120]}"
+
+
+async def wait_rows(ctx: Ctx, uuids: list[str], *, timeout: float = 60.0, what: str = "") -> None:
+    """REGISTER 가 처리되어 device 행이 생길 때까지."""
+    async def all_present() -> bool:
+        n = await ctx.s.db.fetchval("SELECT count(*) FROM device WHERE uuid = ANY($1::text[])", uuids)
+        return n == len(uuids)
+    await ctx.wait_until(all_present, timeout=timeout, interval=0.5,
+                         what=what or f"device 행 {len(uuids)}개 생성(REGISTER 처리)")
+
+
+async def approve(ctx: Ctx, devices: list[SimDevice], *, site: str | None = None, timeout: float = 30.0,
+                  concurrency: int = 20) -> None:
+    """2cha 단말을 ACTIVE 로 승인한다 — `PATCH /api/devices/{uuid}/state {"state":"ACTIVE"}` (docs/05).
+
+    REGISTER 로 행이 생긴 뒤에만 승인할 수 있다(PATCH 는 없는 uuid 에 404). 승인 뒤 단말이 retain/실시간
+    REGISTER_ACK ACTIVE 를 받을 때까지 기다린다. 게이트가 꺼진 단말(1cha)은 건너뛴다.
+    """
+    gated = [d for d in devices if d.gate.enabled]
+    if not gated:
+        return
+    await wait_rows(ctx, [d.uuid for d in gated], timeout=timeout)
+    sem = asyncio.Semaphore(concurrency)
+
+    async def one(d: SimDevice) -> None:
+        async with sem:
+            r = await ctx.s.rest.patch_state(d.uuid, "ACTIVE", site=site)
+            if r.status_code >= 400:
+                raise Fail(f"승인 실패 {d.uuid}: {_describe(r)}")
+    await asyncio.gather(*(one(d) for d in gated))
+    not_active = [d for d in gated if not await d.wait_state("ACTIVE", timeout=timeout)]
+    if not_active:
+        raise Fail(f"승인 뒤 ACTIVE 를 못 받은 단말 {len(not_active)}/{len(gated)}: "
+                   f"{[(d.uuid[-4:], d.state) for d in not_active[:5]]}")
+    ctx.log(f"승인(ACTIVE) {len(gated)}대" + (f" site={site}" if site else ""))
+
+
+async def approve_uuids(ctx: Ctx, uuids: list[str], *, site: str | None = None, timeout: float = 120.0,
+                        concurrency: int = 20) -> int:
+    """fleet 이 별도 프로세스라 SimDevice 핸들이 없을 때(S2-10). 행이 생긴 것부터 승인하고 성공 수를 돌려준다."""
+    await wait_rows(ctx, uuids, timeout=timeout)
+    sem = asyncio.Semaphore(concurrency)
+    ok = 0
+
+    async def one(u: str) -> None:
+        nonlocal ok
+        async with sem:
+            r = await ctx.s.rest.patch_state(u, "ACTIVE", site=site)
+            if r.status_code < 400:
+                ok += 1
+            else:
+                ctx.log(f"승인 실패 {u}: {_describe(r)}")
+    await asyncio.gather(*(one(u) for u in uuids))
+    ctx.log(f"승인(ACTIVE) {ok}/{len(uuids)}대")
+    return ok
 
 
 async def make_devices(ctx: Ctx, count: int, *, mode: str | None = None, start: bool = True,
+                       approve_now: bool = False, site: str | None = None,
                        connect_timeout: float = 30.0, offset: int = 0, **flags: Any) -> list[SimDevice]:
-    """시나리오 네임스페이스로 단말 count 대. 종료 시 stop + DB 정리를 자동 등록한다."""
+    """시나리오 네임스페이스로 단말 count 대. 종료 시 stop + DB 정리를 자동 등록한다.
+
+    2cha(기본): username=UUID, password=HMAC(MQTT_HMAC_KEY, UUID). 서버 쪽 준비는 필요 없다.
+    `approve_now=True` 면 REGISTER 가 처리된 뒤 REST 로 ACTIVE 승인까지 하고 돌아온다(Telemetry 가 필요한 시나리오).
+    """
     mode = mode or sim_mode(ctx)
     ns = namespace_of(ctx.scenario.id)
     uuids = [uuid_from_index(offset + i, ns) for i in range(count)]
     env = ctx.s.env
-    accounts: dict[str, str] = {}
-    if mode == "2cha":
-        accounts = await import_accounts(ctx, uuids, offset=offset)
+    key = hmac_key(ctx) if mode == "2cha" else None
     devices = []
     for u in uuids:
         kwargs: dict[str, Any] = dict(host=env.mqtt_host, port=env.mqtt_port, topic_root=env.topic_root,
                                       mode=mode)
         if mode == "2cha":
-            kwargs["password"] = accounts[u]
+            kwargs["hmac_key"] = key
         else:
             kwargs["username"], kwargs["password"] = env.mqtt_test_user, env.mqtt_test_password
         kwargs.update(flags)
@@ -101,7 +154,61 @@ async def make_devices(ctx: Ctx, count: int, *, mode: str | None = None, start: 
             errs = {d.stats.last_error for d in devices if not d.is_connected}
             raise Fail(f"단말 접속 {n}/{count} — {errs}")
         ctx.log(f"단말 {count}대 접속 (mode={mode}, {uuids[0]}…)")
+        if approve_now:
+            await approve(ctx, devices, site=site)
     return devices
+
+
+async def tm_in_db(ctx: Ctx, uuid: str, sq: int, since) -> bool:
+    return bool(await ctx.s.db.fetchval(
+        "SELECT 1 FROM telemetry WHERE uuid=$1 AND sq=$2 AND received_at >= $3 LIMIT 1", uuid, sq, since))
+
+
+async def send_tm_and_wait(ctx: Ctx, dev: SimDevice, since) -> dict[str, Any]:
+    """TM 1건을 보내고 그 sq 가 telemetry 에 적재될 때까지 기다린다."""
+    payload = await dev.send_tm_now()
+    if payload is None:
+        raise Fail(f"{dev.uuid}: 승인 전(state={dev.state})이라 TM 을 보내지 않았다")
+    await ctx.wait_until(lambda: tm_in_db(ctx, dev.uuid, payload["sq"], since), timeout=FLUSH_WAIT,
+                         what=f"TM sq={payload['sq']} 적재")
+    return payload
+
+
+async def wait_config_set(ctx: Ctx, dev: SimDevice, *, count: int, timeout: float = 15.0,
+                          what: str = "") -> dict[str, Any]:
+    """단말의 CONFIG_SET 수신 횟수가 count 에 이를 때까지 기다리고 마지막 payload 를 돌려준다."""
+    await ctx.wait_until(lambda: dev.stats.config_set_rx >= count, timeout=timeout,
+                         what=what or f"CONFIG_SET 수신 {count}회")
+    assert dev.last_config_set is not None
+    return dev.last_config_set
+
+
+def check_config_set_shape(ctx: Ctx, payload: dict[str, Any], *, ti: int | None = None, ka: int | None = None,
+                           cv: int | None = None, lat_lon: bool | None = None) -> None:
+    """§1.1.7 S-13 — 매번 전체값: cv/ti/ka 항상, cv ≥ 1, lat/lon 은 값이 있을 때만."""
+    ctx.check(payload.get("type") == "CONFIG_SET", f"type CONFIG_SET: {payload}")
+    ctx.check(all(k in payload for k in ("cv", "ti", "ka")), f"CONFIG_SET 에 cv/ti/ka 전부 있음: {payload}")
+    ctx.check(isinstance(payload["cv"], int) and payload["cv"] >= 1, f"cv ≥ 1 (0 금지): {payload['cv']}")
+    if cv is not None:
+        ctx.check_eq(payload["cv"], cv, "CONFIG_SET cv")
+    if ti is not None:
+        ctx.check_eq(payload["ti"], ti, "CONFIG_SET ti")
+    if ka is not None:
+        ctx.check_eq(payload["ka"], ka, "CONFIG_SET ka")
+    if lat_lon is False:
+        ctx.check("lat" not in payload and "lon" not in payload, "좌표 없으면 lat/lon 키 자체가 없음")
+    elif lat_lon is True:
+        ctx.check("lat" in payload and "lon" in payload, "좌표 있으면 lat/lon 실림")
+    extra = set(payload) - {"type", "cv", "ti", "ka", "lat", "lon"}
+    ctx.check(not extra, f"CONFIG_SET 에 사양 밖 키 없음: {extra}")
+
+
+def rx_delay(dev: SimDevice, kind: str, sent_at: float | None) -> float | None:
+    """단말이 `sent_at`(monotonic) 에 보낸 뒤 `kind` 를 받기까지 걸린 초(§1.1.10 즉시성). 못 받았으면 None."""
+    got = dev.last_rx_by_type.get(kind)
+    if got is None or sent_at is None or got < sent_at:
+        return None
+    return got - sent_at
 
 
 def flatten(obj: Any, prefix: str = "") -> dict[str, Any]:
@@ -140,3 +247,7 @@ def last_tm_of(rest_device: dict[str, Any] | None) -> dict[str, Any] | None:
         if isinstance(v, dict):
             return v
     return None
+
+
+def monotonic() -> float:
+    return time.monotonic()

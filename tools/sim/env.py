@@ -35,6 +35,8 @@ class Env:
     mqtt_server_password: str
     #: 브로커에 공용 시험 계정이 아직 살아 있는가(2차 이행 스위치). S2-06 이 본다.
     mqtt_test_account_enabled: bool
+    #: 단말 비밀번호 HMAC 키(hex 64자, §1.1.2.2). 비우면 사양서 공개 시험 키. 백엔드 MQTT_HMAC_KEYS 와 같아야 한다.
+    mqtt_hmac_key: str
     topic_root: str
     database_url: str
     backend_url: str
@@ -53,6 +55,7 @@ class Env:
                 "MQTT_SERVER_PASSWORD", os.environ.get("MQTT_PASSWORD", "server")
             ),
             mqtt_test_account_enabled=_bool("MQTT_TEST_ACCOUNT_ENABLED", True),
+            mqtt_hmac_key=os.environ.get("MQTT_HMAC_KEY", "").strip(),
             topic_root=os.environ.get("MQTT_TOPIC_ROOT", "iotlight"),
             # backend 의 .env 는 SQLAlchemy 방언(postgresql+asyncpg://)을 쓴다. asyncpg 는 그걸 모른다.
             database_url=os.environ.get(

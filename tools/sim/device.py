@@ -1,14 +1,17 @@
-"""가짜 단말 한 대 — 사양서를 그대로 흉내낸 소프트웨어 모델.
+"""가짜 단말 한 대 — 사양서(2026-09-26 개정, 펌웨어 1.4.0)를 그대로 흉내낸 소프트웨어 모델.
 
 실물(STM32 + WD-N522S)이 없어도 서버를 개발·시험하려고 만든다. 흉내내는 것:
 
-  · 접속 (§1.1.2): Client ID = UUID 24자리, keepalive 60, clean session, LWT(§16.1)
-  · REGISTER (§1.1.4) → Telemetry 1건 즉시 → `ti` 초마다 QoS0 (§1.1.6)
-  · PING/PONG (§1.1.5), CONFIG_SET/ACK (§1.1.7), CMD/CMD_ACK (§3.10.7, §3.10.11)
-  · 승인 게이트 (§3, 3차): PENDING 이면 Telemetry 를 보내지 않고 REGISTER 재전송(§3.6)
-  · 고장 주입: 재부팅(sq 0), TM 유실, 강제 절단(LWT), 잘못된 payload, ACL 위반 …
+  · 접속 (§1.1.2): Client ID = UUID 24자리, keepalive = `ka`(기본 300), clean session.
+    2cha 모드는 username = UUID, password = HMAC-SHA256(K, UUID)[:16].hex() (§1.1.2.2)
+  · REGISTER (§1.1.4, `ka` 포함) → 승인(§3) 뒤 Telemetry 1건 즉시 → `ti` 초마다 QoS0 (§1.1.6)
+  · PING/PONG (§1.1.5), CONFIG_SET/ACK OK·RANGE·STATE·FLASH (§1.1.7), CMD/CMD_ACK (§3.10.7)
+  · 승인 게이트 (§3, 기본 ON): REGISTER_ACK state=ACTIVE 전에는 Telemetry 를 보내지 않고 REGISTER 재전송(§3.6)
+  · 재접속 30초×5 → 5분×5 → 30분 (서버_MQTT_안내_README "단말 동작")
+  · LWT 는 모뎀이 못 넣으므로 기본 없음(§16.1). `lwt=True` 로 켤 수 있다
+  · 고장 주입: 재부팅(sq 0), TM 유실, 강제 절단, 잘못된 payload, ACL 위반, Flash 실패, STATE 오답 …
 
-네트워크와 무관한 부분(TM 값 생성, CONFIG 검증, sq, 승인 상태머신)은 순수 함수·클래스로
+네트워크와 무관한 부분(TM 값 생성, CONFIG 검증, sq, 승인 상태머신, 재접속 표)은 순수 함수·클래스로
 떼어 두어 pytest 로 바로 검증한다. 시간 흐름은 `time_scale` 로 압축한다(1 = 실시간).
 """
 
@@ -16,9 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import math
+import os
 import random
 import socket
 import time
@@ -32,8 +38,9 @@ log = logging.getLogger("sim.device")
 
 KST = timezone(timedelta(hours=9))
 
-#: 사양서 §1.1.7 — Telemetry 주기 허용 범위(초)와 CONFIG 버전 범위.
+#: 사양서 §1.1.7 — Telemetry 주기·keepalive 허용 범위(초)와 CONFIG 버전 범위.
 TI_MIN, TI_MAX, TI_DEFAULT = 60, 3600, 600
+KA_MIN, KA_MAX, KA_DEFAULT = 60, 1800, 300
 CV_MIN, CV_MAX = 0, 65535
 #: §3.10.7 — override 유지시간 최대 24시간, 0 불가.
 DUR_MAX = 86400
@@ -41,13 +48,51 @@ DUR_MAX = 86400
 SUBSCRIBE_LIMIT = 6
 #: §3.6 — REGISTER 재전송: 처음 5회는 5분, 이후 30분.
 RESEND_FAST_SEC, RESEND_FAST_COUNT, RESEND_SLOW_SEC = 300, 5, 1800
-#: 단말 모뎀의 재접속 재시도 주기(1차 README "30초 주기로 정상 반복").
-RECONNECT_SEC = 30
+#: 단말 재접속 간격(README "단말 동작"): 30초×5 → 5분×5 → 30분.
+RECONNECT_SCHEDULE: tuple[tuple[int, int], ...] = ((30, 5), (300, 5))
+RECONNECT_SLOW_SEC = 1800
 #: `sq` 는 uint32 로 가정한다(개발계획 §7 확인 요청 항목).
 SQ_MOD = 2**32
+#: 시뮬레이터가 흉내내는 펌웨어. 1cha 모드는 1차 펌웨어 모양(type:"TM", ka 없음).
+FW_DEFAULT, FW_LEGACY = "1.4.0", "1.0.0"
 
 APPROVAL_STATES = {"PENDING", "ACTIVE", "SUSPENDED", "REJECTED", "RETIRED"}
 CMD_ACTS = {"on", "off", "pwm", "auto"}
+
+#: 사양서 §1.1.2.2 공개 시험 키(운영 키 아님). 환경 변수 MQTT_HMAC_KEY 가 없을 때 쓴다.
+TEST_HMAC_KEY_HEX = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+
+
+def device_password(key: bytes, uuid: str) -> str:
+    """§1.1.2.2 — HMAC-SHA256(K, UUID) 앞 16바이트를 소문자 hex 32자로."""
+    if len(key) != 32:
+        raise ValueError("HMAC 키는 32바이트")
+    return hmac.new(key, uuid.upper().encode("ascii"), hashlib.sha256).hexdigest()[:32]
+
+
+def hmac_key_from_hex(text: str | None) -> bytes:
+    """hex 64자 → 32바이트. 비어 있으면 사양서 시험 키."""
+    text = (text or "").strip()
+    if not text:
+        text = TEST_HMAC_KEY_HEX
+    key = bytes.fromhex(text)
+    if len(key) != 32:
+        raise ValueError("MQTT_HMAC_KEY 는 hex 64자(32바이트)여야 한다")
+    return key
+
+
+def hmac_key_from_env() -> bytes:
+    return hmac_key_from_hex(os.environ.get("MQTT_HMAC_KEY"))
+
+
+def reconnect_delay(attempt: int) -> float:
+    """연속 `attempt` 번째(0부터) 재접속 대기(초). 30초×5 → 5분×5 → 30분."""
+    n = max(0, attempt)
+    for sec, count in RECONNECT_SCHEDULE:
+        if n < count:
+            return float(sec)
+        n -= count
+    return float(RECONNECT_SLOW_SEC)
 
 
 def uuid_from_index(index: int, namespace: int = 0) -> str:
@@ -81,7 +126,7 @@ class TelemetryModel:
 
     seed: int = 0
     pwm: tuple[int, int, int] = (70, 64, 64)
-    fw: str = "1.0.0"
+    fw: str = FW_DEFAULT
 
     def __post_init__(self) -> None:
         self._rng = random.Random(self.seed)
@@ -138,10 +183,10 @@ class ApprovalGate:
     """REGISTER_ACK `state` 에 따른 단말 동작(§3.4)과 REGISTER 재전송 주기(§3.6).
 
     상태는 메모리에만 있다(§3.5) — `reset()` 이 곧 재부팅/재접속이다.
-    `enabled=False` 면 2차 이전 동작(승인 없이 즉시 Telemetry).
+    `enabled=False` 면 1차 펌웨어 동작(승인 없이 즉시 Telemetry).
     """
 
-    enabled: bool = False
+    enabled: bool = True
     time_scale: float = 1.0
     state: str | None = None
     resend_count: int = 0
@@ -176,6 +221,11 @@ class ApprovalGate:
         return (not self.enabled) or self.state == "ACTIVE"
 
     @property
+    def config_allowed(self) -> bool:
+        """CONFIG 변경은 ACTIVE 에서만(§3.8). 아니면 CONFIG_ACK `STATE`."""
+        return (not self.enabled) or self.state == "ACTIVE"
+
+    @property
     def resend_needed(self) -> bool:
         """무응답·PENDING 만 재전송한다(§3.4). ACTIVE/SUSPENDED/REJECTED/RETIRED 는 아니다."""
         if not self.enabled or self.silenced:
@@ -200,17 +250,25 @@ class OverrideSlot:
         return now < self.expires_at
 
 
+def _is_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
 def validate_config_set(payload: dict[str, Any]) -> str | None:
-    """CONFIG_SET 항목 검증(§1.1.7). 문제가 있으면 사유, 없으면 None."""
+    """CONFIG_SET 항목 검증(§1.1.7). 문제가 있으면 항목 이름, 없으면 None.
+
+    `cv` 0~65535, `ti` 60~3600, `ka` 60~1800, `lat`/`lon` WGS84 범위. 5차 `grp` 는 REGISTER_ACK 로
+    오는 것이 사양이지만(§3.10.9) 시뮬레이터는 CONFIG_SET 에 실려 와도 받아 둔다(형식만 검사).
+    """
     cv = payload.get("cv")
-    if not isinstance(cv, int) or isinstance(cv, bool) or not (CV_MIN <= cv <= CV_MAX):
+    if not _is_int(cv) or not (CV_MIN <= cv <= CV_MAX):
         return "cv"
-    if "ti" in payload:
-        ti = payload["ti"]
-        if not isinstance(ti, int) or isinstance(ti, bool) or not (TI_MIN <= ti <= TI_MAX):
-            return "ti"
+    if "ti" in payload and (not _is_int(payload["ti"]) or not (TI_MIN <= payload["ti"] <= TI_MAX)):
+        return "ti"
+    if "ka" in payload and (not _is_int(payload["ka"]) or not (KA_MIN <= payload["ka"] <= KA_MAX)):
+        return "ka"
     for key in ("lat", "lon"):
-        if key in payload and not isinstance(payload[key], (int, float)):
+        if key in payload and (not isinstance(payload[key], (int, float)) or isinstance(payload[key], bool)):
             return key
     if "lat" in payload and not (-90 <= payload["lat"] <= 90):
         return "lat"
@@ -228,20 +286,20 @@ def validate_config_set(payload: dict[str, Any]) -> str | None:
 def validate_cmd(payload: dict[str, Any]) -> str | None:
     """CMD 검증(§3.10.7). `exp`, `dur` 필수. `dur` 0/누락 거부, 최대 86400."""
     seq = payload.get("seq")
-    if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+    if not _is_int(seq) or seq < 0:
         return "seq"
     exp = payload.get("exp")
-    if not isinstance(exp, int) or isinstance(exp, bool) or exp <= 0:
+    if not _is_int(exp) or exp <= 0:
         return "exp"
     dur = payload.get("dur")
-    if not isinstance(dur, int) or isinstance(dur, bool) or not (1 <= dur <= DUR_MAX):
+    if not _is_int(dur) or not (1 <= dur <= DUR_MAX):
         return "dur"
     act = payload.get("act")
     if act not in CMD_ACTS:
         return "act"
     if act == "pwm":
         pwm = payload.get("pwm")
-        if not isinstance(pwm, int) or isinstance(pwm, bool) or not (0 <= pwm <= 100):
+        if not _is_int(pwm) or not (0 <= pwm <= 100):
             return "pwm"
     return None
 
@@ -251,6 +309,7 @@ class Stats:
     connects: int = 0
     connect_failures: int = 0
     disconnects: int = 0
+    reconnect_attempts: int = 0
     register_sent: int = 0
     tm_sent: int = 0
     tm_suppressed: int = 0  # 승인 전이라 보내지 않은 주기
@@ -260,7 +319,10 @@ class Stats:
     config_set_ignored: int = 0
     config_ack_ok: int = 0
     config_ack_range: int = 0
+    config_ack_state: int = 0
+    config_ack_flash: int = 0
     register_ack_rx: int = 0
+    register_ack_empty_rx: int = 0
     cmd_rx: int = 0
     cmd_rejected: int = 0
     unknown_rx: int = 0
@@ -273,16 +335,25 @@ class Stats:
 class SimDevice:
     """가짜 단말 한 대. `start()` 로 띄우고 `stop()` 으로 내린다.
 
-    행동 플래그(생성자):
-      mode            "1cha": 공용 계정 + `cv/ss/ti` 없는 REGISTER 허용 / "2cha": uuid 계정 + config 구독
-      lwt             False 면 Will 을 등록하지 않는다(모뎀 LWT 미지원, P-2)
-      legacy_register REGISTER 에 cv/ss/ti 를 싣지 않는다(1차 펌웨어)
-      legacy_t_key    Telemetry 를 `"t":"TM"` 으로 보낸다(1차 펌웨어)
-      approval_gate   3차 승인 게이트. REGISTER_ACK state=ACTIVE 전에는 TM 을 보내지 않는다
+    모드:
+      "2cha"  펌웨어 1.4.0. username=UUID + HMAC 비밀번호, `config` 구독, 승인 게이트 ON,
+              REGISTER 에 cv/ss/ti/ka, Telemetry `type:"TELEMETRY"`, msisdn 실제 모양
+      "1cha"  1차 펌웨어. 공용 계정, 승인 게이트 OFF, Telemetry `type:"TM"`, REGISTER 에 ka 없음
+
+    행동 플래그(생성자, None 이면 모드 기본값):
+      hmac              2cha 에서 False 면 공용 계정으로 붙는다(HMAC 펌웨어 이전 단말)
+      hmac_key          32바이트. None 이면 env MQTT_HMAC_KEY → 사양서 시험 키
+      ka                CONNECT keepalive(초). CONFIG_SET `ka` 는 다음 접속부터 적용(§1.1.7)
+      approval_gate     승인 게이트. 2cha 기본 True, 1cha 기본 False
+      lwt               Will 등록. 기본 False(모뎀 미지원, §16.1). 1cha 기본 True
+      tm_type           Telemetry 의 type 값. 2cha "TELEMETRY", 1cha "TM". `legacy_t_key` 면 `"t":"TM"`
+      legacy_register   REGISTER 에 cv/ss/ti/ka 를 싣지 않는다(1차 펌웨어)
       ignore_config_set 처음 N 개의 CONFIG_SET 을 못 받은 척한다(재전송 시험)
-      silent_results  result 를 아예 보내지 않는다(무응답 단말)
+      flash_fail_next   다음 N 개의 CONFIG_SET 에 `FLASH` 로 답하고 이전 값을 유지한다(1.3.0~)
+      state_ack_next    다음 N 개의 CONFIG_SET 에 ACTIVE 여도 `STATE` 로 답한다(서버 재조정 시험)
+      silent_results    result 를 아예 보내지 않는다(무응답 단말)
       register_on_connect False 면 접속 직후 REGISTER 를 건너뛴다(유실 흉내)
-      time_scale      재전송·재접속 대기를 이 배수로 줄인다(시험용). `ti` 에는 적용하지 않는다
+      time_scale        재전송·재접속 대기를 이 배수로 줄인다(시험용). `ti`/`ka` 에는 적용하지 않는다
     """
 
     def __init__(
@@ -294,18 +365,24 @@ class SimDevice:
         mode: str = "2cha",
         username: str | None = None,
         password: str | None = None,
+        hmac: bool | None = None,
+        hmac_key: bytes | None = None,
         topic_root: str = "iotlight",
         ti: int = TI_DEFAULT,
+        ka: int = KA_DEFAULT,
         cv: int = 0,
         ss: int = 0,
-        fw: str = "1.0.0",
+        fw: str | None = None,
         device_model: str = "RMCB-1100M",
         modem_model: str = "WD-N522S",
-        lwt: bool = True,
+        lwt: bool | None = None,
+        tm_type: str | None = None,
         legacy_register: bool = False,
         legacy_t_key: bool = False,
-        approval_gate: bool = False,
+        approval_gate: bool | None = None,
         ignore_config_set: int = 0,
+        flash_fail_next: int = 0,
+        state_ack_next: int = 0,
         silent_results: bool = False,
         register_on_connect: bool = True,
         time_scale: float = 1.0,
@@ -320,19 +397,33 @@ class SimDevice:
         self.uuid = uuid
         self.host, self.port = host, port
         self.mode = mode
-        # 2차 모드는 username = uuid(§1.1.2.2). 1차 모드는 공용 계정.
-        self.username = username or (uuid if mode == "2cha" else "solarlte-test")
-        self.password = password or ("" if mode == "2cha" else "solarlte-test-2026")
+        legacy = mode == "1cha"
+        self.hmac = (not legacy) if hmac is None else hmac
+        self.hmac_key = hmac_key
+        if self.hmac:
+            # §1.1.2.2 — username = UUID, password 는 계산값. 아무도 저장하지 않는다.
+            self.username = uuid
+            self.password = password or device_password(hmac_key or hmac_key_from_env(), uuid)
+        else:
+            self.username = username or "solarlte-test"
+            self.password = password or "solarlte-test-2026"
         self.root = topic_root
         self.ti, self.cv, self.ss = ti, cv, ss
-        self.fw, self.device_model, self.modem_model = fw, device_model, modem_model
+        #: Flash 의 keepalive 값. 접속 중인 세션의 값은 `ka_connected`(다음 접속부터 적용).
+        self.ka = ka
+        self.ka_connected: int | None = None
+        self.fw = fw or (FW_LEGACY if legacy else FW_DEFAULT)
+        self.device_model, self.modem_model = device_model, modem_model
         self.lat: float | None = None
         self.lon: float | None = None
         self.grp: list[str] = []
-        self.lwt = lwt
+        self.lwt = legacy if lwt is None else lwt
+        self.tm_type = tm_type or ("TM" if legacy else "TELEMETRY")
         self.legacy_register = legacy_register
         self.legacy_t_key = legacy_t_key
         self.ignore_config_set = ignore_config_set
+        self.flash_fail_next = flash_fail_next
+        self.state_ack_next = state_ack_next
         self.silent_results = silent_results
         #: False 면 접속 후 REGISTER 를 보내지 않는다(REGISTER 유실 흉내, S2-02).
         self.register_on_connect = register_on_connect
@@ -342,14 +433,16 @@ class SimDevice:
 
         seed_val = seed if seed is not None else int(uuid[-8:], 16)
         self._rng = random.Random(seed_val)
-        self.model = TelemetryModel(seed=seed_val, fw=fw)
-        self.gate = ApprovalGate(enabled=approval_gate, time_scale=self.time_scale)
+        self.model = TelemetryModel(seed=seed_val, fw=self.fw)
+        gate_on = (not legacy) if approval_gate is None else approval_gate
+        self.gate = ApprovalGate(enabled=gate_on, time_scale=self.time_scale)
         self.stats = Stats()
 
         # 단말 식별값(런타임에 안 바뀜, §1.1.4).
         self.imei = f"35{seed_val % 10**13:013d}"
         self.iccid = f"8982{seed_val % 10**15:015d}"
-        self.msisdn = ""
+        # 1.1.0 실기 로그 모양 "01248324427". 1차 모양(빈 문자열)도 사양이 허용한다.
+        self.msisdn = "" if legacy else f"010{seed_val % 10**8:08d}"
 
         self.sq = 0
         self.er = 0
@@ -359,13 +452,21 @@ class SimDevice:
         #: 마지막으로 보낸 result payload — QoS1 중복 재전송 흉내에 쓴다.
         self.last_result: dict[str, Any] | None = None
         self.last_tm: dict[str, Any] | None = None
+        self.last_config_set: dict[str, Any] | None = None
         #: 받은 메시지 이력 (topic, payload dict|None, retained). 시나리오가 들여다본다.
         self.inbox: list[tuple[str, Any, bool]] = []
+        #: §1.1.10 검증용 시각(time.monotonic). 마지막 수신, type 별 마지막 수신, 마지막 송신.
+        self.last_rx_at_monotonic: float | None = None
+        self.last_rx_by_type: dict[str, float] = {}
+        self.last_register_sent_at: float | None = None
+        self.last_tm_sent_at: float | None = None
+        self.connected_at_monotonic: float | None = None
         self.connected = asyncio.Event()
         self._client: aiomqtt.Client | None = None
         self._run_task: asyncio.Task | None = None
         self._session_task: asyncio.Task | None = None
         self._stopping = False
+        self._reconnect_attempt = 0
         self._reconnect_delay_override: float | None = None
         self._tm_kick = asyncio.Event()
         self._register_kick = asyncio.Event()
@@ -378,9 +479,14 @@ class SimDevice:
     def is_connected(self) -> bool:
         return self.connected.is_set()
 
+    @property
+    def state(self) -> str | None:
+        """승인 상태(REGISTER_ACK 로 받은 값). None = 무응답."""
+        return self.gate.state
+
     # ── payload 생성 (순수) ───────────────────────────────────────────────
     def build_register(self) -> dict[str, Any]:
-        """§1.1.4. 1차 펌웨어(legacy_register)는 cv/ss/ti 를 싣지 않는다."""
+        """§1.1.4. 1차 펌웨어(legacy_register/1cha)는 cv/ss/ti/ka 를 싣지 않는다."""
         payload: dict[str, Any] = {
             "type": "REGISTER",
             "uuid": self.uuid,
@@ -388,6 +494,8 @@ class SimDevice:
         }
         if not self.legacy_register:
             payload.update({"cv": self.cv, "ss": self.ss, "ti": self.ti})
+            if self.mode == "2cha":
+                payload["ka"] = self.ka
         payload.update({
             "device_model": self.device_model,
             "modem_model": self.modem_model,
@@ -412,7 +520,7 @@ class SimDevice:
                 sample["on"] = 1 if (ov.pwm or 0) > 0 else 0
                 sample["pw"] = [ov.pwm or 0] * 3
         payload: dict[str, Any] = {
-            ("t" if self.legacy_t_key else "type"): "TM",
+            ("t" if self.legacy_t_key else "type"): ("TM" if self.legacy_t_key else self.tm_type),
             "sq": self.sq,
             "ts": kst_ts(now),
             "fw": self.fw,
@@ -444,22 +552,46 @@ class SimDevice:
         self.stats.ping_rx += 1
         return {"type": "PONG", "seq": payload.get("seq"), "uuid": self.uuid}
 
+    def _config_ack(self, result: str) -> dict[str, Any]:
+        return {"type": "CONFIG_ACK", "uuid": self.uuid, "cv": self.cv, "result": result}
+
     def handle_config_set(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        """§1.1.7. 범위 밖이면 이전 값 유지·cv 미변경·RANGE. `ignore_config_set` 만큼은 못 받은 척."""
+        """§1.1.7 CONFIG_SET.
+
+        · 승인 전(ACTIVE 아님) → `STATE`, 아무것도 바꾸지 않음(§3.8)
+        · 범위 밖 → `RANGE`, 이전 값 유지·cv 미변경
+        · Flash 실패(`flash_fail_next`) → `FLASH`, 이전 값 유지
+        · OK → cv/ti/ka/lat/lon 저장. `ti` 즉시, `ka` 다음 접속부터
+        `ignore_config_set` 만큼은 못 받은 척(None). `state_ack_next` 만큼은 ACTIVE 여도 STATE.
+        """
         self.stats.config_set_rx += 1
+        self.last_config_set = dict(payload)
         if self.ignore_config_set > 0:
             self.ignore_config_set -= 1
             self.stats.config_set_ignored += 1
             return None
+        if not self.gate.config_allowed or self.state_ack_next > 0:
+            if self.state_ack_next > 0:
+                self.state_ack_next -= 1
+            self.stats.config_ack_state += 1
+            log.info("[%s] CONFIG_SET 거부(STATE, 승인 상태 %s)", self.uuid, self.gate.state)
+            return self._config_ack("STATE")
         problem = validate_config_set(payload)
         if problem is not None:
             self.stats.config_ack_range += 1
-            log.info("[%s] CONFIG_SET 거부(%s) cv 유지 %d", self.uuid, problem, self.cv)
-            return {"type": "CONFIG_ACK", "uuid": self.uuid, "cv": self.cv, "result": "RANGE"}
+            log.info("[%s] CONFIG_SET 거부(RANGE:%s) cv 유지 %d", self.uuid, problem, self.cv)
+            return self._config_ack("RANGE")
+        if self.flash_fail_next > 0:
+            self.flash_fail_next -= 1
+            self.stats.config_ack_flash += 1
+            log.info("[%s] CONFIG_SET Flash 기록 실패 흉내(FLASH) cv 유지 %d", self.uuid, self.cv)
+            return self._config_ack("FLASH")
         # 전부 적용하고 Flash 저장(여기서는 인스턴스 필드 — reboot() 에도 남는다).
         self.cv = int(payload["cv"])
         if "ti" in payload:
-            self.ti = int(payload["ti"])
+            self.ti = int(payload["ti"])       # 즉시 적용
+        if "ka" in payload:
+            self.ka = int(payload["ka"])       # 다음 접속부터(§1.1.7)
         if "lat" in payload:
             self.lat = float(payload["lat"])
         if "lon" in payload:
@@ -467,7 +599,7 @@ class SimDevice:
         if "grp" in payload:
             self.grp = list(payload["grp"])
         self.stats.config_ack_ok += 1
-        return {"type": "CONFIG_ACK", "uuid": self.uuid, "cv": self.cv, "result": "OK"}
+        return self._config_ack("OK")
 
     def handle_cmd(self, payload: dict[str, Any], layer: str = "device") -> dict[str, Any] | None:
         """§3.10.7. 검증 실패면 거부하고 로그만 남긴다(응답 없음 — 사양에 거부 ACK 가 없다).
@@ -503,14 +635,16 @@ class SimDevice:
         """REGISTER_ACK(§3.3). payload None = 빈 retain(정리)."""
         self.stats.register_ack_rx += 1
         if payload is None:
+            self.stats.register_ack_empty_rx += 1
             self.gate.on_ack(None)
             return
         if payload.get("uuid") not in (None, self.uuid):
             log.warning("[%s] REGISTER_ACK uuid 불일치 %s", self.uuid, payload.get("uuid"))
             return
+        was_active = self.gate.state == "ACTIVE"
         self.gate.on_ack(payload.get("state"))
-        if self.gate.state == "ACTIVE":
-            # 승인되면 곧 CONFIG_SET 이 오고 Telemetry 를 시작한다(§3.1). 주기를 기다리지 않는다.
+        if self.gate.state == "ACTIVE" and not was_active:
+            # 승인되면 곧바로 Telemetry 1건(§3.9.2 "단말 ACTIVE → Telemetry 1건"). 주기를 기다리지 않는다.
             self._tm_kick.set()
 
     # ── 접속 수명주기 ────────────────────────────────────────────────────
@@ -521,7 +655,7 @@ class SimDevice:
         self._run_task = asyncio.create_task(self._run(), name=f"sim-{self.uuid}")
 
     async def stop(self, *, graceful: bool = True) -> None:
-        """단말을 내린다. graceful=False 면 TCP 를 그냥 끊는다(브로커가 LWT 발행)."""
+        """단말을 내린다. graceful=False 면 TCP 를 그냥 끊는다(DISCONNECT 없음)."""
         self._stopping = True
         if not graceful:
             self._hard_cut()
@@ -537,6 +671,15 @@ class SimDevice:
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(self.connected.wait(), timeout)
         return self.connected.is_set()
+
+    async def wait_state(self, state: str | None, timeout: float = 30.0) -> bool:
+        """승인 상태가 `state` 가 될 때까지(None = 무응답) 기다린다."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.gate.state == state:
+                return True
+            await asyncio.sleep(0.1)
+        return self.gate.state == state
 
     async def _run(self) -> None:
         while not self._stopping:
@@ -559,9 +702,12 @@ class SimDevice:
                     self.stats.disconnects += 1
                 self.connected.clear()
                 self._client = None
+                self.ka_connected = None
             if self._stopping:
                 break
             delay = self._next_reconnect_delay()
+            self._reconnect_attempt += 1
+            self.stats.reconnect_attempts += 1
             await asyncio.sleep(delay)
 
     def _next_reconnect_delay(self) -> float:
@@ -569,7 +715,7 @@ class SimDevice:
             delay, self._reconnect_delay_override = self._reconnect_delay_override, None
             return delay
         jitter = self._rng.uniform(0, self.reconnect_jitter) if self.reconnect_jitter > 0 else 0.0
-        return (RECONNECT_SEC + jitter) / self.time_scale
+        return (reconnect_delay(self._reconnect_attempt) + jitter) / self.time_scale
 
     def _will(self) -> aiomqtt.Will | None:
         if not self.lwt:
@@ -584,6 +730,7 @@ class SimDevice:
     async def _session(self) -> None:
         self._subscriptions = []
         self.gate.reset()  # §3.5 — 재접속마다 승인 상태를 잊는다
+        keepalive = self.ka
         async with aiomqtt.Client(
             hostname=self.host,
             port=self.port,
@@ -592,11 +739,12 @@ class SimDevice:
             identifier=self.uuid,
             protocol=aiomqtt.ProtocolVersion.V311,
             clean_session=True,
-            keepalive=60,
+            keepalive=keepalive,
             will=self._will(),
             timeout=30,
         ) as client:
             self._client = client
+            self.ka_connected = keepalive
             await self._subscribe(client, self.topic("cmd"))
             if self.mode == "2cha":
                 await self._subscribe(client, self.topic("config"))
@@ -605,8 +753,10 @@ class SimDevice:
                 if self.grp:
                     await self._subscribe(client, f"{self.root}/all/cmd")
             self.stats.connects += 1
+            self._reconnect_attempt = 0  # 접속 성공 → 재접속 표 처음부터
+            self.connected_at_monotonic = time.monotonic()
             self.connected.set()
-            log.info("[%s] 접속 (%s)", self.uuid, self.username)
+            log.info("[%s] 접속 (%s, ka=%d)", self.uuid, self.username, keepalive)
 
             if self.register_on_connect:
                 await self.send_register()
@@ -646,6 +796,7 @@ class SimDevice:
             return False
 
     async def send_register(self) -> bool:
+        self.last_register_sent_at = time.monotonic()
         ok = await self._publish(self.topic("register"), self.build_register(), qos=1)
         if ok:
             self.stats.register_sent += 1
@@ -659,6 +810,7 @@ class SimDevice:
             return None
         payload = self.build_tm()
         self.last_tm = payload
+        self.last_tm_sent_at = time.monotonic()
         if await self._publish(self.topic("status"), payload, qos=0):
             self.stats.tm_sent += 1
         return payload
@@ -673,7 +825,10 @@ class SimDevice:
         return ok
 
     async def _tm_loop(self) -> None:
-        """REGISTER 직후 1건, 이후 `ti` 초마다(§1.1.6). 승인 게이트가 닫혀 있으면 건너뛴다."""
+        """REGISTER 직후 1건, 이후 `ti` 초마다(§1.1.6). 승인 게이트가 닫혀 있으면 건너뛴다.
+
+        `ti` 는 CONFIG_SET 으로 바뀌면 다음 대기부터 즉시 반영된다.
+        """
         await self.send_tm_now()
         while True:
             self._tm_kick.clear()
@@ -693,6 +848,8 @@ class SimDevice:
 
     # ── 수신 분기 ────────────────────────────────────────────────────────
     async def _dispatch(self, topic: str, raw: bytes, retained: bool) -> None:
+        now = time.monotonic()
+        self.last_rx_at_monotonic = now
         data: Any = None
         if raw:
             try:
@@ -702,6 +859,8 @@ class SimDevice:
                 self.inbox.append((topic, raw, retained))
                 return
         self.inbox.append((topic, data, retained))
+        kind = data.get("type") if isinstance(data, dict) else None
+        self.last_rx_by_type[kind or ("EMPTY" if not raw else "?")] = now
         if self.on_message is not None:
             result = self.on_message(self, topic, raw)
             if asyncio.iscoroutine(result):
@@ -712,19 +871,17 @@ class SimDevice:
             if data is None:
                 self.handle_register_ack(None)
                 return
-            kind = data.get("type")
+            if not isinstance(data, dict):
+                self.stats.unknown_rx += 1
+                return
             if kind == "REGISTER_ACK":
                 self.handle_register_ack(data)
             elif kind == "CONFIG_SET":
-                if self.gate.enabled and self.gate.state != "ACTIVE":
-                    # PENDING 에서는 CONFIG 변경 불가(§3.8). 받아도 적용하지 않는다.
-                    self.stats.config_set_rx += 1
-                    return
                 reply = self.handle_config_set(data)
                 if reply is not None:
                     await self.send_result(reply)
                     if reply["result"] == "OK":
-                        # 승인 직후 CONFIG 적용 → 즉시 Telemetry(§3.1 8단계).
+                        # 적용 뒤 바로 Telemetry 로 cv 를 echo 한다(§3.9.2 "다음 Telemetry cv 일치 확인").
                         self._tm_kick.set()
             else:
                 self.stats.unknown_rx += 1
@@ -734,7 +891,6 @@ class SimDevice:
             if not isinstance(data, dict):
                 self.stats.unknown_rx += 1
                 return
-            kind = data.get("type")
             if kind == "PING":
                 await self.send_result(self.handle_ping(data))
             elif kind == "CMD":
@@ -754,7 +910,9 @@ class SimDevice:
 
     # ── 고장 주입 ────────────────────────────────────────────────────────
     def _hard_cut(self) -> None:
-        """DISCONNECT 없이 TCP 를 끊는다 → 브로커가 LWT 를 대신 발행한다."""
+        """DISCONNECT 패킷 없이 TCP 를 끊는다(모뎀 전원 차단 흉내).
+
+        LWT 가 없으므로(§16.1) 서버는 브로커 로그로 끊김을 안다(ADR-004)."""
         client = self._client
         if client is None:
             return
@@ -763,7 +921,7 @@ class SimDevice:
         if sock is None:
             return
         # shutdown 만 하고 close 는 하지 않는다. FIN 만 나가도 브로커는 DISCONNECT 패킷 없는
-        # 종료로 보고 LWT 를 발행한다. close 까지 하면 paho/aiomqtt 가 아직 들고 있는 fd 가
+        # 종료로 본다. close 까지 하면 paho/aiomqtt 가 아직 들고 있는 fd 가
         # 셀렉터에서 무효가 되어 Windows 에서 WinError 10038 / fd -1 로 루프가 죽는다.
         # 닫기는 paho 가 EOF 를 읽고 자기 절차대로 한다.
         with contextlib.suppress(OSError):
@@ -771,7 +929,7 @@ class SimDevice:
 
     async def disconnect(self, *, hard: bool = True, reconnect: bool = False,
                          reconnect_after: float | None = None) -> None:
-        """접속만 끊는다. reconnect=True 면 단말이 `reconnect_after` 초 뒤(기본 30초/time_scale) 다시 붙는다."""
+        """접속만 끊는다. reconnect=True 면 단말이 `reconnect_after` 초 뒤(기본 재접속 표/time_scale) 다시 붙는다."""
         if reconnect_after is not None:
             self._reconnect_delay_override = reconnect_after
         if not reconnect:
@@ -783,7 +941,7 @@ class SimDevice:
             self._session_task.cancel()
 
     async def reboot(self, *, reconnect_after: float = 1.0) -> None:
-        """전원 재인가. sq=0, override·승인 상태 소거, 재접속 후 REGISTER. cv/ti/lat/lon 은 Flash 라 남는다.
+        """전원 재인가. sq=0, override·승인 상태 소거, 재접속 후 REGISTER. cv/ti/ka/lat/lon 은 Flash 라 남는다.
 
         절단을 먼저 하고 상태를 지운다 — 순서를 바꾸면 아직 살아 있는 옛 세션의 TM 루프가
         sq=0 을 한 번 더 보내 서버가 재부팅을 두 번 센다(S2-03 에서 실제 발생)."""
@@ -804,7 +962,7 @@ class SimDevice:
 
     async def send_garbage(self) -> bool:
         """JSON 이 아닌 payload 를 status 로."""
-        return await self._publish(self.topic("status"), b'{"type":"TM","sq":', qos=0)
+        return await self._publish(self.topic("status"), b'{"type":"TELEMETRY","sq":', qos=0)
 
     async def send_uuid_mismatch(self) -> bool:
         """payload 의 uuid 가 topic 과 다른 REGISTER (§1.1.4 서버가 대조해야 함)."""
@@ -828,6 +986,26 @@ class SimDevice:
         published = await self._publish(self.topic("status", other_uuid), payload, qos=1)
         await asyncio.sleep(1.0)
         return {"published": published, "still_connected": self.is_connected, "payload": payload}
+
+    async def subscribe_raw(self, topic_filter: str, *, seconds: float = 3.0) -> dict[str, Any]:
+        """단말 계정으로 임의 topic 필터를 구독해 본다(ACL 시험 — `iotlight/#` 같은 와일드카드).
+
+        결과: subscribed(SUBACK 가 실패가 아니었는가), received(seconds 동안 받은 건수).
+        구독 한도(§0.2)는 셈하지 않는다 — 시험용 구독이라 실제 모뎀 슬롯과 무관.
+        """
+        client = self._client
+        if client is None:
+            return {"subscribed": False, "received": 0, "error": "not connected"}
+        before = len(self.inbox)
+        try:
+            await client.subscribe(topic_filter, qos=1)
+        except aiomqtt.MqttError as exc:
+            return {"subscribed": False, "received": 0, "error": str(exc)}
+        await asyncio.sleep(seconds)
+        foreign = [t for (t, _, _) in self.inbox[before:] if f"/device/{self.uuid}/" not in t]
+        with contextlib.suppress(aiomqtt.MqttError):
+            await client.unsubscribe(topic_filter)
+        return {"subscribed": True, "received": len(foreign), "error": ""}
 
     async def duplicate_last_result(self) -> bool:
         """마지막 result 를 그대로 한 번 더(QoS1 재전송 흉내). dedup_key 가 같아야 한다."""

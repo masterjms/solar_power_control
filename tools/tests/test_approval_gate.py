@@ -1,4 +1,4 @@
-"""승인 상태머신 — 사양서 §3.4 상태별 동작, §3.5 비저장, §3.6 재전송 주기, §3.3 빈 retain."""
+"""승인 상태머신 — 사양서 §3.4 상태별 동작, §3.5 비저장, §3.6 재전송 주기, §3.3 빈 retain, §3.8 CONFIG STATE."""
 
 from __future__ import annotations
 
@@ -7,16 +7,22 @@ import pytest
 from tools.sim.device import ApprovalGate, SimDevice, uuid_from_index
 
 
+def test_gate_is_on_by_default_in_2cha_and_off_in_1cha():
+    assert SimDevice(uuid_from_index(1, 0x0301), password="pw").gate.enabled is True
+    assert SimDevice(uuid_from_index(1, 0x0301), mode="1cha").gate.enabled is False
+    assert SimDevice(uuid_from_index(1, 0x0301), password="pw", approval_gate=False).gate.enabled is False
+
+
 def test_disabled_gate_always_allows_telemetry_and_never_resends():
     g = ApprovalGate(enabled=False)
-    assert g.telemetry_allowed and not g.resend_needed
+    assert g.telemetry_allowed and g.config_allowed and not g.resend_needed
     g.on_ack("PENDING")
-    assert g.telemetry_allowed  # 2차 이전 펌웨어는 승인 개념이 없다
+    assert g.telemetry_allowed  # 1차 펌웨어는 승인 개념이 없다
 
 
 def test_no_ack_means_no_telemetry_and_resend():
     g = ApprovalGate(enabled=True)
-    assert g.state is None and not g.telemetry_allowed and g.resend_needed
+    assert g.state is None and not g.telemetry_allowed and not g.config_allowed and g.resend_needed
 
 
 @pytest.mark.parametrize("state,tm,resend", [
@@ -31,6 +37,7 @@ def test_state_table_section_3_4(state, tm, resend):
     g.on_ack(state)
     assert g.state == state
     assert g.telemetry_allowed is tm
+    assert g.config_allowed is tm  # CONFIG 도 ACTIVE 에서만(§3.8)
     assert g.resend_needed is resend
 
 
@@ -71,20 +78,49 @@ def test_empty_retain_returns_to_no_response_at_30min():
     assert g.next_resend_delay() == 30.0  # 30분 주기(§3.3)
 
 
+def test_rejected_then_pending_resumes_resend():
+    g = ApprovalGate(enabled=True)
+    g.on_ack("REJECTED")
+    assert g.silenced and not g.resend_needed
+    g.on_ack("PENDING")  # 관리자 재검토
+    assert not g.silenced and g.resend_needed
+
+
 def test_device_register_ack_handling_and_uuid_check():
-    d = SimDevice(uuid_from_index(3, 0x0301), password="pw", approval_gate=True, time_scale=60)
+    d = SimDevice(uuid_from_index(3, 0x0301), password="pw", time_scale=60)
     d.handle_register_ack({"type": "REGISTER_ACK", "uuid": d.uuid, "state": "PENDING"})
-    assert d.gate.state == "PENDING"
+    assert d.state == "PENDING"
     d.handle_register_ack({"type": "REGISTER_ACK", "uuid": "F" * 24, "state": "ACTIVE"})  # 남의 ACK
-    assert d.gate.state == "PENDING"
+    assert d.state == "PENDING"
     d.handle_register_ack({"type": "REGISTER_ACK", "uuid": d.uuid, "state": "ACTIVE", "site": "A-12"})
-    assert d.gate.state == "ACTIVE" and d.gate.telemetry_allowed
+    assert d.state == "ACTIVE" and d.gate.telemetry_allowed
     d.handle_register_ack(None)
-    assert d.gate.state is None and d.stats.register_ack_rx == 4
+    assert d.state is None and d.stats.register_ack_rx == 4 and d.stats.register_ack_empty_rx == 1
+
+
+def test_config_set_before_active_replies_state_and_applies_nothing():
+    d = SimDevice(uuid_from_index(6, 0x0301), password="pw", cv=0, ti=600)
+    d.handle_register_ack({"type": "REGISTER_ACK", "uuid": d.uuid, "state": "PENDING"})
+    ack = d.handle_config_set({"type": "CONFIG_SET", "cv": 1, "ti": 300, "ka": 300})
+    assert ack == {"type": "CONFIG_ACK", "uuid": d.uuid, "cv": 0, "result": "STATE"}
+    assert d.cv == 0 and d.ti == 600 and d.ka == 300
+    assert d.stats.config_set_rx == 1 and d.stats.config_ack_state == 1 and d.last_config_set["cv"] == 1
+    # SUSPENDED 도 STATE.
+    d.handle_register_ack({"type": "REGISTER_ACK", "uuid": d.uuid, "state": "SUSPENDED"})
+    assert d.handle_config_set({"cv": 1, "ti": 300, "ka": 300})["result"] == "STATE"
+    d.handle_register_ack({"type": "REGISTER_ACK", "uuid": d.uuid, "state": "ACTIVE"})
+    assert d.handle_config_set({"cv": 1, "ti": 300, "ka": 300})["result"] == "OK" and d.cv == 1
+
+
+def test_state_ack_next_flag_answers_state_even_when_active():
+    d = SimDevice(uuid_from_index(7, 0x0301), password="pw", state_ack_next=1)
+    d.gate.on_ack("ACTIVE")
+    assert d.handle_config_set({"cv": 1, "ti": 300, "ka": 300})["result"] == "STATE" and d.cv == 0
+    assert d.handle_config_set({"cv": 1, "ti": 300, "ka": 300})["result"] == "OK" and d.cv == 1
 
 
 async def test_send_tm_now_suppressed_before_active():
-    d = SimDevice(uuid_from_index(4, 0x0301), password="pw", approval_gate=True)
+    d = SimDevice(uuid_from_index(4, 0x0301), password="pw")
     assert await d.send_tm_now() is None
     assert d.stats.tm_suppressed == 1 and d.sq == 0  # 억제된 건은 sq 를 쓰지 않는다
     d.gate.on_ack("ACTIVE")
@@ -94,7 +130,7 @@ async def test_send_tm_now_suppressed_before_active():
 
 
 async def test_reboot_does_not_persist_approval():
-    d = SimDevice(uuid_from_index(5, 0x0301), password="pw", approval_gate=True)
+    d = SimDevice(uuid_from_index(5, 0x0301), password="pw")
     d.gate.on_ack("ACTIVE")
     await d.reboot()
-    assert d.gate.state is None and not d.gate.telemetry_allowed
+    assert d.state is None and not d.gate.telemetry_allowed

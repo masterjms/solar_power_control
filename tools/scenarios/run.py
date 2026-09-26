@@ -3,7 +3,9 @@
     python -m tools.scenarios.run --list
     python -m tools.scenarios.run --all
     python -m tools.scenarios.run --only S2-01,S2-03 --report tools/scenarios/out/report.md
-    python -m tools.scenarios.run --all --phase 3 --allow-docker
+    python -m tools.scenarios.run --all --phase-only 2                  # 2차만
+    python -m tools.scenarios.run --all --phase-only 3 --allow-docker   # 3차(승인 게이트)만, docker 시나리오 포함
+    python -m tools.scenarios.run --all --phase 5                       # 5차 그룹 CMD 까지 연다
 
 `--list` 는 서비스 없이 동작한다. 서비스가 내려가 있으면 시나리오는 SKIP(이유 표시)로 끝나고
 러너는 종료 코드 1 을 돌려준다(FAIL/ERROR 가 있어도 1).
@@ -105,11 +107,11 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--only", help="쉼표로 구분한 ID 목록, 예: S2-01,S2-03")
     g.add_argument("--list", action="store_true", help="목록만")
     p.add_argument("--phase", type=int, action="append", default=[],
-                   help="이 단계 기능을 연다(3 → approval_gate, 5 → group_cmd). 여러 번 가능")
+                   help="이 단계 기능을 연다(5 → group_cmd). 2·3차는 항상 열려 있다. 여러 번 가능")
     p.add_argument("--phase-only", type=int, default=None, help="--all 에서 이 단계 시나리오만")
     p.add_argument("--allow-docker", action="store_true", help="docker compose 를 조작하는 시나리오 허용")
     p.add_argument("--sim-mode", choices=["auto", "1cha", "2cha"], default="auto",
-                   help="시뮬레이터 계정 방식. auto = MQTT_TEST_ACCOUNT_ENABLED 에 따라")
+                   help="시뮬레이터 모드. auto = 2cha(1.4.0: HMAC 계정·승인 게이트). 1cha 는 공용 계정·1차 펌웨어")
     p.add_argument("--report", type=Path, default=None, help="마크다운 보고서 경로")
     p.add_argument("--keep-rows", action="store_true", help="시험 뒤 DB 행을 지우지 않는다(디버깅)")
     p.add_argument("--storm-count", type=int, default=1000, help="S2-10 단말 수")
@@ -123,8 +125,6 @@ def main(argv: list[str] | None = None) -> int:
 
     flags: set[str] = set()
     for ph in args.phase:
-        if ph >= 3:
-            flags.add("approval_gate")
         if ph >= 5:
             flags.add("group_cmd")
     if args.allow_docker:

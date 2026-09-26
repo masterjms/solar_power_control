@@ -1,4 +1,4 @@
-"""fleet 계정 CSV, 시나리오 프레임워크(등록·판정·보고서), metrics 도우미."""
+"""fleet(HMAC 비밀번호 목록·옵션), 시나리오 프레임워크(등록·판정·보고서), metrics 도우미, 시나리오 도우미."""
 
 from __future__ import annotations
 
@@ -9,37 +9,48 @@ from pathlib import Path
 import pytest
 
 from tools.scenarios import framework
-from tools.scenarios.common import flatten, metric_keys, metric_sum, namespace_of
+from tools.scenarios.common import (check_config_set_shape, flatten, metric_keys, metric_sum, namespace_of,
+                                    rx_delay, uuid_prefix)
 from tools.scenarios.framework import Ctx, Fail, Result, Scenario, Skip, run_one, write_report
-from tools.sim.fleet import Fleet, FleetOptions, generate_password, read_accounts, write_accounts
+from tools.sim.device import TEST_HMAC_KEY_HEX, SimDevice, device_password, uuid_from_index
+from tools.sim.fleet import Fleet, FleetOptions, passwords_for
+
+TEST_KEY = bytes.fromhex(TEST_HMAC_KEY_HEX)
 
 
-def test_write_and_read_accounts(tmp_path: Path):
-    path = tmp_path / "acc.csv"
-    rows = write_accounts(path, 5, namespace=0x0206, offset=10)
-    text = path.read_text(encoding="utf-8")
-    assert text.startswith("uuid,password\n") and "\r" not in text
-    back = read_accounts(path)
-    assert dict(rows) == back and len(back) == 5
-    assert all(re.match(r"^51A00206[0-9A-F]{16}$", u) for u in back)
-    assert all(re.match(r"^[A-Za-z0-9]{24}$", p) for p in back.values())
-    assert generate_password() != generate_password()
+def test_passwords_for_is_deterministic_hmac():
+    rows = passwords_for(5, namespace=0x0206, offset=10, key=TEST_KEY)
+    assert len(rows) == 5
+    assert all(re.match(r"^51A00206[0-9A-F]{16}$", u) for u, _ in rows)
+    assert all(p == device_password(TEST_KEY, u) for u, p in rows)
+    assert rows == passwords_for(5, namespace=0x0206, offset=10, key=TEST_KEY)
 
 
-def test_fleet_2cha_requires_accounts(tmp_path: Path):
-    with pytest.raises(ValueError):
-        Fleet(FleetOptions(count=2, mode="2cha", accounts=None))
-    path = tmp_path / "acc.csv"
-    write_accounts(path, 2)
-    fleet = Fleet(FleetOptions(count=2, mode="2cha", accounts=read_accounts(path)))
+def test_fleet_2cha_uses_hmac_without_server_side_prep():
+    fleet = Fleet(FleetOptions(count=2, mode="2cha", hmac_key=TEST_KEY, ka=120))
     assert [d.username for d in fleet.devices] == [d.uuid for d in fleet.devices]
+    assert all(d.password == device_password(TEST_KEY, d.uuid) for d in fleet.devices)
+    assert all(d.gate.enabled and d.ka == 120 and d.lwt is False for d in fleet.devices)
     fleet1 = Fleet(FleetOptions(count=2, mode="1cha"))
     assert {d.username for d in fleet1.devices} == {"solarlte-test"}
-    assert fleet1.totals()["connected"] == 0
+    assert all(not d.gate.enabled for d in fleet1.devices)
+    fleet_nohmac = Fleet(FleetOptions(count=1, mode="2cha", hmac=False))
+    assert fleet_nohmac.devices[0].username == "solarlte-test" and fleet_nohmac.devices[0].gate.enabled
+    assert fleet1.totals()["connected"] == 0 and fleet1.totals()["active"] == 0
+    assert fleet.state_counts() == {"NONE": 2}
+
+
+def test_fleet_cli_parser_accepts_new_flags():
+    from tools.sim.fleet import build_parser
+    args = build_parser().parse_args(["--count", "3", "--ka", "10", "--hmac-key", "ab" * 32, "--no-approval-gate"])
+    assert args.ka == 10 and args.hmac_key == "ab" * 32 and args.no_approval_gate
+    gen = build_parser().parse_args(["gen-passwords", "--count", "2"])
+    assert gen.command == "gen-passwords" and gen.count == 2
 
 
 def test_namespace_of():
     assert namespace_of("S2-03") == 0x0203 and namespace_of("S5-01") == 0x0501
+    assert uuid_prefix("S2-10") == "51A0020A"
     with pytest.raises(ValueError):
         namespace_of("X")
 
@@ -64,6 +75,29 @@ class _Services:
 
 def _scn(fn, **kw) -> Scenario:
     return Scenario(id="T-1", title="t", phase=2, func=fn, timeout=kw.pop("timeout", 5), **kw)
+
+
+def test_check_config_set_shape_rules():
+    ctx = Ctx(_scn(lambda c: None), _Services(), _Opt())
+    check_config_set_shape(ctx, {"type": "CONFIG_SET", "cv": 1, "ti": 600, "ka": 300}, cv=1, ti=600, ka=300, lat_lon=False)
+    check_config_set_shape(ctx, {"type": "CONFIG_SET", "cv": 2, "ti": 600, "ka": 300, "lat": 37.0, "lon": 127.0}, lat_lon=True)
+    with pytest.raises(Fail):  # cv 0 금지
+        check_config_set_shape(ctx, {"type": "CONFIG_SET", "cv": 0, "ti": 600, "ka": 300})
+    with pytest.raises(Fail):  # ka 누락 = 부분 전송
+        check_config_set_shape(ctx, {"type": "CONFIG_SET", "cv": 1, "ti": 600})
+    with pytest.raises(Fail):  # 좌표 없는데 키가 있음
+        check_config_set_shape(ctx, {"type": "CONFIG_SET", "cv": 1, "ti": 600, "ka": 300, "lat": None}, lat_lon=False)
+    with pytest.raises(Fail):  # 사양 밖 키
+        check_config_set_shape(ctx, {"type": "CONFIG_SET", "cv": 1, "ti": 600, "ka": 300, "site": "x"})
+
+
+def test_rx_delay_uses_last_rx_by_type():
+    d = SimDevice(uuid_from_index(1, 0x0301), password="pw")
+    assert rx_delay(d, "REGISTER_ACK", None) is None
+    d.last_rx_by_type["REGISTER_ACK"] = 100.5
+    assert rx_delay(d, "REGISTER_ACK", 100.0) == pytest.approx(0.5)
+    assert rx_delay(d, "REGISTER_ACK", 101.0) is None  # 송신보다 먼저 받은 건 이번 것이 아니다
+    assert rx_delay(d, "CONFIG_SET", 100.0) is None
 
 
 async def test_run_one_pass_fail_error_skip_and_teardown_order():
@@ -95,8 +129,8 @@ async def test_run_one_pass_fail_error_skip_and_teardown_order():
 
     async def needs_flag(ctx: Ctx):
         raise AssertionError("must not run")
-    r = await run_one(_scn(needs_flag, requires=("approval_gate",)), _Services(), _Opt())
-    assert r.status == "SKIP" and "approval_gate" in r.message
+    r = await run_one(_scn(needs_flag, requires=("group_cmd",)), _Services(), _Opt())
+    assert r.status == "SKIP" and "group_cmd" in r.message
     r = await run_one(_scn(needs_flag, docker=True), _Services(), _Opt())  # docker 플래그는 있음 → 실행됨
     assert r.status == "ERROR"
 
@@ -134,9 +168,19 @@ def test_registry_has_all_required_scenarios():
     from tools.scenarios import phase2, phase3, phase5  # noqa: F401
     ids = set(framework.REGISTRY)
     assert {f"S2-{i:02d}" for i in range(1, 15)} <= ids
-    assert {f"S3-{i:02d}" for i in range(1, 8)} <= ids
+    assert {f"S3-{i:02d}" for i in range(1, 12)} <= ids
     assert "S5-01" in ids
     for s in framework.REGISTRY.values():
         assert s.doc, f"{s.id} 에 docstring(목적·합격 기준) 이 없다"
-        if s.phase >= 3:
+        if s.phase >= 5:
             assert s.requires, f"{s.id} 는 requires 로 잠겨 있어야 한다"
+        if s.phase <= 3:
+            assert not s.requires, f"{s.id}: 2·3차는 플래그 없이 돌아야 한다(단말 1.4.0 은 게이트 항상 ON)"
+    assert {s.id for s in framework.REGISTRY.values() if s.docker} == {"S2-11", "S2-12", "S3-04"}
+
+
+def test_run_list_does_not_need_services(capsys):
+    from tools.scenarios.run import main
+    assert main(["--list"]) == 0
+    out = capsys.readouterr().out
+    assert "S2-01" in out and "S3-11" in out and "S5-01" in out

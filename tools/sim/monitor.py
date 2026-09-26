@@ -26,7 +26,7 @@ import aiomqtt
 
 from tools.sim.env import ENV
 
-DEVICE_TYPES = {"REGISTER", "TM", "PONG", "CONFIG_ACK", "CMD_ACK", "LWT", "EV"}
+DEVICE_TYPES = {"REGISTER", "TELEMETRY", "TM", "PONG", "CONFIG_ACK", "CMD_ACK", "LWT", "EV"}
 SERVER_TYPES = {"PING", "CMD", "CONFIG_SET", "REGISTER_ACK", "SCH", "OTA", "STATUS_GET"}
 _UUID_RE = re.compile(r"^[0-9A-F]{24}$")
 _TS_RE = re.compile(r"^\d{6}T\d{4}$")
@@ -59,8 +59,10 @@ class Monitor:
         kind = data.get("type")
         if kind is None and data.get("t") == "TM":
             kind = "TM"
-            print("      " + paint('1차 펌웨어 "t":"TM" (2차 이후 파서는 type 만 본다)', "yellow",
+            print("      " + paint('1차 펌웨어 "t":"TM" (1.1.0 부터는 type:"TELEMETRY")', "yellow",
                                    enabled=self.color))
+        if kind == "TELEMETRY":
+            kind = "TM"
         if kind not in DEVICE_TYPES:
             self.flag(uuid, f"사양에 없는 type {kind!r}")
             return

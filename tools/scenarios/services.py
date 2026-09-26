@@ -101,6 +101,9 @@ class Db:
         """서버(DB) 시각. received_at 비교는 이 시각 기준으로 한다(PC 시계와 어긋날 수 있다)."""
         return await self.fetchval("SELECT now()")
 
+    async def devices_like(self, prefix: str) -> list[dict[str, Any]]:
+        return [dict(r) for r in await self.fetch("SELECT * FROM device WHERE uuid LIKE $1", prefix + "%")]
+
     async def delete_device_rows(self, uuid: str) -> None:
         """REST DELETE 가 없거나 실패했을 때의 정리. telemetry/event 도 지운다."""
         for sql in ("DELETE FROM telemetry WHERE uuid = $1", "DELETE FROM device_event WHERE uuid = $1",
@@ -110,7 +113,7 @@ class Db:
 
 
 class Rest:
-    """백엔드 REST. 엔드포인트 목록은 docs/06 §환경 참고."""
+    """백엔드 REST — docs/05_API.md 그대로. 응답 검증은 시나리오가 한다(여기서는 상태코드를 올리지 않는다)."""
 
     def __init__(self, base: str) -> None:
         self.base = base
@@ -119,6 +122,7 @@ class Rest:
     async def close(self) -> None:
         await self.client.aclose()
 
+    # ── 시스템 ─────────────────────────────────────────────────────────
     async def health(self) -> dict[str, Any] | None:
         try:
             r = await self.client.get("/health")
@@ -139,19 +143,34 @@ class Rest:
             return bool(h["ok"])
         return str(h.get("status", "ok")).lower() in {"ok", "healthy", "up"}
 
+    async def test_account_enabled(self) -> bool | None:
+        """`/health.test_account_enabled`. 키가 없으면 None(호출자가 env 로 대신한다)."""
+        h = await self.health() or {}
+        for key in ("test_account_enabled", "mqtt_test_account_enabled"):
+            if key in h:
+                return bool(h[key])
+        return None
+
     async def metrics(self) -> dict[str, Any]:
         r = await self.client.get("/api/metrics")
         r.raise_for_status()
         return r.json()
 
+    # ── 단말 ───────────────────────────────────────────────────────────
     async def device(self, uuid: str) -> dict[str, Any] | None:
+        """`GET /api/devices/{uuid}` → DeviceOut. 404 면 None."""
         r = await self.client.get(f"/api/devices/{uuid}")
         if r.status_code == 404:
             return None
         r.raise_for_status()
         return r.json()
 
-    async def devices(self, **params: Any) -> Any:
+    async def devices(self, *, q: str | None = None, state: str | None = None, online: bool | None = None,
+                      page: int | None = None, size: int | None = None) -> dict[str, Any]:
+        """`GET /api/devices` → {items, total, page, size, counts}. counts 는 state 별 + online."""
+        params: dict[str, Any] = {"q": q, "state": state, "page": page, "size": size}
+        if online is not None:
+            params["online"] = "true" if online else "false"
         r = await self.client.get("/api/devices", params={k: v for k, v in params.items() if v is not None})
         r.raise_for_status()
         return r.json()
@@ -161,26 +180,68 @@ class Rest:
         r.raise_for_status()
         return r.json()
 
+    async def events(self, uuid: str, kind: str | None = None, limit: int = 100) -> Any:
+        params: dict[str, Any] = {"limit": limit}
+        if kind:
+            params["kind"] = kind
+        r = await self.client.get(f"/api/devices/{uuid}/events", params=params)
+        r.raise_for_status()
+        return r.json()
+
+    async def patch_state(self, uuid: str, state: str, *, site: str | None = None,
+                          reason: str | None = None) -> httpx.Response:
+        """`PATCH /api/devices/{uuid}/state {state, site?, reason?}` — 승인·거부·중지·해제·폐기(§3.9.2)."""
+        body: dict[str, Any] = {"state": state}
+        if site is not None:
+            body["site"] = site
+        if reason is not None:
+            body["reason"] = reason
+        return await self.client.patch(f"/api/devices/{uuid}/state", json=body)
+
+    async def republish_register_ack(self, uuid: str) -> httpx.Response:
+        """`POST /api/devices/{uuid}/register-ack` — DB 상태로 REGISTER_ACK retain 재발행."""
+        return await self.client.post(f"/api/devices/{uuid}/register-ack")
+
     async def patch_config(self, uuid: str, **body: Any) -> httpx.Response:
+        """`PATCH /api/devices/{uuid}/config {profile_id?, ti_override?, ka_override?, lat?, lon?, site?, address?, bjd_code?}`.
+
+        None 값도 그대로 보낸다(override 해제 = null)."""
         return await self.client.patch(f"/api/devices/{uuid}/config", json=body)
 
     async def ping(self, uuid: str) -> httpx.Response:
         return await self.client.post(f"/api/devices/{uuid}/ping")
 
-    async def import_accounts(self, csv_path: Path) -> httpx.Response:
-        with csv_path.open("rb") as f:
-            return await self.client.post("/api/devices/import-accounts",
-                                          files={"file": (csv_path.name, f, "text/csv")})
-
     async def delete_device(self, uuid: str) -> httpx.Response:
         return await self.client.delete(f"/api/devices/{uuid}")
 
-    # 3차·5차 — 아직 확정되지 않은 엔드포인트(가정). 404/405 면 시나리오가 SKIP 한다.
-    async def set_state(self, uuid: str, state: str, **extra: Any) -> httpx.Response:
-        return await self.client.patch(f"/api/devices/{uuid}/state", json={"state": state, **extra})
+    # ── 프로필 ─────────────────────────────────────────────────────────
+    async def profiles(self) -> list[dict[str, Any]]:
+        r = await self.client.get("/api/profiles")
+        r.raise_for_status()
+        return r.json()
 
+    async def create_profile(self, name: str, ti: int, ka: int) -> httpx.Response:
+        return await self.client.post("/api/profiles", json={"name": name, "ti": ti, "ka": ka})
+
+    async def patch_profile(self, profile_id: int, **body: Any) -> httpx.Response:
+        return await self.client.patch(f"/api/profiles/{profile_id}", json=body)
+
+    async def delete_profile(self, profile_id: int) -> httpx.Response:
+        return await self.client.delete(f"/api/profiles/{profile_id}")
+
+    # ── 5차 (가정) ─────────────────────────────────────────────────────
     async def post_command(self, body: dict[str, Any]) -> httpx.Response:
         return await self.client.post("/api/commands", json=body)
+
+
+def error_code(response: httpx.Response) -> str:
+    """docs/05 오류 봉투 `{"error": {"code": ...}}` 의 code. 모양이 다르면 빈 문자열."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    err = body.get("error") if isinstance(body, dict) else None
+    return str(err.get("code", "")) if isinstance(err, dict) else ""
 
 
 class Broker:
@@ -233,6 +294,21 @@ class Broker:
                 return await asyncio.wait_for(first(), timeout)
             except asyncio.TimeoutError:
                 return None
+
+    async def retained_many(self, topic_filter: str, *, seconds: float = 3.0) -> dict[str, bytes]:
+        """필터에 걸리는 보관 메시지 전부 {topic: payload}. 폭주 시나리오에서 1,000개 topic 을 한 번에 본다."""
+        got: dict[str, bytes] = {}
+        async with self.client(identifier=f"runner-retm-{os.getpid()}") as c:
+            await c.subscribe(topic_filter, qos=1)
+
+            async def loop() -> None:
+                async for m in c.messages:
+                    if m.retain:
+                        got[str(m.topic)] = bytes(m.payload or b"")
+
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(loop(), seconds)
+        return got
 
     async def collect(self, topic: str, *, seconds: float, identifier: str = "runner-collect") -> list[tuple[str, bytes, bool]]:
         """seconds 동안 topic 에 흐르는 메시지를 모은다 (topic, payload, retained)."""

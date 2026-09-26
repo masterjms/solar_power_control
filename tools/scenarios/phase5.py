@@ -2,14 +2,15 @@
 
 `--phase 5` 없이는 SKIP. 명령 REST 는 미확정이라 `POST /api/commands
 {target_kind, target_id, type:"CMD", payload:{act,dur,exp,pwm?}}` → {seq} 로 가정한다(docs/06 §가정).
-그룹 배정은 `PATCH /api/devices/{uuid}/config {grp:[...]}` 로 가정.
+그룹 배정은 `PATCH /api/devices/{uuid}/config {grp:[...]}` 로 가정(사양은 REGISTER_ACK `grp`, §3.10.9 — 5차 설계 때 맞춘다).
+단말은 1.4.0(승인 게이트)이라 setup 에서 REST 승인을 한다.
 """
 
 from __future__ import annotations
 
 import asyncio
 
-from tools.scenarios.common import make_devices
+from tools.scenarios.common import approve, make_devices
 from tools.scenarios.framework import Ctx, Fail, scenario
 
 GROUP = "4141011000"  # §3.10.4 법정동코드 예시
@@ -31,6 +32,7 @@ async def s5_01(ctx: Ctx) -> None:
     # 그룹 배정: CONFIG_SET 으로 내려가야 하므로 먼저 접속 → PATCH grp → CONFIG_ACK → 재접속해 group topic 구독.
     await asyncio.gather(*(d.start() for d in devices))
     ctx.check(all(await asyncio.gather(*(d.wait_connected(30) for d in devices))), "10대 접속")
+    await approve(ctx, devices)
     for d in devices:
         r = await ctx.s.rest.patch_config(d.uuid, grp=[GROUP])
         if r.status_code in (404, 405, 422):
