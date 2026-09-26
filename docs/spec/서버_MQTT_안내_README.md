@@ -1,4 +1,100 @@
-# SolarLTE 서버 1차 MQTT 접속 시험
+# SolarLTE 서버 MQTT 안내 — 1차 완료, 2·3차 진행
+
+> **2026-09-26 : 1차 합격. 단말 1.2.0 부터 2·3차를 모두 지원한다(현재 1.4.0).**
+> 서버는 2차와 3차를 **한 번에 진행해도 된다.** 전체 현황은 사양서 §0.5.
+>
+> **주의:** 1.2.0 이상은 승인 게이트가 켜져 있어 `REGISTER_ACK state=ACTIVE` 전에는
+> Telemetry 가 오지 않는다. 시험 단말은 한 줄로 승인해 둔다(retain, 한 번이면 됨).
+>
+> ```powershell
+> python Tools\mqtt_test.py --device-uuid <UUID> --approve ACTIVE --site TEST
+> ```
+
+## 최근 변경 (2026-09-26)
+
+| 항목 | 내용 | 사양서 |
+|---|---|---|
+| 단말 계정 | password = `HMAC-SHA256(K1, UUID)` 계산값. 브로커 **인증 플러그인** 필요. 키는 별도 전달 | §1.1.2.2 |
+| CONFIG 규칙 | 매번 전체 값, `cv` 1 부터(0 금지), `ka_device` 저장. CONFIG_ACK `FLASH` 추가 | §1.1.7 |
+| 브로커 | `persistence true` (승인 retain 보존) | 아래 §4 |
+| 전달 시점 | 단말 송신 직후에 보낸다(안전 규칙). 실측 580초 유휴까지 전달 | §1.1.10 |
+| keepalive | **300초 확정**, 운영 최대 600초 | §1.1.10 |
+| 그룹 (5차) | `grp` 는 retain REGISTER_ACK 로. 단말 저장 안 함 | §3.10.9 |
+| 스케줄 (6차) | 표 근거(지역·좌표·보정) 저장, **조건 전송 1번**, 계산은 `ref/suntable.py` 그대로 | §9.1, `ref/README.md` |
+
+## 서버 할 일 (2·3차)
+
+| # | 할 일 | 사양서 |
+|---|---|---|
+| S-1 | 수집 서비스: `iotlight/device/+/register`, `status`, `result` 구독, **UUID 로 upsert**, Telemetry raw 저장 | §4.1, §4.2 |
+| S-2 | Telemetry 파서: `"type":"TELEMETRY"` (1.0.0 은 `"t":"TM"`, `fw` 로 구분) | §1.1.6 |
+| S-3 | `sq` 로 유실(건너뜀)·재부팅(감소) | §1.1.6 |
+| S-4 | CONFIG_SET: `config` topic, **retain 0**. `CONFIG_ACK` 확인 | §1.1.7 |
+| S-5 | 단말별 계정: username = UUID, password = **HMAC-SHA256(K1, UUID)** 계산값. **브로커 인증 플러그인** + ACL. 키는 별도 전달 | **§1.1.2.2** |
+| S-6 | Online/Offline — **LWT 대체**: Mosquitto 로그의 접속/끊김으로 판정 | §16.1 |
+| S-7 | REGISTER 마다 `REGISTER_ACK`: `config` topic, **retain 1**, `state` / `site` | §3.3 |
+| S-8 | 상태 DB: 새 단말은 `PENDING` | §2, §3.4 |
+| S-9 | **최소 관리자 화면**: 미승인 목록, 승인 버튼, 장소·주소·요금제 | **§3.9.2** |
+| S-10 | 승인 후 초기 동기화: REGISTER `cv` 비교 → CONFIG_SET. ACTIVE 전 CONFIG 금지 | §3.9 |
+| S-11 | 폐기 시 빈 payload retain 으로 승인 정보 삭제 | §3.3 |
+| **S-12** | **서버 → 단말은 단말이 보낸 직후에 보낸다.** 첫 측정에서 2분 뒤 막힌 적이 있어 안전 규칙으로 둔다(이후 580초까지 정상) | **§1.1.10** |
+| **S-13** | **CONFIG_SET 은 매번 전체 값**(`cv` `ti` `ka` + 좌표). `cv` 는 1 부터, 0 금지. 단말 `cv` 가 더 크면 그 +1. `ka_device` 저장 | **§1.1.7** |
+| S-14 | Mosquitto `persistence true` (아래 §4) | §3.3 |
+
+**이번 범위는 2차 + 3차 전부다.** S-5 는 서버가 먼저 한다: 인증 플러그인을 넣고
+공용 계정을 **유지한 채** 시험 키로 확인 → 운영 키 K1 로 전환(§1.1.2.2 전환 순서).
+그 뒤 단말 HMAC 펌웨어가 들어간다. 나머지는 지금 할 수 있다. 4차(TLS)는 이번 범위가 아니다.
+
+`grp` 를 REGISTER_ACK 에 싣는 것은 5차다(§3.10.9). 지금은 `state` / `site` 만 싣는다.
+
+**UI 사양이 없어도 된다.** 2·3차에 필요한 화면은 §3.9.2 의 두 화면(목록, 승인)
+뿐이다. 대시보드·지도는 7차, 그룹 제어 화면은 5차다.
+
+### 단말이 보내는 것 (1.1.0 실기 로그. 이후 판도 형식은 같고 `fw` 값만 다르다)
+
+```text
+register  {"type":"REGISTER","uuid":"20363930594D50170004003A","fw":"1.1.0",
+           "cv":0,"ss":29,"ti":600,"ka":300,"device_model":"RMCB-1100M",
+           "modem_model":"WD-N522S","msisdn":"01248324427",
+           "imei":"358777078476869","iccid":"8982051902411583376"}
+status    {"type":"TELEMETRY","sq":0,"ts":"260926T1209","fw":"1.1.0","ss":29,"cv":0,
+           "er":16,"on":0,"md":0,"pw":[0,0,0],"bv":0,"bi":0,"sc":0,"pp":0,"li":0,"cs":0}
+result    {"type":"CONFIG_ACK","uuid":"20363930594D50170004003A","cv":1,"result":"OK"}
+```
+
+### 단말 동작에서 서버가 알아야 할 것
+
+| 항목 | 값 | 서버 영향 |
+|---|---|---|
+| keepalive | **300초 확정** (CONFIG `ka` 60~1800, 운영은 600 이하) | 브로커가 끊김을 알기까지 7.5분 (600초면 15분) |
+| 재접속 간격 | 30초 x5 → 5분 x5 → 30분 | 서버가 오래 죽었다 살아나면 단말이 붙기까지 최대 30분 |
+| LWT | 모뎀이 Will 을 못 넣는다 | **서버가 Mosquitto 로그로 대체** (7.5분 감지, §16.1) |
+| CONFIG 적용 | `ti` 즉시, `ka` 다음 접속부터 | |
+| 요금제 | SKT 1,100원 = 월 5MB | `ti` 10분 / `ka` 300초 = 월 약 2.4MB (MCU 사양서 §14.6) |
+
+### 승인 / CONFIG 시험 (서버 없이 PC 도구로)
+
+```powershell
+python Tools\mqtt_test.py --device-uuid <UUID> --approve PENDING
+python Tools\mqtt_test.py --device-uuid <UUID> --approve ACTIVE --site A-12
+python Tools\mqtt_test.py --device-uuid <UUID> --approve CLEAR
+```
+
+단말 로그 `[LTE] APPROVAL ACTIVE site=A-12` 뒤 Telemetry 가 바로 1건 온다.
+PENDING 이면 Telemetry 대신 REGISTER 가 5분마다 다시 온다.
+
+#### CONFIG_SET
+
+```powershell
+python Tools\mqtt_test.py --device-uuid <UUID> --config "{\"cv\":1,\"ti\":300}" --config-only
+```
+
+`CONFIG_ACK result=OK` 가 오고 다음 Telemetry 의 `cv` 가 1 이면 된다.
+범위 밖(`ti` 10 등)은 `RANGE` 로 답하고 아무것도 바꾸지 않는다.
+
+---
+
+# 부록 : 1차 접속 시험 기록
 
 ## 이번 목표
 
@@ -49,31 +145,6 @@ WD-N522S LTE 모뎀이 `infontech.co.kr:1883`의 Mosquitto Broker에 접속하�
 - 단말은 승인 상태를 저장하지 않는다. **연결할 때마다 서버가 알려줘야 한다.**
 - 서버는 REGISTER를 받을 때마다 **반드시 응답한다.** 상태가 그대로여도 답한다.
 - 승인을 못 받아도 **조명은 자체 스케줄로 정상 점등한다.**
-
-## 현재 진행 상태 (2026-09-24)
-
-단말은 준비되었다. **남은 것은 서버 Broker 기동뿐이다.**
-
-| 항목 | 상태 |
-|---|---|
-| LTE 망 등록 | 완료 |
-| IP 할당 | 완료 (IPv6 단독, 정상) |
-| MQTT 설정 및 접속 시도 | 정상 동작 |
-| Broker 접속 결과 | `*WMQTCON:0` — 상대 응답 없음 |
-| 재시도 | 30초 주기로 정상 반복 |
-
-`*WMQTCON:0`은 접속을 시도했지만 상대가 응답하지 않았다는 뜻이다. Mosquitto가
-아직 없기 때문이며 단말 쪽 문제는 아니다.
-
-단말 IP가 IPv6 단독으로 잡히는 것은 국내 Cat.M1 망의 정상 동작이다. MQTT는
-WD-N522S 모뎀 내장 스택이 호스트명을 직접 해석해 접속하므로 **서버는 IPv4
-전용으로 구성해도 된다.**
-
-아래 세 가지를 마치면 곧바로 1차-A 판정이 가능하다.
-
-1. Mosquitto 설치 및 TCP 1883 listener 기동
-2. AWS Security Group과 OS 방화벽에서 TCP 1883 허용
-3. `solarlte-test` / `solarlte-test-2026` 계정 등록
 
 ## 고정 접속값
 
@@ -129,7 +200,12 @@ allow_anonymous false
 password_file /etc/mosquitto/passwd
 connection_messages true
 log_type notice
+persistence true
+persistence_location /var/lib/mosquitto/
 ```
+
+`persistence true` 는 승인 retain(REGISTER_ACK)을 브로커 재시작 뒤에도 남긴다(S-14).
+없으면 재시작 때 모든 단말이 미승인으로 돌아간다.
 
 설정 적용:
 
@@ -189,7 +265,7 @@ mosquitto_sub -h infontech.co.kr -p 1883 \
 받는 모양이다. 한 줄 약 160바이트다.
 
 ```json
-{"t":"TM","sq":41,"ts":"260924T2103","fw":"1.0.0","ss":15,"cv":3,
+{"type":"TELEMETRY","sq":41,"ts":"260924T2103","fw":"1.1.0","ss":15,"cv":3,
  "er":0,"on":1,"md":0,"pw":[70,64,64],
  "bv":2612,"bi":-150,"sc":87,"pp":3400,"li":230,"cs":3073}
 ```
