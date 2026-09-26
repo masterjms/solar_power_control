@@ -20,7 +20,11 @@ x-logging: &default-logging
 
 services:
   mosquitto:
-    image: eclipse-mosquitto:2
+    # Mosquitto 2.0.x + mosquitto-go-auth 플러그인 (ADR-003). 단말 비밀번호는 HMAC 계산값이라
+    # password_file 에 미리 넣을 수 없고, 접속 순간 backend /internal/mqtt/auth 가 판정한다.
+    # backend 에 depends_on 을 걸 수 없다(backend 가 mosquitto 에 의존) — go-auth 는 접속마다
+    # HTTP 를 시도하므로 backend 가 늦게 떠도 그 뒤 접속부터 정상이다.
+    image: iegomez/mosquitto-go-auth:latest
     container_name: iotlight-mosquitto
     restart: unless-stopped
     logging: *default-logging
@@ -33,8 +37,14 @@ services:
       - "1883:1883"
       - "8883:8883"
     # 감시 루프를 얹은 래퍼. 공유 볼륨의 passwd.generated / aclfile.generated 가
-    # 바뀌면 /mosquitto/data/ 로 설치하고 SIGHUP 리로드, aclfile.applied 에 md5 보고.
+    # 바뀌면 /mosquitto/data/ 로 설치하고 *.applied 에 md5 보고 후 브로커 재시작
+    # (go-auth 는 HUP 로 파일을 다시 읽지 않는다 — restart 정책이 되살린다).
+    # 브로커 로그 파일(mqtt-dynamic/mosquitto.log)이 50 MB 를 넘으면 비우고 HUP.
     entrypoint: ["/bin/sh", "/mosquitto/entrypoint.sh"]
+    environment:
+      # 첫 기동(백엔드가 아직 passwd.generated 를 내보내기 전) 시드 passwd 에 server 계정을
+      # 넣기 위해서만 쓴다. 이후엔 백엔드 generated 가 정본.
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
     # MQTT 연결 하나 = fd 하나. 기본 한도 1024 면 약 1,000대에서 "Too many open files"
     # 로 접속이 거절되고 단말 쪽에서는 계정 오류와 구분되지 않는다(aircast 실측).
     # 목표 1만 대 → 65536.
@@ -50,8 +60,9 @@ services:
       - mosquitto-data:/mosquitto/data
       - mqtt-dynamic:/mosquitto/dynamic
     healthcheck:
-      # allow_anonymous false 라 익명 접속은 "not authorised" 로 거부된다 — 그 거부 응답이
-      # 오면 브로커가 살아서 1883 을 듣고 있는 것이다. TCP 가 안 열리면 다른 메시지가 난다.
+      # allow_anonymous false 라 익명 접속은 "Connection Refused: not authorised." 로 거부된다
+      # (go-auth 이미지도 같은 문구, 2026-09-26 실측) — 그 거부 응답이 오면 브로커가 살아서
+      # 1883 을 듣고 있는 것이다. TCP 가 안 열리면 다른 메시지가 난다.
       test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 1883 -t '$$SYS/#' -C 1 -W 2 -i healthcheck 2>&1 | grep -qi 'not authori'"]
       interval: 30s
       timeout: 5s
@@ -71,9 +82,12 @@ services:
       # 단말별 계정(2차) 내보내기 경로. mosquitto entrypoint 가 감시한다.
       MOSQUITTO_PASSWD_EXPORT: /var/lib/iotlight/mqtt/passwd.generated
       MOSQUITTO_ACL_EXPORT: /var/lib/iotlight/mqtt/aclfile.generated
+      # 브로커 접속/해제 로그(ADR-004). mosquitto 가 같은 볼륨에 쓰고 backend 가 tail 한다.
+      MOSQUITTO_LOG_PATH: /var/lib/iotlight/mqtt/mosquitto.log
     volumes:
-      # passwd/aclfile 전달 통로 (backend 쓰기 → mosquitto 읽기).
-      # entrypoint 가 기동 때 소유자를 backend 사용자(uid 10001)로 넘겨준다.
+      # passwd/aclfile 전달 통로 (backend 쓰기 → mosquitto 읽기) + 브로커 로그
+      # (mosquitto 쓰기 → backend 읽기). entrypoint 가 기동 때 소유자를 backend
+      # 사용자(uid 10001), 그룹을 mosquitto(gid 1000) 로 맞춘다.
       - mqtt-dynamic:/var/lib/iotlight/mqtt
     depends_on:
       mosquitto:
@@ -122,5 +136,5 @@ volumes:
   pgdata:
   # 브로커 persistence(retained REGISTER_ACK 포함) + 설치된 passwd/aclfile + 효력 conf
   mosquitto-data:
-  # 단말별 계정 passwd/aclfile 전달 통로. backend 가 쓰고 mosquitto 가 설치한다.
+  # backend → mosquitto: passwd/aclfile(generated). mosquitto → backend: mosquitto.log.
   mqtt-dynamic:
