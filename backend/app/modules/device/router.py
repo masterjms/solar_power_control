@@ -4,22 +4,23 @@ from __future__ import annotations
 
 import datetime as dt
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.errors import ValidationFailed
 from app.modules.deps import get_config_sync, get_publisher
 from app.modules.device import service
 from app.modules.device.schemas import (
     ConfigPatch,
     ConfigPatchOut,
     DeleteOut,
-    DeviceDetailOut,
+    DeviceOut,
     DevicePage,
     EventOut,
-    ImportAccountsOut,
     PingOut,
+    RegisterAckOut,
+    StateOut,
+    StatePatch,
     TelemetryOut,
 )
 from app.mqtt.config_sync import ConfigSyncQueue
@@ -40,28 +41,15 @@ async def list_devices(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=500),
     state: str | None = Query(default=None),
-    online: bool | None = Query(default=None),
+    online: bool | None = Query(default=None, description="is_online 판정값으로 필터"),
+    q: str | None = Query(default=None, max_length=64, description="uuid 또는 site 부분 일치"),
     db: AsyncSession = Depends(get_db),
 ) -> DevicePage:
-    return await service.list_devices(db, page=page, size=size, state=state, online=online)
+    return await service.list_devices(db, page=page, size=size, state=state, online=online, q=q)
 
 
-# import-accounts 는 /{uuid} 보다 먼저 선언해야 경로가 uuid 로 잡히지 않는다.
-@router.post("/import-accounts", response_model=ImportAccountsOut)
-async def import_accounts(
-    file: UploadFile = File(..., description="uuid,password CSV"),
-    db: AsyncSession = Depends(get_db),
-) -> ImportAccountsOut:
-    raw = await file.read()
-    try:
-        content = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise ValidationFailed("CSV 는 UTF-8 이어야 합니다.") from exc
-    return await service.import_accounts(db, content)
-
-
-@router.get(f"/{_UUID_PATH}", response_model=DeviceDetailOut)
-async def get_device(uuid: str, db: AsyncSession = Depends(get_db)) -> DeviceDetailOut:
+@router.get(f"/{_UUID_PATH}", response_model=DeviceOut)
+async def get_device(uuid: str, db: AsyncSession = Depends(get_db)) -> DeviceOut:
     return await service.get_device(db, _uuid(uuid))
 
 
@@ -86,6 +74,25 @@ async def get_events(
     return await service.list_events(db, _uuid(uuid), kind=kind, limit=limit)
 
 
+@router.patch(f"/{_UUID_PATH}/state", response_model=StateOut)
+async def patch_state(
+    uuid: str,
+    body: StatePatch,
+    db: AsyncSession = Depends(get_db),
+    publisher: MqttPublisher = Depends(get_publisher),
+) -> StateOut:
+    return await service.set_state(db, _uuid(uuid), body, publisher)
+
+
+@router.post(f"/{_UUID_PATH}/register-ack", response_model=RegisterAckOut)
+async def republish_register_ack(
+    uuid: str,
+    db: AsyncSession = Depends(get_db),
+    publisher: MqttPublisher = Depends(get_publisher),
+) -> RegisterAckOut:
+    return await service.republish_register_ack(db, _uuid(uuid), publisher)
+
+
 @router.patch(f"/{_UUID_PATH}/config", response_model=ConfigPatchOut)
 async def patch_config(
     uuid: str,
@@ -107,5 +114,9 @@ async def ping(
 
 
 @router.delete(f"/{_UUID_PATH}", response_model=DeleteOut)
-async def delete_device(uuid: str, db: AsyncSession = Depends(get_db)) -> DeleteOut:
-    return await service.delete_device(db, _uuid(uuid))
+async def delete_device(
+    uuid: str,
+    db: AsyncSession = Depends(get_db),
+    publisher: MqttPublisher = Depends(get_publisher),
+) -> DeleteOut:
+    return await service.delete_device(db, _uuid(uuid), publisher)

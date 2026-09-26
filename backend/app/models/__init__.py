@@ -6,6 +6,7 @@ from app.models.base import Base
 from app.models.command import Command, CommandAck
 from app.models.device import Device
 from app.models.event import DeviceEvent
+from app.models.profile import ConfigProfile
 from app.models.system import AdminUser, MqttAccountExport
 from app.models.telemetry import Telemetry, TelemetryDaily
 
@@ -14,6 +15,7 @@ __all__ = [
     "Base",
     "Command",
     "CommandAck",
+    "ConfigProfile",
     "Device",
     "DeviceEvent",
     "MqttAccountExport",

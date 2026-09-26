@@ -49,12 +49,17 @@ def check_size(topic: str, raw: bytes) -> None:
 
 # ── payload 빌더 (순수 함수 — 테스트가 직접 검사한다) ───────────────────
 def config_set_payload(
-    *, cv: int, ti: int, lat: float | None, lon: float | None
+    *, cv: int, ti: int, ka: int, lat: float | None, lon: float | None
 ) -> dict[str, Any]:
-    """CONFIG_SET (사양서 §1.1.7). lat/lon 이 NULL 이면 키 자체를 뺀다 —
-    단말은 없는 키를 "변경 없음"으로 보고, null 을 보내면 파서가 어떻게 받을지 정해진 게 없다.
+    """CONFIG_SET (사양서 §1.1.7 S-13) — **항상 전체값** `cv` `ti` `ka`, 좌표는 있을 때만.
+
+    일부만 보내면 빠진 항목은 단말의 옛 값이 남는데 cv 는 같아져 서버가 어긋남을 영영 모른다.
+    cv 0 은 보내지 않는다(호출부가 next_cv_server 로 1 이상을 만든다) — 여기서 한 번 더 막는다.
+    lat/lon 이 NULL 이면 키 자체를 뺀다(하나만 있으면 둘 다 뺀다 — 반쪽 좌표는 못 쓴다).
     """
-    payload: dict[str, Any] = {"type": MsgType.CONFIG_SET.value, "cv": cv, "ti": ti}
+    if cv < 1:
+        raise ValueError(f"CONFIG_SET cv 는 1 이상이어야 합니다 (cv={cv}) — S-13 규칙 2")
+    payload: dict[str, Any] = {"type": MsgType.CONFIG_SET.value, "cv": cv, "ti": ti, "ka": ka}
     if lat is not None and lon is not None:
         payload["lat"] = lat
         payload["lon"] = lon
@@ -66,15 +71,18 @@ def ping_payload(*, seq: int) -> dict[str, Any]:
 
 
 def register_ack_payload(
-    *, uuid: str, state: str, site: str | None = None, reason: str | None = None
+    *, uuid: str, state: str, site: str | None = None, reason: str | None = None,
+    grp: str | None = None,
 ) -> dict[str, Any]:
-    """REGISTER_ACK (사양서 §3.3, 3차). state·site 만 싣는다 — cv/grp 는 절대 넣지 않는다.
-    retain 메시지에 설정값이 섞이면 재부팅 시 옛 값이 먼저 도착한다."""
+    """REGISTER_ACK (사양서 §3.3). state·site(·reason, 5차 grp) 만 싣는다 — cv/ti/ka 는 절대
+    넣지 않는다. retain 메시지에 설정값이 섞이면 재부팅 시 옛 값이 먼저 도착한다."""
     payload: dict[str, Any] = {"type": MsgType.REGISTER_ACK.value, "uuid": uuid, "state": state}
     if site:
         payload["site"] = site
     if reason:
         payload["reason"] = reason
+    if grp:
+        payload["grp"] = grp
     return payload
 
 
@@ -102,36 +110,39 @@ class MqttPublisher:
 
     # ── CONFIG ──────────────────────────────────────────────────────────
     async def publish_config_set(
-        self, *, uuid: str, cv: int, ti: int, lat: float | None, lon: float | None
-    ) -> None:
+        self, *, uuid: str, cv: int, ti: int, ka: int, lat: float | None, lon: float | None
+    ) -> dict[str, Any]:
         """CONFIG_SET. retain=False — 단말이 cv 를 Flash 에 저장하고 Telemetry 에 echo
-        하므로 retain 이 필요 없고, 사양서가 retain 에 설정값 섞는 것을 금지한다(ADR-002)."""
-        await self._send(
-            topics.device_config(uuid),
-            config_set_payload(cv=cv, ti=ti, lat=lat, lon=lon),
-            qos=_QOS_CONFIG,
-            retain=False,
-        )
+        하므로 retain 이 필요 없고, 사양서가 retain 에 설정값 섞는 것을 금지한다(ADR-002).
+        보낸 payload 를 돌려준다(device_event(CONFIG_SET) 에 그대로 남긴다)."""
+        payload = config_set_payload(cv=cv, ti=ti, ka=ka, lat=lat, lon=lon)
+        await self._send(topics.device_config(uuid), payload, qos=_QOS_CONFIG, retain=False)
         metrics.config_set_sent += 1
+        return payload
 
     async def publish_register_ack(
-        self, *, uuid: str, state: str, site: str | None = None, reason: str | None = None
-    ) -> None:
-        """REGISTER_ACK — 유일한 retain 메시지 (3차). 2차 dispatch 는 부르지 않는다.
+        self, *, uuid: str, state: str, site: str | None = None, reason: str | None = None,
+        grp: str | None = None,
+    ) -> dict[str, Any]:
+        """REGISTER_ACK — 유일한 retain 메시지 (사양서 §3.3).
 
         빈 payload 를 retain 으로 보내면 브로커가 보관본을 지운다(RETIRED 정리) —
-        그건 clear_register_ack() 다.
+        그건 clear_register_ack() 다. 보낸 payload 를 돌려준다.
         """
-        await self._send(
-            topics.device_config(uuid),
-            register_ack_payload(uuid=uuid, state=state, site=site, reason=reason),
-            qos=_QOS_CONFIG,
-            retain=True,
-        )
+        payload = register_ack_payload(uuid=uuid, state=state, site=site, reason=reason, grp=grp)
+        await self._send(topics.device_config(uuid), payload, qos=_QOS_CONFIG, retain=True)
+        metrics.register_ack_sent += 1
+        return payload
 
     async def clear_register_ack(self, *, uuid: str) -> None:
-        """retain 보관본 삭제 (사양서 §3.3, RETIRED 정리). 빈 payload + retain."""
-        await self._conn.raw_publish(topics.device_config(uuid), b"", qos=_QOS_CONFIG, retain=True)
+        """retain 보관본 삭제 (사양서 §3.3, RETIRED 정리·단말 삭제). 빈 payload + retain."""
+        try:
+            await self._conn.raw_publish(
+                topics.device_config(uuid), b"", qos=_QOS_CONFIG, retain=True
+            )
+        except Exception:
+            metrics.mqtt_publish_failures += 1
+            raise
         log.info("MQTT → %s (retain 삭제)", topics.device_config(uuid))
 
     # ── CMD ─────────────────────────────────────────────────────────────

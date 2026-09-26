@@ -32,7 +32,8 @@ class DeviceEvent(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     uuid: Mapped[str] = mapped_column(CHAR(UUID_LENGTH), nullable=False)
-    #: REGISTER / LWT / REBOOT / LOST / ERR / STATE_CHANGE / CONFIG_ACK / CMD_ACK / PONG
+    #: REGISTER / REGISTER_ACK / ONLINE / OFFLINE / LWT / REBOOT / LOST / ERR / STATE_CHANGE /
+    #: CONFIG_SET / CONFIG_ACK / CMD_ACK / PONG (docs/03). 자유 텍스트 — CHECK 없음.
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     #: `uuid:type:seq-or-cv:sha1(payload)[:16]`. 키를 못 만드는 종류는 NULL.

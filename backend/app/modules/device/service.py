@@ -1,4 +1,10 @@
-"""단말 서비스 — 조회 · CONFIG 변경 · PING · 계정 import/삭제 · 브로커 계정 내보내기."""
+"""단말 서비스 — 조회 · 승인(상태) · CONFIG 변경 · PING · 삭제 · 브로커 계정 내보내기 (docs/05).
+
+서버 → 단말 발행 시점 원칙(사양서 §1.1.10): 관리자 조작은 **즉시 발행**하되 단말 도착은 다음
+단말 송신 이후일 수 있다. 승인(REGISTER_ACK)은 retain 이라 재접속 때 반드시 받는다. CONFIG_SET
+은 비retain 이라 즉시 1회 보내고, 못 받았으면 다음 TELEMETRY 의 cv 불일치가 다시 보낸다.
+발행 실패(브로커 끊김)는 예외로 올리지 않고 `published=false` 로 알린다 — DB 는 커밋한다.
+"""
 
 from __future__ import annotations
 
@@ -6,96 +12,144 @@ import datetime as dt
 import logging
 from typing import Any
 
-from sqlalchemy import Select, delete, func, select, text, update
+from sqlalchemy import Select, case, delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import MsgType
+from app.constants import STATE_TRANSITIONS, DeviceState, EventKind, MsgType
 from app.core import ids, mqtt_accounts, presence
-from app.errors import DeviceNotFound
+from app.core.config_rules import (
+    bump_cv_server,
+    effective_config,
+    next_cv_server,
+    should_send_config,
+)
+from app.errors import DeviceNotFound, InvalidStateTransition, ProfileNotFound
 from app.models.command import Command
 from app.models.device import Device
 from app.models.event import DeviceEvent
+from app.models.profile import ConfigProfile
 from app.models.system import MqttAccountExport
 from app.models.telemetry import Telemetry
 from app.modules.device.schemas import (
     ConfigPatch,
     ConfigPatchOut,
     DeleteOut,
-    DeviceDetailOut,
     DeviceOut,
     DevicePage,
     EventOut,
-    ImportAccountsOut,
     PingOut,
+    RegisterAckOut,
+    StateOut,
+    StatePatch,
     TelemetryOut,
 )
 from app.mqtt.config_sync import ConfigSyncQueue
-from app.mqtt.publisher import MqttPublisher, config_set_payload
+from app.mqtt.publisher import MqttPublisher, config_set_payload, register_ack_payload
 
 log = logging.getLogger(__name__)
 
-#: 브로커 passwd/aclfile 내보내기를 직렬화하는 어드바이저리 락 키. 파일은 통째로
-#: 덮어쓰는데 커밋 전 트랜잭션에서 만들기 때문에, 두 import 가 동시에 오면 뒤에 쓴 쪽이
-#: 앞 요청의 변경을 못 보고 지운다. 락은 앞 요청이 커밋한 뒤에 풀린다.
+#: 브로커 passwd/aclfile 내보내기를 직렬화하는 어드바이저리 락 키. 기동 시와 5분 재조정이
+#: 겹쳐도 파일을 반쯤 쓴 상태로 두 번 설치하지 않게 한다.
 _BROKER_EXPORT_LOCK_KEY = 0x696F746C_69676874  # "iotlight"
+
+#: site 가 바뀌면 REGISTER_ACK 를 다시 retain 하는 상태(site 가 거기 실린다). RETIRED 는 retain
+#: 이 비어 있어야 하므로 제외.
+_SITE_REPUBLISH_STATES = frozenset({"ACTIVE", "PENDING", "SUSPENDED", "REJECTED"})
 
 
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
 
-def _to_out(device: Device, now: dt.datetime, *, detail: bool = False) -> DeviceOut:
-    data: dict[str, Any] = {
-        c.name: getattr(device, c.name) for c in Device.__table__.columns
-    }
-    data.pop("mqtt_password_hash", None)
-    data["has_mqtt_account"] = device.mqtt_password_hash is not None
-    data["is_online"] = presence.is_online(device, now)
-    data["config_pending"] = (
-        device.cv_device is None or device.cv_device != device.cv_server
+# ── 출력 변환 ────────────────────────────────────────────────────────────
+def _to_out(device: Device, profile: ConfigProfile | None, now: dt.datetime) -> DeviceOut:
+    data: dict[str, Any] = {c.name: getattr(device, c.name) for c in Device.__table__.columns}
+    # FK 가 보장하지만 프로필을 못 찾으면(방금 지움) 화면이 죽지 않게 0 으로 표시한다.
+    p_ti, p_ka = (profile.ti, profile.ka) if profile else (0, 0)
+    eff = effective_config(
+        ti_override=device.ti_override, ka_override=device.ka_override,
+        profile_ti=p_ti, profile_ka=p_ka,
     )
-    if not detail:
-        data.pop("last_telemetry", None)
-        return DeviceOut(**data)
-    return DeviceDetailOut(**data)
+    data["profile_name"] = profile.name if profile else None
+    data["ti_effective"] = eff.ti
+    data["ka_effective"] = eff.ka
+    data["is_online"] = presence.is_online(device, now, eff.ti)
+    data["config_pending"] = device.cv_server > 0 and device.cv_device != device.cv_server
+    data["config_mismatch"] = (
+        (device.ti_device is not None and device.ti_device != eff.ti)
+        or (device.ka_device is not None and device.ka_device != eff.ka)
+    )
+    return DeviceOut(**data)
 
 
 # ── 조회 ─────────────────────────────────────────────────────────────────
-def _filtered(state: str | None, online: bool | None, now: dt.datetime) -> Select:
-    stmt = select(Device)
+def _filtered(state: str | None, online: bool | None, q: str | None, now: dt.datetime) -> Select:
+    stmt = select(Device, ConfigProfile).join(
+        ConfigProfile, ConfigProfile.id == Device.profile_id, isouter=True
+    )
     if state:
         stmt = stmt.where(Device.state == state.upper())
     if online is True:
         stmt = stmt.where(presence.online_clause(now))
     elif online is False:
         stmt = stmt.where(~presence.online_clause(now))
+    if q:
+        needle = f"%{q.strip()}%"
+        stmt = stmt.where(Device.uuid.ilike(needle) | Device.site.ilike(needle))
     return stmt
 
 
+async def _counts(db: AsyncSession, now: dt.datetime) -> dict[str, int]:
+    """필터와 무관한 전체 집계 — 화면 상단 탭(PENDING n 건)용."""
+    counts = {s.value: 0 for s in DeviceState}
+    for state, n in await db.execute(select(Device.state, func.count()).group_by(Device.state)):
+        counts[state] = int(n)
+    counts["online"] = int(
+        await db.scalar(select(func.count()).select_from(Device).where(presence.online_clause(now)))
+        or 0
+    )
+    return counts
+
+
 async def list_devices(
-    db: AsyncSession, *, page: int, size: int, state: str | None, online: bool | None
+    db: AsyncSession, *, page: int, size: int, state: str | None, online: bool | None,
+    q: str | None,
 ) -> DevicePage:
     now = _now()
-    base = _filtered(state, online, now)
+    base = _filtered(state, online, q, now)
     total = await db.scalar(select(func.count()).select_from(base.subquery())) or 0
+    # PENDING 먼저(승인 대기가 화면 맨 위), 그다음 최근 수신 순, NULL(한 번도 안 옴) 마지막.
+    pending_first = case((Device.state == DeviceState.PENDING.value, 0), else_=1)
     rows = (
         await db.execute(
-            base.order_by(Device.last_telemetry_at.desc().nulls_last(), Device.uuid)
+            base.order_by(pending_first, Device.last_seen_at.desc().nulls_last(), Device.uuid)
             .offset((page - 1) * size)
             .limit(size)
         )
-    ).scalars().all()
+    ).all()
     return DevicePage(
-        items=[_to_out(d, now) for d in rows], total=int(total), page=page, size=size
+        items=[_to_out(d, p, now) for d, p in rows], total=int(total), page=page, size=size,
+        counts=await _counts(db, now),
     )
 
 
-async def get_device(db: AsyncSession, uuid: str) -> DeviceDetailOut:
-    device = await db.get(Device, uuid)
-    if device is None:
+async def _get_with_profile(db: AsyncSession, uuid: str) -> tuple[Device, ConfigProfile | None]:
+    row = (
+        await db.execute(
+            select(Device, ConfigProfile)
+            .join(ConfigProfile, ConfigProfile.id == Device.profile_id, isouter=True)
+            .where(Device.uuid == uuid)
+        )
+    ).first()
+    if row is None:
         raise DeviceNotFound(detail={"uuid": uuid})
-    return _to_out(device, _now(), detail=True)  # type: ignore[return-value]
+    return row[0], row[1]
+
+
+async def get_device(db: AsyncSession, uuid: str) -> DeviceOut:
+    device, profile = await _get_with_profile(db, uuid)
+    return _to_out(device, profile, _now())
 
 
 async def list_telemetry(
@@ -135,55 +189,196 @@ async def list_events(
     return [EventOut.model_validate(r) for r in rows]
 
 
+# ── REGISTER_ACK (관리자 경로 — 즉시 발행) ───────────────────────────────
+async def _event(
+    db: AsyncSession, uuid: str, kind: EventKind, payload: dict[str, Any], now: dt.datetime
+) -> None:
+    await db.execute(pg_insert(DeviceEvent).values(
+        uuid=uuid, kind=kind.value, payload=payload, received_at=now
+    ))
+
+
+async def _publish_register_ack(
+    db: AsyncSession, device: Device, publisher: MqttPublisher, now: dt.datetime
+) -> tuple[bool, dict[str, Any]]:
+    """DB 상태 그대로 REGISTER_ACK 를 retain 발행. RETIRED 는 발행 뒤 빈 retain 으로 지운다.
+
+    반환 (발행 성공, payload). 실패는 로그만 — 다음 REGISTER 때 큐가 다시 답한다.
+    """
+    retired = device.state == DeviceState.RETIRED.value
+    reason = device.state_reason if device.state == DeviceState.REJECTED.value else None
+    payload = register_ack_payload(
+        uuid=device.uuid, state=device.state, site=device.site, reason=reason
+    )
+    try:
+        await publisher.publish_register_ack(
+            uuid=device.uuid, state=device.state, site=device.site, reason=reason
+        )
+        if retired:
+            await publisher.clear_register_ack(uuid=device.uuid)
+    except Exception:  # noqa: BLE001
+        log.exception("REGISTER_ACK 발행 실패 %s (state=%s) — DB 는 커밋, 재발행 필요",
+                      device.uuid, device.state)
+        return False, payload
+    device.register_ack_at = None if retired else now
+    event = dict(payload)
+    if retired:
+        event["retain_cleared"] = True
+    await _event(db, device.uuid, EventKind.REGISTER_ACK, event, now)
+    return True, payload
+
+
+async def set_state(
+    db: AsyncSession, uuid: str, patch: StatePatch, publisher: MqttPublisher
+) -> StateOut:
+    """승인·거부·중지·해제·폐기 (사양서 §3.9.2, docs/05 PATCH /state).
+
+    1. 전이 표 검사 → DB state/site/reason + device_event(STATE_CHANGE)
+    2. REGISTER_ACK retain 발행(RETIRED 는 발행 후 빈 retain)
+    3. ACTIVE 로 갈 때 cv_server 를 1 이상·단말보다 크게. CONFIG_SET 은 **여기서 안 보낸다** —
+       단말이 ACTIVE 를 받고 보내는 첫 TELEMETRY 때 cv 비교로 나간다(§1.1.10, S-10).
+    """
+    device = await db.get(Device, uuid)
+    if device is None:
+        raise DeviceNotFound(detail={"uuid": uuid})
+    old = device.state
+    if patch.state not in STATE_TRANSITIONS.get(old, frozenset()):
+        raise InvalidStateTransition(
+            detail={"from": old, "to": patch.state, "allowed": sorted(STATE_TRANSITIONS[old])}
+        )
+    now = _now()
+    device.state = patch.state
+    device.state_changed_at = now
+    device.state_reason = patch.reason
+    if patch.site is not None:
+        device.site = patch.site or None
+    if patch.state == DeviceState.ACTIVE.value:
+        device.cv_server = next_cv_server(device.cv_server, device.cv_device)
+    await _event(db, uuid, EventKind.STATE_CHANGE, {
+        "from": old, "to": patch.state, "site": device.site, "reason": patch.reason, "by": "admin",
+    }, now)
+    await db.flush()
+
+    published, payload = await _publish_register_ack(db, device, publisher, now)
+    return StateOut(uuid=uuid, state=device.state, site=device.site, published=published,
+                    register_ack=payload)
+
+
+async def republish_register_ack(
+    db: AsyncSession, uuid: str, publisher: MqttPublisher
+) -> RegisterAckOut:
+    """DB 상태 그대로 재발행(재조정용). RETIRED 면 빈 retain 만."""
+    device = await db.get(Device, uuid)
+    if device is None:
+        raise DeviceNotFound(detail={"uuid": uuid})
+    retired = device.state == DeviceState.RETIRED.value
+    published, payload = await _publish_register_ack(db, device, publisher, _now())
+    return RegisterAckOut(uuid=uuid, state=device.state, published=published, cleared=retired,
+                          register_ack=None if retired else payload)
+
+
 # ── CONFIG ───────────────────────────────────────────────────────────────
 async def patch_config(
     db: AsyncSession, uuid: str, patch: ConfigPatch, publisher: MqttPublisher,
     config_sync: ConfigSyncQueue,
 ) -> ConfigPatchOut:
-    """ti/lat/lon 변경 → cv_server += 1 → 즉시 CONFIG_SET 1회 (ADR-002, 사양서 §16.5).
+    """프로필/override/좌표/site/주소 변경 (docs/05 PATCH /config).
 
-    site 만 바꾸면 cv 를 올리지 않는다 — 단말에 안 내려가는 값이다.
-    발행 실패(브로커 끊김)여도 DB 는 커밋한다: 다음 Telemetry 의 cv 불일치가 재전송을 건다.
+    적용값(ti/ka/lat/lon)이 바뀌면 `cv_server = max(cv_server, cv_device)+1`. site/address/bjd 만
+    바꾸면 cv 그대로. ACTIVE 면 CONFIG_SET 즉시 1회(전체값), 아니면 승인 뒤 첫 TELEMETRY 때.
+    site 가 바뀌면 REGISTER_ACK retain 을 다시 발행한다(site 가 거기 실린다).
     """
-    device = await db.get(Device, uuid)
-    if device is None:
-        raise DeviceNotFound(detail={"uuid": uuid})
+    device, profile = await _get_with_profile(db, uuid)
+    sent = patch.model_fields_set
+    now = _now()
 
-    changed = False
-    if patch.ti is not None and patch.ti != device.ti_server:
-        device.ti_server = patch.ti
-        changed = True
-    if patch.lat is not None and patch.lat != device.lat:
+    new_pid = patch.profile_id if "profile_id" in sent else None
+    if new_pid is not None and new_pid != device.profile_id:
+        new_profile = await db.get(ConfigProfile, new_pid)
+        if new_profile is None:
+            raise ProfileNotFound(detail={"profile_id": new_pid})
+        device.profile_id = new_profile.id
+        profile = new_profile
+    if profile is None:  # FK 상 없을 수 없지만 방어
+        raise ProfileNotFound(detail={"profile_id": device.profile_id})
+
+    before = effective_config(
+        ti_override=device.ti_override, ka_override=device.ka_override,
+        profile_ti=profile.ti, profile_ka=profile.ka,
+    )
+    old_lat, old_lon, old_site = device.lat, device.lon, device.site
+    old_profile_ti, old_profile_ka = before.ti, before.ka
+
+    if "ti_override" in sent:
+        device.ti_override = patch.ti_override
+    if "ka_override" in sent:
+        device.ka_override = patch.ka_override
+    if "lat" in sent:
         device.lat = patch.lat
-        changed = True
-    if patch.lon is not None and patch.lon != device.lon:
+    if "lon" in sent:
         device.lon = patch.lon
-        changed = True
-    if patch.site is not None:
-        device.site = patch.site
+    if "site" in sent:
+        device.site = patch.site or None
+    if "address" in sent:
+        device.address = patch.address
+    if "bjd_code" in sent:
+        device.bjd_code = patch.bjd_code
 
+    after = effective_config(
+        ti_override=device.ti_override, ka_override=device.ka_override,
+        profile_ti=profile.ti, profile_ka=profile.ka,
+    )
+    changed = (
+        (after.ti, after.ka) != (old_profile_ti, old_profile_ka)
+        or device.lat != old_lat or device.lon != old_lon
+    )
     if changed:
-        device.cv_server = (device.cv_server + 1) % 65536
+        device.cv_server = bump_cv_server(device.cv_server, device.cv_device)
     await db.flush()
 
-    payload = config_set_payload(
-        cv=device.cv_server, ti=device.ti_server, lat=device.lat, lon=device.lon
-    )
+    # site 변경 → REGISTER_ACK 재발행 (RETIRED 제외).
+    ack_republished = False
+    if device.site != old_site and device.state in _SITE_REPUBLISH_STATES:
+        ack_republished, _ = await _publish_register_ack(db, device, publisher, now)
+
     published = False
-    if changed or device.cv_device != device.cv_server:
+    reason: str | None = None
+    payload: dict[str, Any] | None = None
+    active = device.state == DeviceState.ACTIVE.value
+    if not active:
+        reason = "NOT_ACTIVE"
+        if device.cv_server > 0:
+            payload = config_set_payload(cv=device.cv_server, ti=after.ti, ka=after.ka,
+                                         lat=device.lat, lon=device.lon)
+    elif changed or should_send_config(device.state, device.cv_server, device.cv_device):
+        device.cv_server = next_cv_server(device.cv_server, device.cv_device)
+        payload = config_set_payload(cv=device.cv_server, ti=after.ti, ka=after.ka,
+                                     lat=device.lat, lon=device.lon)
         try:
             await publisher.publish_config_set(
-                uuid=uuid, cv=device.cv_server, ti=device.ti_server, lat=device.lat, lon=device.lon
+                uuid=uuid, cv=device.cv_server, ti=after.ti, ka=after.ka,
+                lat=device.lat, lon=device.lon,
             )
             published = True
-            device.config_sent_at = _now()
+            device.config_sent_at = now
             config_sync.mark_sent(uuid)
+            await _event(db, uuid, EventKind.CONFIG_SET, payload, now)
         except Exception:  # noqa: BLE001
-            log.exception("CONFIG_SET 즉시 발행 실패 %s — 다음 Telemetry 때 재전송", uuid)
+            reason = "PUBLISH_FAILED"
+            log.exception("CONFIG_SET 즉시 발행 실패 %s — 다음 TELEMETRY 때 재전송", uuid)
+    else:
+        reason = "NOT_NEEDED"
+        if device.cv_server > 0:
+            payload = config_set_payload(cv=device.cv_server, ti=after.ti, ka=after.ka,
+                                         lat=device.lat, lon=device.lon)
 
     return ConfigPatchOut(
-        uuid=uuid, cv_server=device.cv_server, ti_server=device.ti_server, lat=device.lat,
-        lon=device.lon, site=device.site, published=published, payload=payload,
+        uuid=uuid, state=device.state, cv_server=device.cv_server, profile_id=device.profile_id,
+        ti_override=device.ti_override, ka_override=device.ka_override,
+        ti_effective=after.ti, ka_effective=after.ka, lat=device.lat, lon=device.lon,
+        site=device.site, address=device.address, bjd_code=device.bjd_code,
+        cv_bumped=changed, published=published, reason=reason, payload=payload,
+        register_ack_republished=ack_republished,
     )
 
 
@@ -203,23 +398,35 @@ async def ping(db: AsyncSession, uuid: str, publisher: MqttPublisher) -> PingOut
     return PingOut(uuid=uuid, seq=seq)
 
 
-# ── 계정 ─────────────────────────────────────────────────────────────────
+# ── 삭제 ─────────────────────────────────────────────────────────────────
+async def delete_device(db: AsyncSession, uuid: str, publisher: MqttPublisher) -> DeleteOut:
+    """행 삭제 + REGISTER_ACK retain 삭제. 이력(telemetry/device_event)은 남긴다.
+    계정 파일은 손대지 않는다(단말 계정은 파일에 없다 — ADR-003)."""
+    if await db.get(Device, uuid) is None:
+        raise DeviceNotFound(detail={"uuid": uuid})
+    await db.execute(delete(Device).where(Device.uuid == uuid))
+    await db.flush()
+    cleared = True
+    try:
+        await publisher.clear_register_ack(uuid=uuid)
+    except Exception:  # noqa: BLE001
+        cleared = False
+        log.exception("단말 삭제 %s: retain 삭제 실패 — 브로커에 옛 REGISTER_ACK 가 남는다", uuid)
+    return DeleteOut(uuid=uuid, deleted=True, retain_cleared=cleared)
+
+
+# ── 브로커 계정 파일 (server 계정만) ─────────────────────────────────────
 async def export_broker_accounts(
     db: AsyncSession, *, wait_applied: bool = False
 ) -> tuple[mqtt_accounts.ExportResult, bool]:
-    """DB 의 계정 해시를 mosquitto passwd + aclfile 로 내보내고 mqtt_account_export 에 남긴다.
+    """server(+시험) 계정 passwd + aclfile 을 내보내고 mqtt_account_export 에 남긴다.
 
-    import/삭제/기동 때 호출. 실패해도 예외를 던지지 않는다 — 정본은 DB 이고 다음 호출이
-    따라잡는다. 반환: (내보내기 결과, ACL 적용 확인 여부).
+    기동 시 + 5분 재조정. 실패해도 예외를 던지지 않는다. 반환: (결과, 적용 확인 여부).
     """
-    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BROKER_EXPORT_LOCK_KEY})
-    rows = (
-        await db.execute(
-            select(Device.uuid, Device.mqtt_password_hash)
-            .where(Device.mqtt_password_hash.is_not(None))
-        )
-    ).all()
-    result = mqtt_accounts.export_all(mqtt_accounts.uuids_of(rows))
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BROKER_EXPORT_LOCK_KEY}
+    )
+    result = mqtt_accounts.export_all()
     if not result.enabled:
         return result, False
 
@@ -233,7 +440,6 @@ async def export_broker_accounts(
 
     applied = False
     if result.acl_ok and result.passwd_ok and wait_applied:
-        # passwd 와 aclfile 둘 다. ACL 만 보면 계정 추가 직후 접속이 거절된다(S2-06).
         applied = await mqtt_accounts.wait_applied(result.passwd_md5, result.acl_md5)
     applied_md5 = mqtt_accounts.read_applied_md5()
     if applied_md5:
@@ -243,45 +449,3 @@ async def export_broker_accounts(
             .values(acl_applied_md5=applied_md5, applied_at=now if applied else None)
         )
     return result, applied
-
-
-async def import_accounts(db: AsyncSession, csv_text: str) -> ImportAccountsOut:
-    """CSV `uuid,password` → 해시 → device 행(없으면 생성) → 내보내기 → ACL 적용 대기."""
-    parsed = mqtt_accounts.parse_accounts_csv(csv_text)
-    created = updated = 0
-    for uuid, password in parsed.accounts.items():
-        stmt = pg_insert(Device).values(
-            uuid=uuid, mqtt_password_hash=mqtt_accounts.mosquitto_hash(password)
-        )
-        stmt = stmt.on_conflict_do_update(
-            index_elements=[Device.uuid],
-            set_={"mqtt_password_hash": stmt.excluded.mqtt_password_hash, "updated_at": func.now()},
-        ).returning(Device.created_at == Device.updated_at)
-        # 방금 INSERT 된 행은 created_at == updated_at(둘 다 now()) 이고, UPDATE 된 행은
-        # updated_at 만 now() 라 다르다 — 별도 SELECT 없이 생성/갱신을 구분한다.
-        is_new = await db.scalar(stmt)
-        if is_new:
-            created += 1
-        else:
-            updated += 1
-    await db.flush()
-
-    result, applied = await export_broker_accounts(db, wait_applied=True)
-    log.info("계정 import: %d건 (신규 %d, 갱신 %d, 오류 %d), ACL 적용=%s",
-             len(parsed.accounts), created, updated, len(parsed.errors), applied)
-    return ImportAccountsOut(
-        imported=len(parsed.accounts), created=created, updated=updated, errors=parsed.errors,
-        export_enabled=result.enabled, passwd_md5=result.passwd_md5, acl_md5=result.acl_md5,
-        acl_applied=applied,
-    )
-
-
-async def delete_device(db: AsyncSession, uuid: str) -> DeleteOut:
-    """단말 행 삭제 + 계정 제거 + 재내보내기. 이력(telemetry/device_event)은 남긴다."""
-    device = await db.get(Device, uuid)
-    if device is None:
-        raise DeviceNotFound(detail={"uuid": uuid})
-    await db.execute(delete(Device).where(Device.uuid == uuid))
-    await db.flush()
-    result, applied = await export_broker_accounts(db, wait_applied=True)
-    return DeleteOut(uuid=uuid, deleted=True, export_enabled=result.enabled, acl_applied=applied)

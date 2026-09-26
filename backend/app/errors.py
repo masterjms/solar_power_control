@@ -54,10 +54,27 @@ class DeviceNotFound(NotFound):
     message = "등록되지 않은 단말입니다."
 
 
+class ProfileNotFound(NotFound):
+    code = "PROFILE_NOT_FOUND"
+    message = "없는 설정 프로필입니다."
+
+
 class Conflict(ApiError):
     status_code = status.HTTP_409_CONFLICT
     code = "CONFLICT"
     message = "현재 상태와 충돌합니다."
+
+
+class ProfileInUse(Conflict):
+    code = "PROFILE_IN_USE"
+    message = "단말이 쓰고 있는 프로필은 지울 수 없습니다."
+
+
+class InvalidStateTransition(Conflict):
+    """docs/05 상태 전이 표에 없는 전이. 예: RETIRED → ACTIVE 는 PENDING 을 거쳐야 한다."""
+
+    code = "INVALID_STATE_TRANSITION"
+    message = "허용되지 않는 상태 전이입니다."
 
 
 class ValidationFailed(ApiError):

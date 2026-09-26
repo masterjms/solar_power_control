@@ -69,15 +69,32 @@ class Settings(BaseSettings):
     mqtt_test_account_enabled: bool = False
     mqtt_test_username: str = "solarlte-test"
     mqtt_test_password: str = "solarlte-test-2026"
-    #: 단말별 계정 passwd/aclfile 을 내보낼 경로(공유 볼륨). 비우면 내보내기 꺼짐
+    #: 서버(+공용 시험) 계정 passwd/aclfile 을 내보낼 경로(공유 볼륨). 비우면 내보내기 꺼짐
     #: (개발 PC 에서 anonymous 브로커로 시험할 때). 운영 compose 가
     #: /var/lib/iotlight/mqtt/passwd.generated, aclfile.generated 로 지정한다.
-    #: entrypoint 감시 루프는 aclfile 을 설치한 뒤 같은 디렉터리의 `aclfile.applied` 에
-    #: 적용본 md5 를 적는다 — wait_acl_applied 가 그 파일을 본다.
+    #: entrypoint 감시 루프는 설치한 뒤 같은 디렉터리의 `passwd.applied`/`aclfile.applied` 에
+    #: 적용본 md5 를 적는다 — wait_applied 가 그 파일을 본다.
+    #: 2026-09-26 부터 단말 행은 여기 들어가지 않는다(ADR-003, HMAC 은 접속 순간 검증).
     mosquitto_passwd_export: str | None = None
     mosquitto_acl_export: str | None = None
-    #: 내보낸 aclfile 이 브로커에 적용될 때까지 기다리는 상한(초).
+    #: 내보낸 파일이 브로커에 적용될 때까지 기다리는 상한(초).
     acl_apply_timeout_sec: float = 5.0
+
+    # ── 단말 인증 (ADR-003, 사양서 §1.1.2.2) ────────────
+    #: 활성 HMAC 키 목록 "K1:<hex64>,K2:<hex64>". 평소 하나, 교체 중 둘. 기본값은 사양서의
+    #: **공개 시험 키**(0x00~0x1F) — 운영 .env 는 반드시 K1 을 넣는다. 로그·DB 에 남기지 않는다.
+    mqtt_hmac_keys: str = (
+        "TEST:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    )
+    #: go-auth http 백엔드가 보내는 `X-Auth-Secret` 헤더 값. 비우면 검사하지 않는다
+    #: (/internal/* 는 어차피 컨테이너 네트워크 안에서만 닿아야 한다).
+    mqtt_auth_shared_secret: str = ""
+
+    # ── 접속 상태 (ADR-004, 사양서 §16.1) ───────────────
+    #: Mosquitto 로그 파일(공유 볼륨). 비우면 tail 을 돌리지 않는다(개발 PC).
+    mosquitto_log_path: str = "/var/lib/iotlight/mqtt/mosquitto.log"
+    #: ACTIVE 가 아닌 단말(REGISTER 만 5~30분 주기)의 수신 시각 보조 판정 창(초). 70분.
+    pending_offline_sec: int = 4200
 
     # ── 수신 처리 ───────────────────────────────────────
     #: Telemetry 를 모아 쓰는 간격(초). 1만 대 × 10분 = 17 msg/s 라 처리량이 문제는

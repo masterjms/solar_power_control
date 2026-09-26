@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.mqtt.handlers import dedup_key, normalize_type, parse_payload
+from app.mqtt.handlers import dedup_key, is_telemetry_type, normalize_type, parse_payload
 
 UUID = "00112233445566778899AABB"
 
@@ -45,3 +45,13 @@ def test_dedup_key_shape_and_stability():
 
 def test_dedup_key_without_marker():
     assert dedup_key(UUID, "EV", None, {"a": 1}).startswith(f"{UUID}:EV:-:")
+
+
+def test_telemetry_type_accepts_new_and_legacy():
+    assert is_telemetry_type("TELEMETRY")
+    assert is_telemetry_type("TM")
+    assert not is_telemetry_type("REGISTER")
+    assert not is_telemetry_type("")
+    # 1.0.0: {"t":"TM"} → normalize 뒤 TM
+    data, legacy = normalize_type({"t": "TM", "sq": 1})
+    assert legacy and is_telemetry_type(data["type"])

@@ -1,17 +1,17 @@
-# 02. MQTT 서버 구현 (2차)
+# 02. MQTT 서버 구현 (2·3차)
 
-- 작성일: 2026-09-25
-- 코드: `backend/app/mqtt/`, `backend/app/core/`
-- 기준: 사양서 §1.1.3~§1.1.7, §4, §16.1, ADR-001, ADR-002. 프로토콜은 단말측 사양서가 정본이고
-  여기서는 **서버가 그것을 어떻게 처리하는가**만 적는다.
+- 갱신: 2026-09-26 (사양서 2026-09-26 개정 — 승인 게이트, HMAC 인증, 브로커 로그 presence, CONFIG 전체값)
+- 코드: `backend/app/mqtt/`, `backend/app/core/`, `backend/app/tasks/broker_log.py`, `backend/app/modules/mqtt_auth/`
+- 기준: 사양서 §1.1.2.2, §1.1.4~§1.1.7, §1.1.10, §3, §4, §16.1, ADR-001~004. 프로토콜은 단말측 사양서가
+  정본이고 여기서는 **서버가 그것을 어떻게 처리하는가**만 적는다.
 
 ## 1. 연결
 
 - aiomqtt 클라이언트 **1개**, Client ID `iotlight-backend`(`MQTT_CLIENT_ID`), 계정 `server`.
 - 끊기면 1초부터 2배씩 늘려 최대 30초 간격으로 재접속. 재접속마다 아래 구독을 다시 건다
   (Clean Session 이라 브로커가 기억하지 않는다).
-- 끊긴 동안의 발행은 `MqttUnavailable` 예외다. 조용히 삼키지 않는다 — REST 는 503 을 받고,
-  CONFIG 큐는 로그를 남기고 그 건을 버린다(다음 Telemetry 가 다시 잡는다).
+- 끊긴 동안의 발행은 `MqttUnavailable` 예외다. 조용히 삼키지 않는다 — REST 는 `published=false`
+  (state/config) 또는 503(ping)을 받고, 응답 큐는 로그를 남기고 그 건을 버린다(다음 단말 송신이 다시 잡는다).
 - 4차 TLS 전환은 `MQTT_TLS=true`, `MQTT_PORT=8883` 뿐이다. `connection.py` 밖은 손대지 않는다.
 
 ## 2. topic 표
@@ -20,8 +20,8 @@
 
 | topic | QoS(구독) | payload.type | 처리 |
 |---|---|---|---|
-| `iotlight/device/+/register` | 1 | `REGISTER` | device upsert(보강) + device_event + cv 비교 |
-| `iotlight/device/+/status` | 1 | `TM` (`t` 도 허용) | TelemetryBuffer |
+| `iotlight/device/+/register` | 1 | `REGISTER` | device upsert(보강) + device_event → **REGISTER_ACK(항상)** → ACTIVE 면 cv 비교 |
+| `iotlight/device/+/status` | 1 | `TELEMETRY` (`TM`, 1.0.0 의 `t:TM` 도 허용) | TelemetryBuffer |
 | `iotlight/device/+/result` | 1 | `PONG` `CONFIG_ACK` `CMD_ACK`(5차) | device_event + command_ack |
 | `iotlight/device/+/event` | 1 | `LWT` `EV` | offline 처리 / device_event |
 
@@ -31,11 +31,12 @@ QoS0 으로 온다. 네 패턴을 하나(`iotlight/device/+/#`)로 합치지 않
 
 ### 발행 (서버 → 단말) — `publisher.py` 단일 창구
 
-| topic | payload.type | QoS | retain | 단계 |
+| topic | payload.type | QoS | retain | 언제 |
 |---|---|---|---|---|
-| `iotlight/device/<uuid>/config` | `CONFIG_SET` | 1 | **0** | 2차 |
-| `iotlight/device/<uuid>/config` | `REGISTER_ACK` | 1 | **1** (유일) | 3차 (메서드만 있음) |
-| `iotlight/device/<uuid>/cmd` | `PING` | 1 | 0 | 2차 (REST 로만) |
+| `iotlight/device/<uuid>/config` | `REGISTER_ACK` | 1 | **1** (유일) | REGISTER 마다(큐), 관리자 상태 변경·site 변경·재발행(즉시) |
+| `iotlight/device/<uuid>/config` | (빈 payload) | 1 | 1 | RETIRED 정리·단말 삭제 — retain 보관본 삭제 |
+| `iotlight/device/<uuid>/config` | `CONFIG_SET` | 1 | **0** | ACTIVE 단말의 REGISTER/TELEMETRY 직후 cv 다를 때(큐), PATCH config(즉시) |
+| `iotlight/device/<uuid>/cmd` | `PING` | 1 | 0 | REST 로만 |
 | `iotlight/device/<uuid>/cmd` | `CMD` `SCH` `OTA` | 1 | 0 | 5~7차 |
 | `iotlight/group/<grp>/cmd` · `iotlight/all/cmd` | `CMD` | 1 | 0 | 5차 |
 
@@ -43,55 +44,140 @@ QoS0 으로 온다. 네 패턴을 하나(`iotlight/device/+/#`)로 합치지 않
 - compact JSON(구분자 뒤 공백 없음, `ensure_ascii=False`).
 - **384B 초과면 발행하지 않고 `PayloadTooLarge`**(AT 버퍼, 사양서 §1.1.6). 300B 초과는 경고.
 - `cmd` 는 절대 retain 하지 않는다. 재접속 단말에 옛 명령이 되살아난다(5차 소등이면 사고).
-- CONFIG_SET 은 `{"type":"CONFIG_SET","cv":N,"ti":N,"lat":..,"lon":..}`. lat/lon 이 NULL 이면
-  키를 뺀다(둘 중 하나만 있어도 뺀다).
+- `REGISTER_ACK` = `{"type":"REGISTER_ACK","uuid","state"}` + `site`(있을 때) + `reason`(**REJECTED 일 때만**).
+  `cv`/`ti`/`ka` 는 절대 싣지 않는다(§3.3). 5차에 `grp` 가 붙는다.
+- `CONFIG_SET` = `{"type":"CONFIG_SET","cv","ti","ka"}` + `lat`/`lon`(둘 다 있을 때). **항상 전체값**(S-13).
+  `cv` 0 은 빌더가 `ValueError` 로 막는다.
 
 ## 3. 수신 공통 검증 (`handlers.Dispatcher`)
 
 순서대로. 걸리면 카운터를 올리고 **무시**한다(예외 없음, 수신 루프가 죽지 않는다).
 
 1. topic 정규식 `^iotlight/device/([0-9A-F]{24})/(register|status|result|event)$`
-   불일치 → `malformed_topic`. 소문자 uuid 도 위반이다(DB CHECK·ACL `%u` 전제).
+   불일치 → `malformed_topic`. 소문자 uuid 도 위반이다(DB CHECK·인증 API 전제).
 2. JSON 이 아니거나 객체가 아님 → `malformed_payload`.
-3. `"t"` 만 있으면 `"type"` 으로 복사(1차 펌웨어). uuid 당 1회 로그, `legacy_t_devices` 갱신.
-   2차 펌웨어 확정 후 `normalize_type()` 을 지운다.
+3. `"t"` 만 있으면 `"type"` 으로 복사(1.0.0 펌웨어). uuid 당 1회 로그, `legacy_t_devices` 갱신.
 4. payload 에 `uuid` 가 있고 topic uuid 와 다르면 → `uuid_mismatch` (사양서 §1.1.4).
 5. kind/type 조합이 표에 없으면 → `unknown_type`.
 
-## 4. 메시지별 처리
+## 4. 단말 상태 기계 (사양서 §2, §3.4, docs/05)
+
+```
+              REGISTER(새 UUID)
+                    │
+                    ▼
+  ┌──────────── PENDING ◄────────────┐◄──────────┐
+  │  승인         │  거부              │ 재검토      │ 재설치(REGISTER 다시 옴)
+  ▼               ▼                  │            │
+ACTIVE ──중지──► SUSPENDED      REJECTED        RETIRED
+  ▲               │                  │            ▲
+  └────해제───────┘                  └──폐기──────┘   (ACTIVE/PENDING/SUSPENDED 에서도 폐기 가능)
+  │
+  └──승인 취소──► PENDING
+```
+
+- **새 UUID 는 PENDING** 으로 생긴다(DB 기본값). REGISTER 를 놓치고 TELEMETRY/result 로 먼저 생겨도 PENDING.
+- 전이 표는 `constants.STATE_TRANSITIONS`. 표에 없는 전이는 409 `INVALID_STATE_TRANSITION`.
+  같은 상태로의 "전이"도 409 다 — site 만 바꾸려면 PATCH config.
+- **RETIRED → PENDING 은 서버가 자동으로도 한다**: 빈 retain 상태에서 REGISTER 가 다시 오면
+  (같은 보드를 다른 곳에 재설치) 핸들러가 PENDING 으로 되돌리고 `device_event(STATE_CHANGE, by=register)` 를 남긴 뒤 ACK 한다.
+- 관리자 전이는 `modules/device/service.set_state()`: DB 저장 + `STATE_CHANGE` 이벤트 → REGISTER_ACK retain
+  **즉시** 발행(RETIRED 는 발행 뒤 빈 retain) → ACTIVE 로 갈 때 `cv_server = next_cv_server(...)`(1 이상, 단말보다 크게).
+  **CONFIG_SET 은 여기서 보내지 않는다** — 단말이 ACTIVE 를 받고 보내는 첫 TELEMETRY 때 §6 판정으로 나간다(S-10, §1.1.10).
+
+## 5. 메시지별 처리
 
 ### REGISTER
-1. `device` upsert(topic uuid 기준). 있는 키만 갱신: `fw device_model modem_model imei iccid
-   msisdn`, `cv→cv_device ss→ss_device ti→ti_device`. `last_register_at`, `last_seen_at`
-   (GREATEST). 처음 보는 uuid 는 `state=ACTIVE` 로 생긴다(2차, 사양서 §2).
-2. `device_event(kind=REGISTER)`. dedup 없음 — 재연결마다 같은 내용으로 오는 것이 정상.
-3. `cv` 가 실려 왔고 `cv != cv_server` → CONFIG 큐(§6)에 `reason=register` 로 넣는다.
-   `cv` 가 없으면(1차 펌웨어) 아무것도 보내지 않는다 — 다음 TM 의 cv 로 판정한다.
-4. PING 은 보내지 않는다. 1차 시험 도구의 몫이고, 서버에서는 `POST /api/devices/{uuid}/ping`.
-5. **3차 변경점**: 여기서 REGISTER_ACK(state) 를 **항상**(retain) 보내고, ACTIVE 일 때만 3번.
+1. `device` upsert(topic uuid 기준). 있는 키만 갱신: `fw device_model modem_model imei iccid msisdn`,
+   `cv→cv_device ss→ss_device ti→ti_device ka→ka_device`. `last_register_at`, `last_seen_at`(GREATEST).
+2. `device_event(REGISTER)`. dedup 없음 — 재연결마다 같은 내용으로 오는 것이 정상.
+3. `online=true` (`presence.apply_presence`, source=register). REGISTER 는 살아 있는 연결로만 오므로
+   브로커 로그 tail 이 꺼져 있거나(개발 PC) 줄을 놓쳤어도 여기서 맞춰진다. 플래그가 이미 true 면 no-op(이력 없음).
+4. state 가 RETIRED 면 PENDING 으로 되돌린다(§4).
+5. **REGISTER_ACK 를 상태와 무관하게 항상** 응답 큐(§7)에 넣는다. retain=1.
+6. **ACTIVE 일 때만** §6 판정 → CONFIG_SET 큐. FIFO 라 같은 단말의 ACK 뒤에 나간다(사양서 §3.1 순서).
 
-### TM (status)
-DB 를 만지지 않는다. `TelemetryBuffer.offer()` 로 끝. §5 참고.
+### TELEMETRY (status)
+DB 를 만지지 않는다. `TelemetryBuffer.offer()` 로 끝. §8 참고. type 은 `TELEMETRY`/`TM`/`t:TM` 셋 다.
 
 ### result
-공통: `last_seen_at` GREATEST 갱신(미등록 uuid 면 행 생성). 이력 1행 = 트랜잭션 1개.
+공통: `last_seen_at` GREATEST 갱신(미등록 uuid 면 PENDING 행 생성). 이력 1행 = 트랜잭션 1개.
 
 | type | device_event | dedup_key | 그 외 |
 |---|---|---|---|
 | `PONG` | `PONG` | `uuid:PONG:<seq>:sha1` | `command` 조회 → target 이 이 uuid 인지 확인(§1.1.5) → `command_ack` 1행(PK 충돌 무시) → `acked_count+1`, 다 모이면 `finished_at`, `result=OK`. seq 를 모르거나 단말이 다르면 `pong_mismatch` |
-| `CONFIG_ACK` | `CONFIG_ACK` | `uuid:CONFIG_ACK:<cv>:sha1` | `OK` 이고 `cv == cv_server` 이면 `cv_device=cv, ti_device=ti_server` (ti 는 TM 에 안 실려 여기서만 알 수 있다. 옛 ack 로 덮지 않도록 cv 일치 조건). **동기화 완료 판정은 여전히 다음 TM 의 cv echo** 다. `RANGE` → 경고 + `config_ack_range` (서버가 범위 밖 값을 보낸 것이므로 PATCH 검증 버그) |
+| `CONFIG_ACK` | `CONFIG_ACK` | `uuid:CONFIG_ACK:<cv>:sha1` | 아래 표 |
 | `CMD_ACK` | `CMD_ACK` | `uuid:CMD_ACK:<seq>:sha1` | PONG 과 같은 command 집계 (5차) |
 
-dedup_key 에 payload 해시가 들어가는 이유: 같은 seq 의 두 번째 결과(내용이 다름)는 남기고,
+CONFIG_ACK `result` 별:
+
+| result | 처리 | 카운터 |
+|---|---|---|
+| `OK` | `cv == cv_server` 일 때만 `cv_device=cv`, `ti_device`/`ka_device` = 서버 적용값(`override ?? profile`). ti/ka 는 TELEMETRY 에 안 실려 여기서만 알 수 있다. 옛 ack 로 덮지 않도록 cv 일치 조건. **동기화 완료 판정은 여전히 다음 TELEMETRY 의 cv echo** | `config_ack_ok` |
+| `RANGE` | 경고. 서버가 범위 밖 값을 보낸 것 = PATCH/프로필 검증 버그 | `config_ack_range` |
+| `STATE` | 단말이 "승인 전"이라 함. DB 가 ACTIVE 면 단말이 REGISTER_ACK 를 못 받은 것(retain 유실) → **REGISTER_ACK 를 다시 retain**(큐). DB 가 ACTIVE 가 아니면 서버가 ACTIVE 전에 CONFIG 를 보낸 것이라 error 로그 | `config_ack_state` |
+| `FLASH` | 단말 Flash 기록 실패, 이전 값 유지. **그 단말의 60초 쿨다운을 풀어** 다음 송신 때 바로 재전송. 반복되면 단말 점검 | `config_ack_flash` |
+
+dedup_key 에 payload 해시가 들어가는 이유: 같은 seq/cv 의 두 번째 결과(내용이 다름)는 남기고,
 QoS1 재전송(바이트 동일)만 걸러진다. `ON CONFLICT DO NOTHING`.
 
 ### event
 | type | 처리 |
 |---|---|
-| `LWT` | `online=false, offline_at=now` → `device_event(LWT)`. **`last_seen_at` 은 건드리지 않는다** — 브로커가 대신 보내는 사망 통지를 "방금 통신"으로 적으면 죽은 단말이 온라인이 된다. 버퍼에 남은 그 단말의 TM 은 **버리지 않는다**(이력이라 한 건도 아깝다). TM flush 는 `online` 을 건드리지 않고 presence 가 `offline_at > last_telemetry_at` 로 판정하므로 늦게 적재된 TM 이 단말을 되살리지 않는다(S2-13). |
+| `LWT` | `presence.apply_presence({uuid: False})` — 브로커 로그 경로(§9)와 **같은 함수**. 플래그가 바뀔 때만 `online_changed_at`, `offline_at`, `device_event(OFFLINE)`. 별도로 `device_event(LWT)` 도 남긴다. **`last_seen_at` 은 건드리지 않는다** — 브로커가 대신 보내는 사망 통지를 "방금 통신"으로 적으면 죽은 단말이 온라인이 된다. 버퍼의 TM 은 버리지 않는다(TM flush 는 `online` 을 안 건드린다). 모뎀은 Will 을 못 넣지만 시뮬레이터·후속 모뎀용으로 남긴다 |
 | `EV` | `last_seen_at` 갱신 → `device_event(kind=ERR, payload={er,ep,bv,ts})`, dedup `uuid:EV:<ts>:sha1` |
 
-## 5. TelemetryBuffer — 1초 배치
+## 6. CONFIG 판정과 cv 규칙 (`core/config_rules.py`, `mqtt/config_decide.py` — 사양서 §1.1.7 S-13, §4.2)
+
+적용값: `ti = ti_override ?? profile.ti`, `ka = ka_override ?? profile.ka` (`config_profile` 시드 1~3, docs/03).
+
+**단말 송신 직후**(REGISTER 핸들러, TELEMETRY flush) 판정 — `decide_and_enqueue()`:
+
+```
+state != ACTIVE          → 안 보냄 (단말이 STATE 로 거부, S-10)
+cv_device 없음           → 안 보냄 (1차 펌웨어)
+cv_device == cv_server   → 안 보냄 (동기화됨)
+그 외:
+    cv_server = next_cv_server(cv_server, cv_device)
+                 = 1                if cv_server == 0        (규칙 2: 0 은 보내지 않는다)
+                 = cv_device + 1    if cv_device > cv_server (규칙 3: PC 도구·DB 복구)
+                 = cv_server        otherwise
+    → DB 에 먼저 쓰고 → 큐(§7)  (60초 쿨다운은 큐가 본다)
+```
+
+cv_server 를 큐에 넣기 **전**에 쓰는 이유: 발행이 늦거나 실패해도 서버 의도값이 1 이상·단말보다 크게
+굳어 있어야 다음 TELEMETRY 의 비교가 같은 답을 낸다. 65535 를 넘으면 1 로 감는다(0 은 건너뛴다).
+
+**관리자 경로**:
+
+| 경로 | cv 규칙 | 발행 |
+|---|---|---|
+| `PATCH /state → ACTIVE` | `next_cv_server` (0 → 1, 단말이 크면 +1) | REGISTER_ACK 만. CONFIG 는 첫 TELEMETRY 때 |
+| `PATCH /config` 적용값(ti/ka/lat/lon) 변경 | `bump_cv_server = max(cv_server, cv_device or 0) + 1` | ACTIVE 면 **즉시 1회**(+쿨다운), 아니면 `published=false, reason=NOT_ACTIVE` |
+| `PATCH /config` site/address/bjd 만 | 그대로 | site 바뀌면 REGISTER_ACK 재발행(ACTIVE/PENDING/SUSPENDED/REJECTED) |
+| `PATCH /profiles/{id}` ti/ka 변경 | 그 프로필의 **`cv_server > 0` 단말 전부 +1** (0 은 그대로) | 안 보냄 — 각 단말의 다음 송신 때 |
+
+발행 시 `device.config_sent_at` + `device_event(CONFIG_SET, payload)`.
+
+## 7. 응답 큐 (`mqtt/config_sync.py`) — 토큰 버킷 + CONFIG 쿨다운
+
+REGISTER_ACK 와 CONFIG_SET 이 같은 FIFO 로 나간다. 사양서 §1.1.10 "단말이 보낸 직후에 보낸다" 를
+지키되, 브로커 재시작 뒤 1만 대 REGISTER 폭주에서 발행량을 누른다.
+
+- 토큰 버킷 `REGISTER_REPLY_RATE_PER_SEC`(기본 200/s). 1만 대면 50초 안에 다 나간다 — 단말 REGISTER
+  재전송(5분)보다 훨씬 짧아 "즉시"로 본다.
+- 대기열 상한 `REGISTER_REPLY_QUEUE_MAX`(50,000). 넘으면 가장 오래된 것을 버리고 `register_reply_dropped`.
+  REGISTER_ACK 를 못 받은 단말은 5분 뒤 REGISTER 를 다시 보내고, CONFIG 를 못 받은 단말은 다음 TELEMETRY 때 다시 잡힌다.
+- **REGISTER_ACK 는 쿨다운·중복 검사 없음** — REGISTER 마다 반드시 답한다(§3.3).
+- **CONFIG_SET 은 같은 단말 60초 쿨다운**(`CONFIG_RESEND_COOLDOWN_SEC`). REGISTER 직후 첫 TELEMETRY 가 아직
+  옛 cv 를 싣고 오는 것이 정상 흐름이라 쿨다운이 없으면 같은 CONFIG_SET 이 연달아 두 번 나간다. 이미 줄 서 있는
+  uuid 도 다시 넣지 않는다. CONFIG_ACK `FLASH` 는 쿨다운을 푼다. PATCH config 즉시 발행은 `mark_sent()` 로 쿨다운을 건다.
+- 발행 성공 시 DB 기록: CONFIG_SET → `config_sent_at` + `device_event(CONFIG_SET)`, REGISTER_ACK → `register_ack_at`
+  (RETIRED 정리는 NULL) + `device_event(REGISTER_ACK)`. 실패(브로커 끊김)는 로그 후 폐기.
+
+관리자 REST 경로(state/config/register-ack/delete)는 큐를 타지 않고 publisher 로 즉시 발행한다.
+
+## 8. TelemetryBuffer — 1초 배치
 
 ```
 offer() ──▶ _rows[(uuid, payload, received_at)…]  (도착 순서, DB 접근 없음)
@@ -101,139 +187,150 @@ offer() ──▶ _rows[(uuid, payload, received_at)…]  (도착 순서, DB 접
                     ▼
         ┌── 트랜잭션 1개 ─────────────────────────────────────────────┐
         │ INSERT telemetry  (모든 행, 1,000행씩 multi-row, 충돌 무시)    │
+        │ SELECT config_profile (프로필 캐시)                            │
         │ INSERT device … ON CONFLICT (uuid) DO UPDATE  (uuid 별 1행)   │
         │    last_telemetry, last_sq, cv_device, ss_device,             │
         │    fw = coalesce(new, old),                                   │
         │    last_telemetry_at / last_seen_at = GREATEST(old, new),     │
         │    lost_count += Δ, reboot_count += Δ                         │
-        │    RETURNING uuid, cv_server, ti_server, lat, lon              │
+        │    RETURNING uuid, state, cv_server, cv_device, overrides,     │
+        │              profile_id, lat, lon                             │
+        │ decide_and_enqueue(§6)  → cv_server UPDATE (필요 시)          │
         │ INSERT device_event (REBOOT / LOST)                            │
         └───────────────────────────────────────────────────────────────┘
                     ▼
-        cv(payload) != cv_server 인 uuid → ConfigSyncQueue.offer(reason=telemetry)
+        ACTIVE 이고 cv 다른 uuid → ConfigSyncQueue.offer(reason=telemetry)
+        state != ACTIVE 인 uuid  → telemetry_not_active += n (저장은 한다)
 ```
 
-- **GREATEST 인 이유**: flush 가 늦어진 사이 result/event 가 더 최근 `last_seen_at` 을 썼을
-  수 있다. 시각이 뒤로 가면 온라인 판정이 흔들린다.
-- **실패 정책**: 트랜잭션이 실패하면 그 묶음을 **버리고** `telemetry_dropped += 행 수`,
-  `flush_failures += 1`. 되돌려 넣지 않는다 — DB 가 아픈 동안 대기열이 무한정 자라는 것이
-  재기동보다 나쁘다(docs/00 §5). last_sq 캐시는 이미 올라가 있으므로 다음 묶음이 "유실"로
-  보이지 않는다(의도). 버린 사실은 카운터가 남긴다.
-- **처음 보는 uuid** 는 여기서 `device` 행이 생긴다(사양서 §4.1 "REGISTER 를 놓쳐도").
-- 1,000행 단위인 이유: asyncpg 문장당 바인드 32,767개 한계, 컬럼 21개.
-- 기동 시 `warm()` 으로 DB 의 `last_sq` 를 캐시에 적재한다. 안 하면 재기동 직후 첫 TM 이
-  전부 "처음 보는 단말"이 되어 그 사이 유실·재부팅을 놓친다.
+- **GREATEST 인 이유**: flush 가 늦어진 사이 result/event 가 더 최근 `last_seen_at` 을 썼을 수 있다.
+- **실패 정책**: 트랜잭션이 실패하면 그 묶음을 **버리고** `telemetry_dropped += 행 수`, `flush_failures += 1`.
+  되돌려 넣지 않는다 — DB 가 아픈 동안 대기열이 무한정 자라는 것이 재기동보다 나쁘다(docs/00 §5).
+- **처음 보는 uuid** 는 여기서 `device` 행이 생긴다(PENDING).
+- 기동 시 `warm()` 으로 DB 의 `last_sq` 를 캐시에 적재한다.
+- sq 판정은 2차 그대로(`mqtt/sq.py`): 건너뜀=유실(상한 10만), 감소=재부팅, uint32 wrap 은 유실.
 
-## 6. sq 판정 (`mqtt/sq.py`, 사양서 §1.1.6)
+## 9. 접속 상태 (`tasks/broker_log.py`, `core/broker_log.py`, `core/presence.py` — ADR-004, 사양서 §16.1)
 
-| 관측 | 판정 | 기록 |
-|---|---|---|
-| `sq == last + 1` | 정상 | — |
-| `sq > last + 1` | 유실 `sq - last - 1` | `lost_count += min(n, 100000)`, event `LOST{sq,last_sq,lost,jump}` — `jump` 가 원값. 상한을 두는 이유: 10만 이상 점프는 유실이 아니라 카운터 이상이고, int4 `lost_count` 가 넘치면 배치 flush 전체가 실패한다 |
-| `sq == last` | 중복 | 무시 |
-| `sq < last` | 재부팅 | `reboot_count += 1`, event `REBOOT{sq,last_sq}` |
-| `last > 2³²-1-1000` 이고 `sq < 1000` | uint32 wrap → 유실로 계산, 재부팅 아님 | 단말 확인 대기(docs/00 §7) |
-| `last` 없음(첫 관측) | 아무것도 세지 않음 | — |
+모뎀이 LWT 를 못 넣으므로 **A(Mosquitto 로그) + C(수신 시각)** 를 쓴다.
 
-## 7. CONFIG_SET 재전송 규칙 (ADR-002, `mqtt/config_sync.py`)
+### A. 브로커 로그 tail
+- `MOSQUITTO_LOG_PATH`(공유 볼륨, 기본 `/var/lib/iotlight/mqtt/mosquitto.log`) 를 0.5초마다 poll.
+  비어 있으면 태스크를 띄우지 않는다(개발 PC).
+- 파서(`core/broker_log.parse_line`, 단위 시험 있음) — Mosquitto 2.0.15, `log_timestamp_format %Y-%m-%dT%H:%M:%S`:
 
-트리거는 **타이머가 아니라 수신 시점**이다.
+  | 줄 | 결과 |
+  |---|---|
+  | `New client connected from <addr> as <UUID> (p2, c1, k300, u'<UUID>').` | ONLINE (keepalive 파싱만, 저장 안 함) |
+  | `Client <UUID> disconnected.` / `closed its connection.` / `has exceeded timeout, disconnecting.` | OFFLINE |
+  | `Socket error on client <UUID>, disconnecting.` | OFFLINE |
+  | `Client <UUID> disconnected, not authorised.` | **무시** (접속된 적 없음). `broker_log_not_authorised` 로만 센다 |
+  | client id 가 `^[0-9A-F]{24}$` 가 아닌 줄 (`iotlight-backend`, healthcheck, 시험 도구) | 무시 |
 
-| 경로 | 조건 | 방식 |
-|---|---|---|
-| REGISTER | payload `cv` ≠ `cv_server` | 큐 |
-| TM flush | payload `cv` ≠ `cv_server` | 큐 |
-| `PATCH /api/devices/{uuid}/config` | ti/lat/lon 중 하나라도 변경 → `cv_server = (cv_server+1) % 65536` | **즉시 1회** 발행 + 쿨다운 기록 |
+- 한 poll 안에서 같은 UUID 가 여러 번 나오면 **마지막** 전이만 반영. 묶음을 트랜잭션 1개로.
+- `apply_presence()`: `online` 이 실제로 바뀌는 행만 `online_changed_at`(+`offline_at`) 갱신하고
+  `device_event(ONLINE|OFFLINE, payload={source})`. 같은 줄이 두 번 와도 이력이 두 번 남지 않는다.
+  **처음 보는 UUID 는 행을 만들지 않는다**(REGISTER 가 먼저다, §3.2). `last_seen_at` 은 건드리지 않는다.
+- 기동 시 **파일 끝부터**. 파일 없음 → 5초마다 재시도(`/health.broker_log_tail=false`). 크기가 마지막
+  오프셋보다 작아지면(truncate/회전) 처음부터. 개행 없는 꼬리는 다음 poll 로.
+- LWT(§5 event)와 REGISTER 수신(online=true)도 같은 `apply_presence()` 를 쓴다.
 
-큐(`ConfigSyncQueue`):
-- 토큰 버킷 `REGISTER_REPLY_RATE_PER_SEC`(기본 200/s). 브로커 재시작 뒤 1만 대 REGISTER
-  폭주에서 응답 발행량을 누른다. 1만 대면 최대 50초에 걸쳐 나간다.
-- 대기열 상한 `REGISTER_REPLY_QUEUE_MAX`(50,000). 넘으면 가장 오래된 것을 버리고
-  `register_reply_dropped` 로 센다. 버려진 단말은 다음 TM 에서 다시 잡힌다.
-- **같은 단말 60초 쿨다운**(`CONFIG_RESEND_COOLDOWN_SEC`). REGISTER 직후 첫 TM 이 아직 옛 cv
-  를 싣고 오는 것이 정상 흐름이라(CONFIG_ACK 전에 TM 이 나갈 수 있다) 쿨다운이 없으면
-  같은 CONFIG_SET 이 연달아 두 번 나간다. 이미 줄 서 있는 uuid 도 다시 넣지 않는다.
-- 발행 성공 시 `device.config_sent_at` 갱신. 실패(브로커 끊김)는 로그 후 폐기.
-- CONFIG_ACK `OK` 는 `ti_device`(와 cv_device)만 적는다. **동기화 완료 = 다음 TM 의 `cv == cv_server`**.
-  `RANGE` 는 서버 버그다(PATCH 가 60~3600 을 검증한다).
-
-## 8. 계정 내보내기 순서 (`core/mqtt_accounts.py`, 사양서 §1.1.2.2)
+### C. 수신 시각 보조 — `is_online` (파이썬·SQL 같은 규칙)
 
 ```
-CSV(uuid,password) ──▶ PBKDF2 $7$101$ 해시 ──▶ device.mqtt_password_hash (평문 저장 안 함)
-        │
-        ▼  export_all()  (pg_advisory_xact_lock 으로 직렬화)
-  passwd.generated  = server 계정 + [solarlte-test, MQTT_TEST_ACCOUNT_ENABLED 일 때만] + 단말 전부
-  aclfile.generated = 사양서 §1.1.2.2 그대로 (user server readwrite iotlight/#, pattern %u …)
-        │  같은 디렉터리 임시 파일 → os.replace (원자적)
+is_online = device.online                                       (A)
+        AND last_seen_at >= now - window                        (C)
+window    = ACTIVE → (ti_override ?? profile.ti) × DEVICE_ONLINE_FACTOR(3)
+            그 외  → PENDING_OFFLINE_SEC (4200 = 70분: REGISTER 재전송 최대 30분 × 2 + 여유)
+```
+
+둘 다 만족해야 true(docs/05). C 가 있어야 백엔드 재시작·로그 회전으로 플래그가 굳어도 오프라인이
+잡힌다. 목록 필터 `?online=`, `counts.online`, `is_online` 이 전부 `online_clause()` 하나를 쓴다.
+화면은 "MQTT 상태(online/online_changed_at)" 와 "마지막 수신(last_seen_at)" 을 나눠 보여 준다.
+
+## 10. 단말 인증 (`modules/mqtt_auth/`, `core/device_password.py`, `core/mqtt_acl.py` — ADR-003, 사양서 §1.1.2.2)
+
+브로커 이미지 `iegomez/mosquitto-go-auth`: `files`(server, solarlte-test) + `http`(단말 → 백엔드).
+
+| API | 규칙 |
+|---|---|
+| `POST /internal/mqtt/auth` `{username,password,clientid}` | username 이 `^[0-9A-F]{24}$` 아니면 403(server/시험 계정은 files 몫 — 틀린 비번의 `server` 도 여기로 넘어오는데 UUID 가 아니라 403). `clientid` 가 있고 username 과 다르면 403. `password == HMAC-SHA256(K_i, UUID)[:16].hex()` 를 **활성 키 전부**에 `compare_digest`(첫 일치에서 끊지 않는다 — 어느 키인지 타이밍으로 새지 않게). **승인 상태·DB 를 보지 않는다** — PENDING/REJECTED/처음 보는 UUID 도 200 |
+| `POST /internal/mqtt/acl` `{username,clientid,topic,acc}` | `core/mqtt_acl.device_acl()` 순수 함수. acc 1 read / 2 write / 4 subscribe(3 readwrite 는 항상 거부). write: `device/<u>/{register,status,result,event}`. read/subscribe: `device/<u>/{cmd,config}`, `group/#`(하위 어떤 것이든, `group/#` 구독도 허용), `all/cmd`. 그 외·와일드카드(`iotlight/#`, `device/+/status`)·남의 UUID 는 403 |
+| `POST /internal/mqtt/superuser` | 항상 403 |
+
+- 키: `MQTT_HMAC_KEYS="K1:<hex64>[,K2:<hex64>]"`. 기동 때 파싱해 틀리면 죽는다. 기본값은 사양서 공개 시험 키
+  `TEST:000102…1e1f`(prod 에서 TEST 가 있으면 경고). 값은 로그·DB·`/health` 에 안 나간다(`hmac_keys` 는 ID 만).
+- `MQTT_AUTH_SHARED_SECRET` 이 비어 있지 않으면 `X-Auth-Secret` 헤더 검사. 인증 라우터는 DB 세션을 쓰지 않는다
+  (1만 대 재접속 폭주에서 DB 왕복이 인증 경로에 끼면 안 된다).
+- 시험값(단위 시험 `tests/test_device_password.py`): `20363930594D50170004003A → 70e8a87fba4a997f7c24d1f98300753a`,
+  `00112233445566778899AABB → 13f271bab5a9de23c3577ced778a46b9`.
+- 카운터 `mqtt_auth_ok` / `mqtt_auth_fail` / `mqtt_acl_deny`.
+
+## 11. 계정 파일 (`core/mqtt_accounts.py`) — server 계정만
+
+```
+render_passwd()  = server:PBKDF2$sha512$100000$<salt b64>$<hash b64>
+                 + solarlte-test:… (MQTT_TEST_ACCOUNT_ENABLED 일 때만)
+render_acl()     = user server / topic readwrite iotlight/#  (+ 시험 계정)   ← pattern 줄 없음
+        │  같은 디렉터리 임시 파일 → os.replace (원자적), pg_advisory_xact_lock 으로 직렬화
         ▼
-  mosquitto entrypoint 감시 루프(infra/)가 설치 + SIGHUP → aclfile.applied 에 md5 기록
+  MOSQUITTO_PASSWD_EXPORT / MOSQUITTO_ACL_EXPORT (공유 볼륨)
         │
-        ▼  wait_applied(passwd_md5, acl_md5, ACL_APPLY_TIMEOUT_SEC=5)
-           — passwd.applied / aclfile.applied 둘 다 일치해야 "적용". ACL 이 안 바뀐 import 는
-             aclfile.applied 가 즉시 일치하므로 passwd 보고를 안 보면 접속 거절 구간이 생긴다
+        ▼
+  mosquitto entrypoint 감시 루프(infra/)가 md5 가 바뀐 경우만 설치 + 브로커 재시작
+  → passwd.applied / aclfile.applied 에 md5 기록 → wait_applied() 가 본다
   mqtt_account_export(id=1) 에 passwd_md5 / acl_md5 / acl_applied_md5 기록
-        │
-        ▼
-  그 뒤에야 CONFIG/명령 발행 — mosquitto 는 구독은 받아 두고 메시지를 넘길 때 ACL 을 보므로
-  권한 설치 전에 나간 메시지는 그 단말에 영영 안 간다.
 ```
 
-- 내보내기 시점: **기동 시**, CSV import 후, 단말 삭제 후. 항상 통째로 재생성(부분 병합 없음 —
-  파일과 DB 가 어긋난 채 굳는 것이 최악).
-- 경로가 비어 있으면 no-op(개발 PC, anonymous 브로커). 응답의 `export_enabled=false`.
-- import 직후에는 CONFIG 를 보내지 않는다 — 그 단말은 아직 접속 전이고 CONFIG_SET 은
-  비retain 이라 받을 수 없다. 접속하면 REGISTER/TM 의 cv 불일치가 알아서 보낸다.
+- 해시 salt 는 **결정적**(`HMAC-SHA256(key=username, msg=password)[:16]`) — go-auth 는 HUP 으로 passwd 를 다시 읽지
+  못해 감시 루프가 md5 변화로 재시작을 결정하는데, salt 가 매번 다르면 5분마다 불필요한 재시작이 난다.
+- 시점: 기동 시 + 5분 재조정. 단말 행은 없다(HMAC). CSV import 와 `POST /api/devices/import-accounts` 는 폐기.
+- 경로가 비어 있으면 no-op(개발 PC, anonymous 브로커).
+- 전환 순서(사양서 §1.1.2.2): 플러그인 설치(공용 계정 유지) → 시험 키 확인 → `MQTT_HMAC_KEYS=K1:…` →
+  단말 HMAC 펌웨어 → `MQTT_TEST_ACCOUNT_ENABLED=false`.
 
-## 9. 온라인 판정 (`core/presence.py`)
-
-```
-online = device.online                                  (LWT/CONNECT, 3차)
-      OR ( last_telemetry_at >= now - coalesce(ti_device, ti_server) × DEVICE_ONLINE_FACTOR
-           AND (offline_at IS NULL OR offline_at < last_telemetry_at) )
-```
-파이썬 판과 SQL 판이 같은 파일에 있다. 목록 필터 `?online=`, 상세의 `is_online` 이 둘을 쓴다.
-`ti_device` 우선인 이유: 서버가 300 으로 바꿨는데 단말이 아직 600 으로 보내면 600 기준이어야
-오프라인 오판이 없다.
-
-## 10. 카운터 (`GET /api/metrics`)
+## 12. 카운터 (`GET /api/metrics`)
 
 | 이름 | 뜻 |
 |---|---|
 | `received.{register,status,result,event}` | kind 별 수신 |
-| `received_type.{REGISTER,TM,PONG,…}` | type 별 수신 |
+| `received_type.{REGISTER,TELEMETRY,TM,PONG,CONFIG_ACK,…}` | type 별 수신 |
 | `malformed_topic` `malformed_payload` `uuid_mismatch` `unknown_type` | §3 검증 탈락 |
-| `telemetry_flushed` `telemetry_dropped` `flush_failures` | 배치 적재 / 폐기 |
-| `flush_ms_last` `flush_ms_max` | flush 소요 |
-| `buffer_pending` | 대기 TM 행 수 |
-| `register_queue` `register_reply_dropped` | CONFIG 큐 길이 / 상한 초과 폐기 |
-| `config_set_sent` `config_ack_range` | CONFIG 발행 / 단말 거부 |
+| `telemetry_flushed` `telemetry_dropped` `flush_failures` `telemetry_not_active` | 배치 적재 / 폐기 / ACTIVE 아닌 단말의 TM |
+| `flush_ms_last` `flush_ms_max` `buffer_pending` | flush 소요 / 대기 행 수 |
+| `register_queue` `register_reply_dropped` | 응답 큐 길이 / 상한 초과 폐기 |
+| `register_ack_sent` `config_set_sent` | 발행 수 |
+| `config_ack_ok` `config_ack_range` `config_ack_state` `config_ack_flash` | CONFIG_ACK result 별 |
 | `pong_mismatch` | seq 모름 또는 단말 불일치 응답 |
 | `mqtt_connected` `mqtt_reconnects` `mqtt_publish_failures` | 연결 |
+| `mqtt_auth_ok` `mqtt_auth_fail` `mqtt_acl_deny` | 브로커 인증 API |
+| `broker_log_tail` `broker_log_lines` `broker_log_online` `broker_log_offline` `broker_log_not_authorised` `broker_log_errors` | 로그 tail |
 | `legacy_t_devices` | `t` 키로 보고 중인 단말 수 |
 | `cmd_seq` `cmd_seq_alert` | 시퀀스 현재값 / uint32 99% 초과 경보 |
 
-`GET /health` 는 `ok = mqtt_connected AND db_ok` 와 버퍼·큐 크기만 준다. DB 가 죽어도 HTTP 200
-(healthcheck 로 컨테이너를 재시작하면 버퍼와 MQTT 세션까지 잃는다).
+`GET /health`: `ok = mqtt_connected AND db_ok`, `buffer_pending`, `register_queue`, `telemetry_dropped`,
+`flush_failures`, `broker_log_tail`(태스크 살아 있고 파일 찾음), `hmac_keys`(ID 목록), `test_account_enabled`, `env`.
+DB 가 죽어도 HTTP 200(healthcheck 로 컨테이너를 재시작하면 버퍼와 MQTT 세션까지 잃는다).
 
-## 11. 주기 작업
+## 13. 주기 작업
 
 | 작업 | 시각(KST) | 내용 |
 |---|---|---|
 | `tasks/partitions.run` | 기동 시 + 매일 01:00 | `telemetry_YYYYMM` 이번 달·다음 달 생성, 13개월 초과 DROP, `device_event` 365일 초과 DELETE |
-| `tasks/daily_rollup.run` | 매일 00:30 (+`POST /api/admin/rollup`) | 전날(KST) `telemetry_daily` — SQL 윈도 함수 사다리꼴 적분, 표본 간격 2시간 초과 구간 제외 |
+| `tasks/daily_rollup.run` | 매일 00:30 (+`POST /api/admin/rollup`) | 전날(KST) `telemetry_daily` |
+| `_reconcile_accounts` | 5분 | server 계정 passwd/aclfile 재내보내기(내용 같으면 감시 루프가 무시) |
+| `tasks/broker_log.BrokerLogTail` | 상시(0.5초) | §9 |
 
-파티션 경계는 UTC 월이다(이름과 DDL 경계가 일치하도록). 일 집계 범위는 KST 날짜다.
+## 14. 기동·종료 순서 (`main.py`)
 
-## 12. 3차에서 바뀌는 것
+HMAC 키 파싱(틀리면 죽음) → DB 대기 → 파티션 → 계정 파일 내보내기 → last_sq warm → 응답 큐 → 버퍼 →
+MQTT 연결 → 브로커 로그 tail → 스케줄러. 종료는 역순(로그 tail → 연결 → 버퍼 flush → 큐).
 
-| 항목 | 2차 | 3차 |
-|---|---|---|
-| 신규 단말 `state` | ACTIVE | PENDING (DB 기본값 변경) |
-| REGISTER 응답 | cv 다를 때 CONFIG_SET 만 | REGISTER_ACK(retain) **항상** + ACTIVE 면 CONFIG_SET |
-| 상태 변경 | — | `device_event(STATE_CHANGE)`, REGISTER_ACK 재발행, RETIRED 는 `clear_register_ack()` |
-| 온라인 | ti×3 대체 규칙 | LWT 로 `online=false`, CONNECT 감지(브로커 `$SYS` 또는 REGISTER)로 `online=true`. P-2 결과가 미지원이면 2차 규칙 유지 |
-| PENDING 단말의 TM | 받아서 저장 | 받으면 경고(사양서 §3.8 — 보내면 안 되는 상태) |
-| REST | 무인증, 127.0.0.1 | `admin_user` 인증 |
+## 15. 시나리오와 연결 (docs/06)
 
-`publisher.publish_register_ack()` / `clear_register_ack()` 는 2차에 이미 있다(미사용).
+- S3-01 신규 접속 → PENDING, REGISTER_ACK retain, TELEMETRY 없음, PING/PONG 됨(§5 result 는 상태 무관).
+- S3-02 승인 → ACTIVE retain → 단말 첫 TELEMETRY → cv 비교 → CONFIG_SET(전체값, cv≥1) → CONFIG_ACK OK → 다음 TELEMETRY cv 일치.
+- S3-03 재부팅 → retain ACK 로 복귀. 같은 topic 의 CONFIG_SET(retain 0)이 retain 보관본을 지우지 않는다.
+- S3-04 서버 재시작 → 단말 REGISTER 재전송 → 큐가 ACK. 브로커 로그는 EOF 부터라 online 은 REGISTER 가 맞춘다.
+- S3-05 SUSPENDED → TELEMETRY 중지·연결 유지·CONFIG_ACK STATE 없음(안 보내니까) → ACTIVE 로 해제 → 재개.
+- 인증: 시험 키로 `mosquitto_pub -u <UUID> -P <계산값>` 성공, 한 글자 틀리면 거부, 남의 UUID topic 발행 거부, `iotlight/#` 구독 거부.

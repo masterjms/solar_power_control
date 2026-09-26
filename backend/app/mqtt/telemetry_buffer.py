@@ -14,19 +14,20 @@
        `lost_count = lost_count + EXCLUDED.lost_count` 로 누적한다
     3. sq 판정         — 프로세스 내 last_sq 캐시(기동 때 DB 에서 적재)로 판정. DB 를
        읽지 않는다. REBOOT/LOST 는 device_event 행으로 남긴다
-    4. CONFIG 재전송   — RETURNING 으로 받은 cv_server 와 payload 의 cv 가 다르면
-       ConfigSyncQueue 에 넣는다 (ADR-002 "다음 Telemetry 수신 시점", 60초 쿨다운)
+    4. CONFIG 재전송   — RETURNING 으로 받은 state/cv_server/프로필 로 판정(config_decide).
+       ACTIVE 이고 cv 가 다르면 cv_server 확정 후 ConfigSyncQueue 에 넣는다
+       (사양서 §1.1.10 "단말 송신 직후", ADR-002, 60초 쿨다운)
+    5. ACTIVE 가 아닌 단말의 TM 은 저장은 하되 `telemetry_not_active` 로 센다 — 사양서 §3.8
+       상 보내면 안 되는 상태다(승인 전 펌웨어 1.1.x 이거나 retain 이 어긋난 것)
 
 안전장치:
     · flush 실패 → 그 묶음은 **버린다**. 다시 큐에 넣지 않는다. DB 가 아픈 동안 대기열이
       무한정 자라는 것이 재기동보다 나쁘다(docs/00 §5). telemetry_dropped 로 센다.
       last_sq 캐시는 이미 올라가 있으므로 다음 묶음은 그 묶음이 "유실"로 보이지 않는다 —
       의도한 것이다. 버린 행은 이력에서 빠지지만 카운터가 그 사실을 남긴다.
-    · LWT 가 오면 그 uuid 의 대기분을 버린다. 안 버리면 죽었다고 기록한 뒤 낡은 TM 이
-      덮어써서 죽은 단말이 온라인으로 되살아난다.
     · 대기 행이 TELEMETRY_FLUSH_MAX_PENDING 을 넘으면 주기를 기다리지 않는다.
     · 종료 시 남은 것을 flush 한다.
-    · 처음 보는 uuid 는 여기서 device 행이 생긴다(사양서 §4.1 "REGISTER 를 놓쳐도").
+    · 처음 보는 uuid 는 여기서 device 행이 생긴다(PENDING, 사양서 §4.1 "REGISTER 를 놓쳐도").
 """
 
 from __future__ import annotations
@@ -43,14 +44,20 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.constants import EventKind
+from app.constants import DeviceState, EventKind
 from app.core.metrics import metrics
 from app.db import session_scope
 from app.models.device import Device
 from app.models.event import DeviceEvent
 from app.models.telemetry import Telemetry
 from app.mqtt import sq as sq_rules
-from app.mqtt.config_sync import ConfigJob, ConfigSyncQueue
+from app.mqtt.config_decide import (
+    CONFIG_COLUMNS,
+    DeviceConfigRow,
+    decide_and_enqueue,
+    load_profiles,
+)
+from app.mqtt.config_sync import ConfigSyncQueue
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +82,7 @@ def _int(value: Any) -> int | None:
 
 
 def telemetry_row(uuid: str, payload: dict[str, Any], received_at: dt.datetime) -> dict[str, Any]:
-    """TM payload → telemetry 컬럼. 단위 변환 없음, 원본은 raw 에 통째로."""
+    """TELEMETRY payload → telemetry 컬럼. 단위 변환 없음, 원본은 raw 에 통째로."""
     pw = payload.get("pw")
     if not isinstance(pw, list):
         pw = []
@@ -131,7 +138,7 @@ class TelemetryBuffer:
             self._wake.set()
 
     def discard(self, uuid: str) -> int:
-        """대기 중인 그 단말의 TM 을 버린다. LWT 처리가 먼저 이겨야 할 때 쓴다."""
+        """대기 중인 그 단말의 TM 을 버린다."""
         before = len(self._rows)
         self._rows = [row for row in self._rows if row[0] != uuid]
         return before - len(self._rows)
@@ -221,7 +228,7 @@ class TelemetryBuffer:
 
     # ── 쓰기 ────────────────────────────────────────────────────────────
     async def flush(self) -> int:
-        """대기분을 한 트랜잭션에 쓰고, cv 불일치 단말을 CONFIG 큐에 넣는다. 반환값은 행 수."""
+        """대기분을 한 트랜잭션에 쓰고, cv 불일치 ACTIVE 단말을 CONFIG 큐에 넣는다. 반환: 행 수."""
         if not self._rows:
             return 0
         batch = self._rows
@@ -246,13 +253,14 @@ class TelemetryBuffer:
             for uuid, e in latest.items()
         ]
 
-        stale: list[ConfigJob] = []
+        not_active = 0
         try:
             async with session_scope() as db:
                 for i in range(0, len(history), _CHUNK):
                     await db.execute(
                         pg_insert(Telemetry).values(history[i:i + _CHUNK]).on_conflict_do_nothing()
                     )
+                profiles = await load_profiles(db)
                 for i in range(0, len(device_rows), _CHUNK):
                     stmt = pg_insert(Device).values(device_rows[i:i + _CHUNK])
                     stmt = stmt.on_conflict_do_update(
@@ -274,15 +282,13 @@ class TelemetryBuffer:
                             "reboot_count": Device.reboot_count + stmt.excluded.reboot_count,
                             "updated_at": func.now(),
                         },
-                    ).returning(
-                        Device.uuid, Device.cv_server, Device.ti_server, Device.lat, Device.lon
+                    ).returning(*CONFIG_COLUMNS)
+                    rows = [DeviceConfigRow(*r) for r in (await db.execute(stmt)).all()]
+                    not_active += sum(1 for r in rows if r.state != DeviceState.ACTIVE.value)
+                    # cv_device 는 방금 쓴 payload 값이다(RETURNING 은 갱신 후 행을 준다).
+                    await decide_and_enqueue(
+                        db, self._config_sync, rows, reason="telemetry", profiles=profiles
                     )
-                    for uuid, cv_server, ti_server, lat, lon in (await db.execute(stmt)).all():
-                        reported = _int(latest[uuid]["payload"].get("cv"))
-                        if reported is not None and reported != cv_server:
-                            stale.append(
-                                ConfigJob(uuid, cv_server, ti_server, lat, lon, "telemetry")
-                            )
                 if events:
                     await db.execute(pg_insert(DeviceEvent).values(events))
         except Exception:  # noqa: BLE001
@@ -293,8 +299,7 @@ class TelemetryBuffer:
 
         metrics.telemetry_flushed += len(history)
         metrics.record_flush((time.perf_counter() - started) * 1000.0)
-
-        if self._config_sync is not None:
-            for job in stale:
-                self._config_sync.offer(job)
+        if not_active:
+            metrics.telemetry_not_active += not_active
+            log.debug("ACTIVE 아닌 단말의 TELEMETRY %d대 (저장은 함)", not_active)
         return len(history)

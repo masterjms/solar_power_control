@@ -31,7 +31,7 @@
 go-auth 설정: `params_mode json`, `response_mode status` (200 = 허용, 그 외 = 거부).
 
 ### `POST /internal/mqtt/auth` `{"username","password","clientid"}`
-- `username` 이 `^[0-9A-F]{24}$` 가 아니면 403 (`server`/`solarlte-test` 는 go-auth `files` 백엔드가 본다).
+- `username` 이 `^[0-9A-F]{24}$` 가 아니면 403 (`server`/`solarlte-test` 는 go-auth `files` 백엔드가 본다. files 에서 실패한 `server` 도 여기로 넘어오지만 UUID 가 아니라 403). `clientid` 는 없어도 된다(있으면 username 과 같아야 한다). DB 를 보지 않는다.
 - `password == hmac_sha256(K, username)[:16].hex()` 를 **활성 키 전부**(`MQTT_HMAC_KEYS`)에 대해 `compare_digest`. 하나라도 맞으면 200.
 - clientid 가 username 과 다르면 403(사양서: Client ID = UUID).
 - **승인 상태로 막지 않는다.** PENDING/REJECTED/RETIRED 도 200. 처음 보는 UUID 도 200(DB 에 아직 없어도 된다 — REGISTER 가 만든다).
@@ -43,7 +43,7 @@ go-auth 설정: `params_mode json`, `response_mode status` (200 = 허용, 그 �
 - read/subscribe 허용: `iotlight/device/<u>/{cmd,config}`, `iotlight/group/#`(하위 어떤 것이든), `iotlight/all/cmd`
 - 그 외 403. `<u>` 는 username. 와일드카드 구독(`iotlight/#`, `device/+/status`)은 403.
 
-### `POST /internal/mqtt/superuser` → 항상 403.
+### `POST /internal/mqtt/superuser` `{"username"}` → 항상 403.
 
 ## 프로필
 
@@ -51,8 +51,9 @@ go-auth 설정: `params_mode json`, `response_mode status` (200 = 허용, 그 �
 ### `POST /api/profiles` `{"name","ti","ka"}` → 201 `{ProfileOut}`
 ### `PATCH /api/profiles/{id}` `{"name"?,"ti"?,"ka"?}`
 `ti`/`ka` 가 바뀌면 그 프로필의 **모든 단말 `cv_server += 1`** (0 인 단말은 그대로 0 — 아직 승인 전).
-ACTIVE 단말에는 즉시 CONFIG_SET 을 보내지 않는다 — 다음 송신 때 나간다(§1.1.10). 응답에 `bumped_devices`.
-### `DELETE /api/profiles/{id}` — 단말이 하나라도 쓰면 409 `PROFILE_IN_USE`. id 1 은 삭제 불가.
+ACTIVE 단말에는 즉시 CONFIG_SET 을 보내지 않는다 — 다음 송신 때 나간다(§1.1.10). 응답은 `{ProfileOut}` + `bumped_devices`.
+`ProfileOut` = `{"id","name","ti","ka","device_count","created_at","updated_at"}`. 이름 중복은 422.
+### `DELETE /api/profiles/{id}` — 단말이 하나라도 쓰면 409 `PROFILE_IN_USE`. id 1 은 삭제 불가(같은 409, `detail.reason="default"`). → `{"id","deleted":true}`
 
 ## 단말
 
@@ -64,8 +65,9 @@ ACTIVE 단말에는 즉시 CONFIG_SET 을 보내지 않는다 — 다음 송신 
 {"items": [ {DeviceOut} ], "total": 9832, "page": 1, "size": 50,
  "counts": {"PENDING": 3, "ACTIVE": 9800, "SUSPENDED": 2, "REJECTED": 1, "RETIRED": 26, "online": 9750}}
 ```
+`counts` 는 **필터와 무관한 전체** 집계(상단 탭용). `total` 은 필터 적용 건수.
 
-`DeviceOut` — `device` 컬럼 전부 + 계산 필드:
+`DeviceOut` — `device` 컬럼 전부(`uuid state state_reason state_changed_at register_ack_at fw device_model modem_model imei iccid msisdn cv_device ss_device ti_device ka_device cv_server profile_id ti_override ka_override lat lon site address bjd_code grp last_register_at last_telemetry_at last_seen_at last_sq last_telemetry online online_changed_at offline_at lost_count reboot_count config_sent_at created_at updated_at`) + 계산 필드:
 - `ti_effective`, `ka_effective`: `override ?? profile` 값. `profile_name`.
 - `config_pending`: `cv_server > 0 AND cv_device != cv_server` (0 이면 아직 보낸 적 없음 → false)
 - `config_mismatch`: `ti_device != ti_effective OR ka_device != ka_effective` (단말 보고값 vs 서버 의도값, 화면 1 "다르면 표시")
@@ -81,6 +83,7 @@ ACTIVE 단말에는 즉시 CONFIG_SET 을 보내지 않는다 — 다음 송신 
 {"state": "ACTIVE", "site": "A-12", "reason": null}
 ```
 - `state`: ACTIVE / SUSPENDED / REJECTED / RETIRED / PENDING(해제·되돌리기). `site` 는 ACTIVE 로 갈 때 선택(없으면 기존 값), 24자 이내.
+  같은 상태로의 요청도 409(전이 표에 없다) — site 만 바꾸려면 `PATCH …/config`. `reason` 은 REJECTED 일 때만 REGISTER_ACK 에 실린다.
 - 처리 순서(사양서 §3.9.2):
   1. DB `state`, `site`, `state_reason`, `state_changed_at` 저장 + `device_event(STATE_CHANGE)`
   2. `REGISTER_ACK {"type":"REGISTER_ACK","uuid","state","site"?,"reason"?}` 를 `device/<uuid>/config` 에 **retain 1** 로 발행. `register_ack_at` 기록.
@@ -91,6 +94,7 @@ ACTIVE 단말에는 즉시 CONFIG_SET 을 보내지 않는다 — 다음 송신 
 
 ### `POST /api/devices/{uuid}/register-ack`
 DB 상태 그대로 REGISTER_ACK retain 을 다시 발행(재조정용). RETIRED 면 빈 retain.
+→ `{"uuid","state","published","cleared":false,"register_ack":{...}|null}` (RETIRED 는 `cleared=true`, `register_ack=null`)
 
 ### `PATCH /api/devices/{uuid}/config`
 ```json
@@ -98,15 +102,18 @@ DB 상태 그대로 REGISTER_ACK retain 을 다시 발행(재조정용). RETIRED
 ```
 - 전부 선택. `ti` 60~3600, `ka` 60~1800, lat/lon 범위. 422 `VALIDATION_FAILED`.
 - `profile_id`/`ti_override`/`ka_override`/`lat`/`lon` 중 **적용값이 바뀌면** `cv_server` 를 올린다: `max(cv_server, cv_device or 0) + 1`.
-  `site`/`address`/`bjd_code` 만 바꾸면 cv 는 그대로(단말에 CONFIG 로 안 내려감). `site` 가 바뀌고 state 가 ACTIVE/PENDING 이면 REGISTER_ACK retain 을 다시 발행(site 가 거기 실린다).
+  `site`/`address`/`bjd_code` 만 바꾸면 cv 는 그대로(단말에 CONFIG 로 안 내려감). `site` 가 바뀌고 state 가 ACTIVE/PENDING/SUSPENDED/REJECTED 면 REGISTER_ACK retain 을 다시 발행(site 가 거기 실린다. RETIRED 는 retain 이 비어 있어야 하므로 제외).
+  `ti_override: null` 을 **보내면** override 해제(프로필 값으로). 키를 안 보내면 그대로(보낸 키만 바꾼다).
 - ACTIVE 단말이면 CONFIG_SET **즉시 1회** 발행(`published`). 그 외 상태면 `published=false, reason="NOT_ACTIVE"` — 승인 뒤 첫 TELEMETRY 때 나간다.
 - CONFIG_SET payload 는 **항상 전체값**: `{"type":"CONFIG_SET","cv","ti","ka"}` + `lat`/`lon` 은 값이 있을 때. retain 0.
-→ `{"uuid","cv_server","ti_effective","ka_effective","lat","lon","site","published","payload"}`
+→ `{"uuid","state","cv_server","profile_id","ti_override","ka_override","ti_effective","ka_effective","lat","lon","site","address","bjd_code","cv_bumped","published","reason","payload","register_ack_republished"}`
+  `reason`: `null`(발행함) / `NOT_ACTIVE` / `NOT_NEEDED`(ACTIVE 인데 바뀐 것도 cv 불일치도 없음) / `PUBLISH_FAILED`(브로커 끊김 — 다음 TELEMETRY 때 재전송). `payload` 는 발행했거나 다음 송신 때 나갈 CONFIG_SET 전체값(`cv_server` 가 0 이면 null).
 
 ### `POST /api/devices/{uuid}/ping` (변경 없음. PONG 대기는 화면에서 60초 — 서버→단말 지연은 수십 초가 정상, §1.1.10)
 
 ### `DELETE /api/devices/{uuid}`
 행 삭제 + REGISTER_ACK retain 삭제(빈 retain). 이력은 남긴다. 계정 파일은 손대지 않는다(단말 계정은 파일에 없다).
+→ `{"uuid","deleted":true,"retain_cleared":true}` (브로커 끊김이면 `retain_cleared=false`, 행은 지워졌다)
 
 ### 삭제된 API
 `POST /api/devices/import-accounts` — 비밀번호 CSV 방식 폐기(ADR-003).

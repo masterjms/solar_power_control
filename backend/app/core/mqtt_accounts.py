@@ -1,78 +1,97 @@
-"""단말별 MQTT 계정 — mosquitto passwd/aclfile 생성과 내보내기 (사양서 §1.1.2.2).
+"""브로커 계정 파일 — go-auth `files` 백엔드용 passwd/aclfile 생성과 내보내기 (ADR-003).
 
-username = 단말 UUID 24자리(Client ID 와 같다), password = PC 설정 도구가 만든 무작위
-문자열. 서버는 **해시만** 저장한다(docs/00 §4 "비밀번호 평문 저장 → 해시만").
-평문은 PC 도구의 CSV 에만 있고, import 순간 해시로 바뀌어 DB 에 들어간다.
+2026-09-26 부터 passwd 에는 **서버 계정 `server`**(+ 1차 공용 `solarlte-test`, 켜 둔 동안만)만
+들어간다. 단말은 파일에 없다 — username=UUID, password=HMAC 계산값이고 브로커(go-auth
+`http` 백엔드)가 접속 순간 `/internal/mqtt/auth` 로 물어본다(app/modules/mqtt_auth).
+CSV import 경로는 폐기했다.
 
-브로커 등록은 파일 경유다: 백엔드가 passwd/aclfile 을 공유 볼륨에 떨어뜨리면
-mosquitto 컨테이너의 entrypoint 감시 루프(infra/)가 설치하고 SIGHUP 으로 리로드한 뒤
-`aclfile.applied` 에 적용본 md5 를 적는다. 백엔드는 mosquitto 컨테이너에 직접 신호를
-보낼 수 없어서(도커 소켓을 안 물린다) 이 간접 구조를 쓴다.
+해시 형식은 go-auth 의 `pw` 도구 기본값: `PBKDF2$sha512$100000$<salt b64>$<hash b64>`
+(salt 16바이트, dklen 64). mosquitto_passwd 의 `$7$101$…` 과 다르다 — 브로커 이미지가
+`iegomez/mosquitto-go-auth` 로 바뀌었기 때문이다.
 
-순서가 중요하다: **export → applied 확인 → CONFIG/명령 발행.** mosquitto 는 구독은
-받아 두고 메시지를 넘길 때 ACL 을 보므로, 권한이 설치되기 전에 나간 메시지는 그
-단말에 영영 안 간다(aircast 2026-09-15 실측).
+salt 는 **결정적**이다: `HMAC-SHA256(key=username, msg=password)[:16]`. go-auth 는 SIGHUP 으로
+passwd 를 다시 읽지 못해 entrypoint 감시 루프가 "파일 md5 가 바뀔 때만" 브로커를 재시작한다.
+salt 가 기동마다 달라지면 내용이 같은데도 md5 가 바뀌어 5분마다 불필요한 재시작·로그가 난다
+(인프라 실측 2026-09-26). 같은 (username, password) → 항상 같은 줄.
 
-경로(MOSQUITTO_PASSWD_EXPORT / MOSQUITTO_ACL_EXPORT)가 비어 있으면 전부 no-op —
-개발 PC 는 anonymous 브로커로 시험한다.
+aclfile 도 go-auth files 형식이다. `user server` + `topic readwrite iotlight/#` 뿐이고
+**pattern 줄은 없다** — 단말 ACL 은 `/internal/mqtt/acl` 이 답한다.
+
+브로커 설치는 파일 경유다: 백엔드가 공유 볼륨에 떨어뜨리면 mosquitto 컨테이너의 entrypoint
+감시 루프(infra/)가 설치하고 SIGHUP 으로 리로드한 뒤 `passwd.applied`/`aclfile.applied` 에
+적용본 md5 를 적는다. 경로(MOSQUITTO_PASSWD_EXPORT / MOSQUITTO_ACL_EXPORT)가 비어 있으면
+전부 no-op — 개발 PC 는 anonymous 브로커로 시험한다.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
-import csv
 import hashlib
-import io
+import hmac
 import logging
 import os
 import tempfile
-from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.config import settings
-from app.constants import UUID_RE
 
 log = logging.getLogger(__name__)
 
-# mosquitto_passwd 의 sha512-pbkdf2 형식과 동일한 파라미터 (2.x 기본값).
-# eclipse-mosquitto:2 인증 실측 통과 — aircast 2026-08-30.
-HASH_ITERATIONS = 101
-_SALT_BYTES = 12
-#: 적용 보고 파일 이름. aclfile 내보내기 경로와 같은 디렉터리.
+# go-auth `pw` 기본값 (hasher pbkdf2, sha512, 100000 iterations, salt 16, keylen 64, base64).
+GOAUTH_ALGO = "sha512"
+GOAUTH_ITERATIONS = 100_000
+_SALT_BYTES = 16
+_KEY_LEN = 64
+#: 적용 보고 파일 이름. 내보내기 경로와 같은 디렉터리.
 ACL_APPLIED_MARKER = "aclfile.applied"
-#: passwd 적용 보고. ACL 이 안 바뀐 import(계정 추가만)는 aclfile.applied 가 즉시 일치하는데
+#: passwd 적용 보고. ACL 이 안 바뀐 내보내기는 aclfile.applied 가 즉시 일치하는데
 #: passwd 설치는 감시 루프의 다음 1초라, 이것까지 봐야 "지금 접속 가능"이 된다(S2-06).
 PASSWD_APPLIED_MARKER = "passwd.applied"
 
 
 # ── 해시 ────────────────────────────────────────────────────────────────
-def mosquitto_hash(password: str, salt: bytes | None = None) -> str:
-    """`$7$<iterations>$<salt b64>$<hash b64>` — mosquitto 의 PBKDF2-SHA512 형식.
+def derive_salt(username: str, password: str) -> bytes:
+    """(username, password) 에서 유도한 16바이트 salt. 같은 입력 → 같은 salt."""
+    digest = hmac.new(username.encode("utf-8"), password.encode("utf-8"), hashlib.sha256).digest()
+    return digest[:_SALT_BYTES]
 
-    salt 는 테스트가 고정값을 넣을 때만 준다. 운영 경로는 항상 무작위다.
+
+def goauth_hash(username: str, password: str, salt: bytes | None = None) -> str:
+    """`PBKDF2$sha512$100000$<salt b64>$<hash b64>` — go-auth files 백엔드 형식.
+
+    salt 를 안 주면 derive_salt() 로 결정적으로 만든다(모듈 docstring). 테스트가 다른 값을
+    넣어 볼 때만 salt 를 준다.
     """
-    salt = os.urandom(_SALT_BYTES) if salt is None else salt
-    dk = hashlib.pbkdf2_hmac("sha512", password.encode("utf-8"), salt, HASH_ITERATIONS, dklen=64)
+    salt = derive_salt(username, password) if salt is None else salt
+    dk = hashlib.pbkdf2_hmac(
+        GOAUTH_ALGO, password.encode("utf-8"), salt, GOAUTH_ITERATIONS, dklen=_KEY_LEN
+    )
     return (
-        f"$7${HASH_ITERATIONS}$"
+        f"PBKDF2${GOAUTH_ALGO}${GOAUTH_ITERATIONS}$"
         f"{base64.b64encode(salt).decode('ascii')}$"
         f"{base64.b64encode(dk).decode('ascii')}"
     )
 
 
-def verify_mosquitto_hash(password: str, stored: str) -> bool:
-    """저장된 해시와 대조. 테스트·진단용 — 서버 인증 경로는 브로커가 담당한다."""
+def verify_goauth_hash(password: str, stored: str) -> bool:
+    """저장된 해시와 대조. 테스트·진단용 — 서버 계정 인증 경로는 브로커가 담당한다."""
     try:
-        _, algo, iterations, salt_b64, dk_b64 = stored.split("$")
+        tag, algo, iterations, salt_b64, dk_b64 = stored.split("$")
     except ValueError:
         return False
-    if algo != "7":
+    if tag != "PBKDF2" or algo not in ("sha512", "sha256"):
         return False
-    salt = base64.b64decode(salt_b64)
-    dk = hashlib.pbkdf2_hmac("sha512", password.encode("utf-8"), salt, int(iterations), dklen=64)
-    return base64.b64encode(dk).decode("ascii") == dk_b64
+    try:
+        salt = base64.b64decode(salt_b64)
+        expected = base64.b64decode(dk_b64)
+    except ValueError:
+        return False
+    dk = hashlib.pbkdf2_hmac(
+        algo, password.encode("utf-8"), salt, int(iterations), dklen=len(expected)
+    )
+    return dk == expected
 
 
 def content_digest(content: str) -> str:
@@ -82,7 +101,6 @@ def content_digest(content: str) -> str:
 
 # ── 렌더 ────────────────────────────────────────────────────────────────
 def render_passwd(
-    device_hashes: Mapping[str, str],
     *,
     server_username: str | None = None,
     server_password: str | None = None,
@@ -90,10 +108,7 @@ def render_passwd(
     test_username: str | None = None,
     test_password: str | None = None,
 ) -> str:
-    """passwd 파일 전체 내용. DB 가 정본이고 파일은 항상 통째로 재생성한다.
-
-    부분 수정(기존 파일 읽어서 병합)을 안 하는 이유: 파일과 DB 가 어긋난 상태가
-    조용히 굳는 것이 최악이라서다.
+    """passwd 파일 전체 내용 — 서버 계정 + (켜 둔 동안) 공용 시험 계정. 항상 통째로 재생성.
 
     키워드 인자는 테스트용 오버라이드다. 운영 경로는 settings 를 그대로 쓴다.
     """
@@ -104,20 +119,17 @@ def render_passwd(
     test_password = settings.mqtt_test_password if test_password is None else test_password
 
     lines = [
-        "# 자동 생성 파일 — 손대지 말 것. 정본은 서버 DB 다.",
-        "# 백엔드가 계정 import/삭제/기동 때마다 통째로 다시 만든다 (app/core/mqtt_accounts.py).",
+        "# 자동 생성 파일 — 손대지 말 것. 백엔드가 기동 때·5분마다 통째로 다시 만든다",
+        "# (app/core/mqtt_accounts.py). go-auth files 백엔드 형식. 단말 계정은 여기 없다(HMAC).",
     ]
     if server_username and server_password:
-        lines.append(f"{server_username}:{mosquitto_hash(server_password)}")
+        lines.append(f"{server_username}:{goauth_hash(server_username, server_password)}")
     else:
         log.warning("MQTT_PASSWORD 미설정 — 서버 계정 없이 passwd 를 만든다 (백엔드가 접속 불가)")
 
-    # 1차 공용 계정. 2차 합격 기준 1번(공용 계정 거부)을 만족하려면 꺼야 한다.
+    # 1차 공용 계정. 전환 순서 5(사양서 §1.1.2.2)에서 MQTT_TEST_ACCOUNT_ENABLED=false 로 끈다.
     if test_enabled and test_username and test_password:
-        lines.append(f"{test_username}:{mosquitto_hash(test_password)}")
-
-    for uuid in sorted(device_hashes):
-        lines.append(f"{uuid}:{device_hashes[uuid]}")
+        lines.append(f"{test_username}:{goauth_hash(test_username, test_password)}")
     return "\n".join(lines) + "\n"
 
 
@@ -128,11 +140,10 @@ def render_acl(
     test_enabled: bool | None = None,
     test_username: str | None = None,
 ) -> str:
-    """aclfile 전체 내용 — 사양서 §1.1.2.2 그대로.
+    """aclfile 전체 내용 — 서버 계정(+공용 시험 계정) 의 `iotlight/#` readwrite 뿐.
 
-    `%u` 가 username(=UUID)으로 치환되므로 단말마다 블록을 만들 필요가 없다. 단말 수가
-    1만이어도 파일은 이 몇 줄이다. 5차 그룹 topic 은 `group/#` 읽기를 전 단말에 열고
-    실행은 단말이 자기 grp 목록으로 거른다(사양서 결정).
+    pattern 줄을 넣지 않는다. 단말 ACL 은 go-auth http 백엔드가 `/internal/mqtt/acl` 로
+    묻고, 그 답은 app/core/mqtt_acl.py 가 사양서 표대로 낸다.
     """
     root = settings.mqtt_topic_root if root is None else root
     server_username = settings.mqtt_username if server_username is None else server_username
@@ -140,8 +151,8 @@ def render_acl(
     test_username = settings.mqtt_test_username if test_username is None else test_username
 
     lines = [
-        "# 자동 생성 파일 — 손대지 말 것. 정본은 서버 DB 다.",
-        "# 백엔드가 계정 import/삭제/기동 때마다 통째로 다시 만든다 (app/core/mqtt_accounts.py).",
+        "# 자동 생성 파일 — 손대지 말 것. 백엔드가 기동 때·5분마다 통째로 다시 만든다",
+        "# (app/core/mqtt_accounts.py). 단말 ACL 은 여기 없다 — /internal/mqtt/acl 이 답한다.",
         "",
         "# 서버 계정 — cmd/config 발행은 여기서만 한다.",
         f"user {server_username}",
@@ -150,62 +161,12 @@ def render_acl(
     ]
     if test_enabled:
         lines += [
-            "# 1차 공용 계정 (MQTT_TEST_ACCOUNT_ENABLED=true 일 때만). 2차 합격 전 제거.",
+            "# 1차 공용 계정 (MQTT_TEST_ACCOUNT_ENABLED=true 일 때만). 단말 HMAC 전환 뒤 제거.",
             f"user {test_username}",
             f"topic readwrite {root}/#",
             "",
         ]
-    lines += [
-        "# 단말별 topic. %u = username = UUID 24자리 (비밀번호로 증명된 값).",
-        f"pattern write {root}/device/%u/register",
-        f"pattern write {root}/device/%u/status",
-        f"pattern write {root}/device/%u/result",
-        f"pattern write {root}/device/%u/event",
-        f"pattern read  {root}/device/%u/cmd",
-        f"pattern read  {root}/device/%u/config",
-        f"pattern read  {root}/group/#",
-        f"pattern read  {root}/all/cmd",
-    ]
     return "\n".join(lines) + "\n"
-
-
-# ── CSV import ──────────────────────────────────────────────────────────
-@dataclass
-class CsvParseResult:
-    accounts: dict[str, str]
-    errors: list[str]
-
-
-def parse_accounts_csv(content: str) -> CsvParseResult:
-    """`uuid,password` CSV → {uuid: 평문}. 헤더 행은 있어도 되고 없어도 된다.
-
-    같은 uuid 가 두 번 나오면 뒤의 것이 이긴다(도구가 재발급한 경우). uuid 는 대문자로
-    접는다 — 도구가 소문자로 뽑아도 topic/Client ID 는 대문자다.
-    """
-    accounts: dict[str, str] = {}
-    errors: list[str] = []
-    reader = csv.reader(io.StringIO(content))
-    for lineno, row in enumerate(reader, start=1):
-        if not row or all(not cell.strip() for cell in row):
-            continue
-        if len(row) < 2:
-            errors.append(f"{lineno}행: 열이 2개가 아닙니다")
-            continue
-        uuid, password = row[0].strip().upper(), row[1].strip()
-        if lineno == 1 and uuid.lower() == "uuid":
-            continue  # 헤더
-        if not UUID_RE.match(uuid):
-            errors.append(f"{lineno}행: UUID 형식 아님 ({row[0].strip()!r})")
-            continue
-        if not password:
-            errors.append(f"{lineno}행: 비밀번호가 비었습니다")
-            continue
-        if ":" in password or any(ch.isspace() for ch in password):
-            # passwd 파일 구분자와 충돌하거나 mosquitto 가 잘라 읽는다.
-            errors.append(f"{lineno}행: 비밀번호에 ':' 나 공백을 쓸 수 없습니다")
-            continue
-        accounts[uuid] = password
-    return CsvParseResult(accounts=accounts, errors=errors)
 
 
 # ── 내보내기 ────────────────────────────────────────────────────────────
@@ -219,7 +180,7 @@ class ExportResult:
 
 
 def _export_file(target: Path, content: str, label: str) -> bool:
-    """공유 볼륨에 원자적으로 쓴다. 실패는 로그만 — 정본은 DB 다.
+    """공유 볼륨에 원자적으로 쓴다. 실패는 로그만.
 
     같은 디렉터리에 임시 파일 → os.replace. 감시 루프가 반쯤 쓴 파일을 설치하는 일이
     없게 한다. 바이트 그대로 쓴다(개행 변환 없음) — 감시 루프의 md5 와 같아야 한다.
@@ -238,26 +199,23 @@ def _export_file(target: Path, content: str, label: str) -> bool:
         log.info("mosquitto %s 내보냄 → %s", label, target)
         return True
     except OSError:
-        log.exception("mosquitto %s 내보내기 실패 (%s) — DB 는 정상, 다음 내보내기 때 재시도",
-                      label, target)
+        log.exception("mosquitto %s 내보내기 실패 (%s) — 다음 내보내기 때 재시도", label, target)
         return False
 
 
-def export_all(device_hashes: Mapping[str, str]) -> ExportResult:
+def export_all() -> ExportResult:
     """passwd + aclfile 을 한 번에 내보낸다. 둘 중 하나만 갱신되는 상태를 만들지 않는다."""
     passwd_path = settings.mosquitto_passwd_export
     acl_path = settings.mosquitto_acl_export
     if not passwd_path or not acl_path:
         return ExportResult(enabled=False)
 
-    passwd = render_passwd(device_hashes)
+    passwd = render_passwd()
     acl = render_acl()
     result = ExportResult(
         enabled=True, passwd_md5=content_digest(passwd), acl_md5=content_digest(acl)
     )
-    result.passwd_ok = _export_file(
-        Path(passwd_path), passwd, f"passwd(단말 {len(device_hashes)}대)"
-    )
+    result.passwd_ok = _export_file(Path(passwd_path), passwd, "passwd(server 계정)")
     result.acl_ok = _export_file(Path(acl_path), acl, "aclfile")
     return result
 
@@ -322,8 +280,6 @@ async def wait_acl_applied(
     """내보낸 aclfile 을 브로커가 읽어 들일 때까지 기다린다. 적용되면 True.
 
     적용 보고 파일이 아예 없으면(보고를 안 하는 감시 루프·개발 환경) 기다리지 않는다.
-    시간 안에 안 오면 경고만 남기고 False — 요청을 실패시킬 일은 아니다. 호출부는
-    응답에 `acl_applied` 로 실어 운영자가 알게 한다.
     """
     timeout = settings.acl_apply_timeout_sec if timeout is None else timeout
     marker = acl_applied_path()
@@ -338,8 +294,3 @@ async def wait_acl_applied(
             log.warning("브로커 aclfile 적용 확인 %.1f초 초과 (기대 md5=%s)", timeout, expected_md5)
             return False
         await asyncio.sleep(interval)
-
-
-def uuids_of(rows: Iterable[tuple[str, str | None]]) -> dict[str, str]:
-    """(uuid, hash) 행 → 해시가 있는 것만 dict."""
-    return {uuid: h for uuid, h in rows if h}

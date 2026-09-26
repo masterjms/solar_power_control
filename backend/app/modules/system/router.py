@@ -13,11 +13,13 @@ from app.config import settings
 from app.core import ids
 from app.core.metrics import metrics
 from app.db import get_db
-from app.modules.deps import get_buffer, get_config_sync, get_connection
+from app.modules.deps import get_broker_log, get_buffer, get_config_sync, get_connection
+from app.modules.mqtt_auth.router import active_key_ids
 from app.mqtt.config_sync import ConfigSyncQueue
 from app.mqtt.connection import MqttConnection
 from app.mqtt.telemetry_buffer import TelemetryBuffer
 from app.tasks import daily_rollup, partitions
+from app.tasks.broker_log import BrokerLogTail
 
 router = APIRouter(tags=["system"])
 
@@ -28,6 +30,7 @@ async def health(
     conn: MqttConnection = Depends(get_connection),
     buffer: TelemetryBuffer = Depends(get_buffer),
     config_sync: ConfigSyncQueue = Depends(get_config_sync),
+    broker_log: BrokerLogTail = Depends(get_broker_log),
 ) -> dict[str, Any]:
     """컨테이너 healthcheck 가 부른다. DB 가 죽어도 200 을 주되 db_ok=false 로 표시한다 —
     DB 장애 때 백엔드까지 재시작되면 버퍼에 남은 것과 MQTT 세션을 같이 잃는다."""
@@ -44,6 +47,11 @@ async def health(
         "register_queue": config_sync.pending_count,
         "telemetry_dropped": metrics.telemetry_dropped,
         "flush_failures": metrics.flush_failures,
+        #: 태스크가 살아 있고 로그 파일을 찾았다. 경로가 비어 있으면(개발 PC) false.
+        "broker_log_tail": broker_log.alive,
+        #: 활성 HMAC 키 ID 만(값은 절대 안 나간다).
+        "hmac_keys": active_key_ids(),
+        "test_account_enabled": settings.mqtt_test_account_enabled,
         "env": settings.app_env,
     }
 
@@ -54,11 +62,13 @@ async def get_metrics(
     conn: MqttConnection = Depends(get_connection),
     buffer: TelemetryBuffer = Depends(get_buffer),
     config_sync: ConfigSyncQueue = Depends(get_config_sync),
+    broker_log: BrokerLogTail = Depends(get_broker_log),
 ) -> dict[str, Any]:
     snapshot = metrics.snapshot(
         buffer_pending=buffer.pending_count,
         register_queue=config_sync.pending_count,
         mqtt_connected=conn.is_connected,
+        broker_log_tail=broker_log.alive,
     )
     try:
         current = await ids.current_cmd_seq(db)

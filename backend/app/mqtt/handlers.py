@@ -1,30 +1,37 @@
-"""단말 → 서버 메시지 처리 (사양서 §1.1.4~§1.1.7, §16).
+"""단말 → 서버 메시지 처리 (사양서 §1.1.4~§1.1.7, §3, §16).
 
 토픽 kind 로 1차 분기, payload `type` 으로 2차 분기한다.
 
-    register  REGISTER    device upsert(보강 정보) + device_event + cv 다르면 CONFIG_SET 큐
-    status    TM          TelemetryBuffer 에만 넣는다 (DB 를 만지지 않는다)
+    register  REGISTER    device upsert(보강 정보, 새 UUID 는 PENDING) + device_event
+                          → REGISTER_ACK(retain) **항상** 큐 (RETIRED 였으면 PENDING 으로 되돌린 뒤)
+                          → ACTIVE 이고 cv 다르면 CONFIG_SET 큐 (S-10, S-13)
+    status    TELEMETRY   TelemetryBuffer 에만 넣는다 (DB 를 만지지 않는다). "TM"/`t:TM` 도 받음
     result    PONG        device_event + command_ack + command 갱신
-              CONFIG_ACK  device_event. OK 면 그걸로 끝 — 진실은 Telemetry 의 cv echo 다.
-                          RANGE 면 경고(서버가 범위 밖 값을 보냈다는 뜻이라 버그다)
+              CONFIG_ACK  device_event. OK → cv_device/ti_device/ka_device 반영(cv 일치 때만)
+                          RANGE → 경고(서버 버그). STATE → 단말이 승인 전이라 함: DB 가 ACTIVE 면
+                          REGISTER_ACK 재발행. FLASH → 쿨다운 해제(다음 송신 때 재전송)
               CMD_ACK     5차. 지금은 device_event 만
-    event     LWT         online=false, offline_at. last_seen_at 은 건드리지 않는다 —
-                          브로커가 대신 보내는 사망 통지를 "방금 통신함"으로 적으면
-                          죽은 단말이 온라인으로 잡힌다. 버퍼의 대기 TM 도 버린다
+    event     LWT         online=false (presence.apply_presence — 브로커 로그 경로와 같은 함수).
+                          last_seen_at 은 건드리지 않는다 — 브로커가 대신 보내는 사망 통지를
+                          "방금 통신함"으로 적으면 죽은 단말이 온라인으로 잡힌다
               EV          device_event(kind=ERR)
 
 공통 검증:
     · topic uuid 형식 위반 → malformed_topic, 무시
     · JSON 아님 / dict 아님 → malformed_payload, 무시
     · payload.uuid 가 있고 topic uuid 와 다르면 → uuid_mismatch, 무시 (사양서 §1.1.4)
-    · `t` 키(1차 펌웨어) → `type` 으로 정규화하고 uuid 당 한 번 로그
+    · `t` 키(1.0.0 펌웨어) → `type` 으로 정규화하고 uuid 당 한 번 로그
 
 result/event 는 메시지 1건 = 트랜잭션 1개다. 드물고(명령에 대한 응답), 이력 행이라
-합칠 수 없다. TM 만 버퍼를 탄다.
+합칠 수 없다. TELEMETRY 만 버퍼를 탄다.
+
+서버 → 단말 발행은 전부 ConfigSyncQueue(토큰 버킷)를 거친다 — 브로커 재시작 뒤 1만 대
+REGISTER 폭주에서 응답을 초당 상한으로 누른다(사양서 §1.1.10 "즉시" 는 50초 안이면 된다).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import hashlib
 import json
@@ -35,17 +42,23 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import EventKind, MsgType, TopicKind
+from app.constants import DeviceState, EventKind, MsgType, TopicKind
+from app.core import presence
+from app.core.effective import effective_ka_sql, effective_ti_sql
 from app.core.metrics import metrics
 from app.db import session_scope
 from app.models.command import Command, CommandAck
 from app.models.device import Device
 from app.models.event import DeviceEvent
 from app.mqtt import topics
-from app.mqtt.config_sync import ConfigJob, ConfigSyncQueue
+from app.mqtt.config_decide import CONFIG_COLUMNS, DeviceConfigRow, decide_and_enqueue
+from app.mqtt.config_sync import ConfigSyncQueue, register_ack_job_for
 from app.mqtt.telemetry_buffer import TelemetryBuffer
 
 log = logging.getLogger(__name__)
+
+#: status 토픽에서 Telemetry 로 받아들이는 type 값. 1.1.0+ "TELEMETRY", 초기 2차 "TM".
+TELEMETRY_TYPES = frozenset({MsgType.TELEMETRY.value, MsgType.TM.value})
 
 
 # ── 순수 함수 ────────────────────────────────────────────────────────────
@@ -61,9 +74,9 @@ def parse_payload(raw: bytes) -> dict[str, Any] | None:
 
 
 def normalize_type(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """1차 펌웨어의 `"t":"TM"` 을 `"type":"TM"` 으로 맞춘다. (정규화된 dict, legacy 여부).
+    """1.0.0 펌웨어의 `"t":"TM"` 을 `"type":"TM"` 으로 맞춘다. (정규화된 dict, legacy 여부).
 
-    2차 펌웨어 확정 후 `t` 를 떼어낼 때 이 함수만 지우면 된다(docs/00 §2 2차).
+    현장 배포 전 단말이 `type` 만 보내도록 정리되면 이 함수만 지우면 된다.
     """
     if "type" in data:
         return data, False
@@ -72,6 +85,10 @@ def normalize_type(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         normalized["type"] = normalized.pop("t")
         return normalized, True
     return data, False
+
+
+def is_telemetry_type(msg_type: str) -> bool:
+    return msg_type in TELEMETRY_TYPES
 
 
 def dedup_key(uuid: str, kind: str, marker: Any, payload: dict[str, Any]) -> str:
@@ -103,7 +120,7 @@ def _text(value: Any) -> str | None:
 async def _touch_device(
     db: AsyncSession, uuid: str, *, seen_at: dt.datetime | None, **values: Any
 ) -> None:
-    """단말 행 upsert. 처음 보는 uuid 면 여기서 생긴다(state 는 DB 기본값 ACTIVE).
+    """단말 행 upsert. 처음 보는 uuid 면 여기서 생긴다(state 는 DB 기본값 PENDING).
 
     seen_at 을 None 으로 주면 last_seen_at 을 건드리지 않는다 — LWT 가 그렇다.
     """
@@ -159,7 +176,7 @@ class Dispatcher:
         if legacy and uuid not in self._legacy_t:
             self._legacy_t.add(uuid)
             metrics.legacy_t_devices = len(self._legacy_t)
-            log.info("1차 펌웨어(`t` 키) 단말: %s — 2차 펌웨어 확정 후 제거 예정", uuid)
+            log.info("1.0.0 펌웨어(`t` 키) 단말: %s", uuid)
 
         payload_uuid = data.get("uuid")
         if payload_uuid is not None and str(payload_uuid).upper() != uuid:
@@ -173,7 +190,7 @@ class Dispatcher:
         now = dt.datetime.now(dt.timezone.utc)
 
         if kind is TopicKind.STATUS:
-            if msg_type == MsgType.TM.value and self._buffer is not None:
+            if is_telemetry_type(msg_type) and self._buffer is not None:
                 self._buffer.offer(uuid, payload=data, received_at=now)
             else:
                 metrics.unknown_type += 1
@@ -201,7 +218,8 @@ class Dispatcher:
         for key in ("fw", "device_model", "modem_model", "imei", "iccid", "msisdn"):
             if key in data:
                 values[key] = _text(data[key])
-        for key, column in (("cv", "cv_device"), ("ss", "ss_device"), ("ti", "ti_device")):
+        for key, column in (("cv", "cv_device"), ("ss", "ss_device"),
+                            ("ti", "ti_device"), ("ka", "ka_device")):
             if key in data and _int(data[key]) is not None:
                 values[column] = _int(data[key])
         await _touch_device(db, uuid, seen_at=now, **values)
@@ -209,26 +227,50 @@ class Dispatcher:
         await _insert_event(
             db, uuid=uuid, kind=EventKind.REGISTER, payload=data, key=None, received_at=now
         )
+        # REGISTER 는 살아 있는 연결로만 올 수 있다. 브로커 로그 tail 이 꺼져 있거나(개발 PC)
+        # 재시작으로 줄을 놓쳤어도 여기서 online 이 맞춰진다. 플래그가 이미 true 면 no-op.
+        await presence.apply_presence(db, {uuid: True}, now, source="register")
 
-        # 2차: 승인 게이트 없음. cv 가 실려 왔고 서버 의도값과 다르면 CONFIG_SET.
-        # 3차: 여기서 REGISTER_ACK(state) 를 항상 보내고, ACTIVE 일 때만 CONFIG_SET.
-        reported_cv = _int(data.get("cv"))
-        if reported_cv is None or self._config_sync is None:
+        row = (await db.execute(
+            select(*CONFIG_COLUMNS, Device.site, Device.state_reason).where(Device.uuid == uuid)
+        )).first()
+        if row is None:  # 방금 upsert 했으니 없을 수 없다
             return
-        row = (
+        cfg = DeviceConfigRow(*row[:len(CONFIG_COLUMNS)])
+        site, state_reason = row[len(CONFIG_COLUMNS)], row[len(CONFIG_COLUMNS) + 1]
+
+        # RETIRED 단말이 다시 REGISTER 를 보냈다 = 같은 보드를 다른 곳에 재설치했다(docs/05
+        # 상태 전이 표). 빈 retain 상태라 승인 절차를 처음부터 다시 밟는다 → PENDING.
+        state = cfg.state
+        if state == DeviceState.RETIRED.value:
             await db.execute(
-                select(Device.cv_server, Device.ti_server, Device.lat, Device.lon)
-                .where(Device.uuid == uuid)
+                update(Device).where(Device.uuid == uuid).values(
+                    state=DeviceState.PENDING.value, state_reason=None, state_changed_at=now,
+                )
             )
-        ).first()
-        if row is not None and row[0] != reported_cv:
-            self._config_sync.offer(ConfigJob(uuid, row[0], row[1], row[2], row[3], "register"))
+            await _insert_event(
+                db, uuid=uuid, kind=EventKind.STATE_CHANGE, key=None, received_at=now,
+                payload={"from": state, "to": DeviceState.PENDING.value, "by": "register"},
+            )
+            log.info("RETIRED 단말 재등록 → PENDING: %s", uuid)
+            state, state_reason = DeviceState.PENDING.value, None
+
+        if self._config_sync is None:
+            return
+        # 1. REGISTER_ACK 는 상태와 무관하게 **항상**, 즉시 (사양서 §3.3, S-7).
+        self._config_sync.offer_register_ack(
+            register_ack_job_for(uuid=uuid, state=state, site=site, reason=state_reason)
+        )
+        # 2. ACTIVE 일 때만 cv 비교 → CONFIG_SET (S-10, S-13). FIFO 라 ACK 뒤에 나간다.
+        await decide_and_enqueue(
+            db, self._config_sync, [dataclasses.replace(cfg, state=state)], reason="register"
+        )
 
     # ── result ──────────────────────────────────────────────────────────
     async def handle_result(
         self, db: AsyncSession, uuid: str, msg_type: str, data: dict[str, Any], now: dt.datetime
     ) -> None:
-        # 결과가 왔다는 건 살아 있다는 뜻이다. 미등록 uuid 면 여기서도 등록된다.
+        # 결과가 왔다는 건 살아 있다는 뜻이다. 미등록 uuid 면 여기서도 등록된다(PENDING).
         await _touch_device(db, uuid, seen_at=now)
 
         if msg_type == MsgType.PONG.value:
@@ -242,26 +284,7 @@ class Dispatcher:
             return
 
         if msg_type == MsgType.CONFIG_ACK.value:
-            cv = _int(data.get("cv"))
-            result = str(data.get("result") or "")
-            await _insert_event(
-                db, uuid=uuid, kind=EventKind.CONFIG_ACK, payload=data,
-                key=dedup_key(uuid, "CONFIG_ACK", cv, data), received_at=now,
-            )
-            if result == "RANGE":
-                # 단말이 거부했다 = 서버가 범위 밖 값을 보냈다. PATCH 검증이 막았어야 한다.
-                metrics.config_ack_range += 1
-                log.warning("CONFIG_ACK RANGE %s cv=%s — 서버가 보낸 값이 범위 밖", uuid, cv)
-            elif result == "OK" and cv is not None:
-                # 단말이 "전부 적용하고 Flash 에 저장" 했다(§1.1.7). ti 는 TM 에 실리지 않아
-                # 다음 REGISTER(재부팅) 전까지 알 길이 없으므로 여기서 서버 의도값을 적는다.
-                # 단, ack 의 cv 가 지금 서버 cv 와 같을 때만 — 늦게 온 옛 ack 로 덮지 않는다.
-                # cv_device 는 다음 TM echo 가 어차피 다시 쓴다.
-                await db.execute(
-                    update(Device)
-                    .where(Device.uuid == uuid, Device.cv_server == cv)
-                    .values(cv_device=cv, ti_device=Device.ti_server, updated_at=func.now())
-                )
+            await self._handle_config_ack(db, uuid, data, now)
             return
 
         if msg_type == MsgType.CMD_ACK.value:
@@ -276,6 +299,63 @@ class Dispatcher:
 
         metrics.unknown_type += 1
         log.warning("result 토픽에 알 수 없는 type=%r (%s)", msg_type, uuid)
+
+    async def _handle_config_ack(
+        self, db: AsyncSession, uuid: str, data: dict[str, Any], now: dt.datetime
+    ) -> None:
+        cv = _int(data.get("cv"))
+        result = str(data.get("result") or "")
+        await _insert_event(
+            db, uuid=uuid, kind=EventKind.CONFIG_ACK, payload=data,
+            key=dedup_key(uuid, "CONFIG_ACK", cv, data), received_at=now,
+        )
+        if result == "OK":
+            metrics.config_ack_ok += 1
+            if cv is None:
+                return
+            # 단말이 "전부 적용하고 Flash 에 저장" 했다(§1.1.7). ti/ka 는 TELEMETRY 에 실리지
+            # 않아 다음 REGISTER(재부팅) 전까지 알 길이 없으므로 여기서 서버 적용값을 적는다.
+            # 단, ack 의 cv 가 지금 서버 cv 와 같을 때만 — 늦게 온 옛 ack 로 덮지 않는다.
+            # cv_device 는 다음 TELEMETRY echo 가 어차피 다시 쓴다.
+            await db.execute(
+                update(Device)
+                .where(Device.uuid == uuid, Device.cv_server == cv)
+                .values(cv_device=cv, ti_device=effective_ti_sql(), ka_device=effective_ka_sql(),
+                        updated_at=func.now())
+            )
+            return
+        if result == "RANGE":
+            # 단말이 거부했다 = 서버가 범위 밖 값을 보냈다. PATCH/프로필 검증이 막았어야 한다.
+            metrics.config_ack_range += 1
+            log.warning("CONFIG_ACK RANGE %s cv=%s — 서버가 보낸 값이 범위 밖", uuid, cv)
+            return
+        if result == "STATE":
+            # 단말은 자기가 승인 전이라고 한다. DB 가 ACTIVE 면 단말이 REGISTER_ACK 를 못 받은
+            # 것(retain 유실·발행 실패)이므로 다시 retain 한다. 다른 상태면 서버가 ACTIVE 전에
+            # CONFIG 를 보낸 것이라 버그다 — 판정이 막았어야 한다.
+            metrics.config_ack_state += 1
+            row = (await db.execute(
+                select(Device.state, Device.site, Device.state_reason).where(Device.uuid == uuid)
+            )).first()
+            if row is not None and row[0] == DeviceState.ACTIVE.value:
+                log.warning("CONFIG_ACK STATE %s 인데 DB 는 ACTIVE — REGISTER_ACK 재발행", uuid)
+                if self._config_sync is not None:
+                    self._config_sync.offer_register_ack(
+                        register_ack_job_for(uuid=uuid, state=row[0], site=row[1], reason=row[2])
+                    )
+            else:
+                log.error("CONFIG_ACK STATE %s (DB state=%s) — ACTIVE 전에 CONFIG 가 나갔다",
+                          uuid, row[0] if row else None)
+            return
+        if result == "FLASH":
+            # Flash 기록 실패, 단말은 이전 값 유지. 같은 CONFIG 를 다시 보내도 된다(§1.1.7) —
+            # 쿨다운을 풀어 다음 송신 때 바로 재전송한다. 반복되면 단말 점검(카운터로 본다).
+            metrics.config_ack_flash += 1
+            log.warning("CONFIG_ACK FLASH %s cv=%s — 다음 송신 때 재전송", uuid, cv)
+            if self._config_sync is not None:
+                self._config_sync.clear_cooldown(uuid)
+            return
+        log.warning("CONFIG_ACK 알 수 없는 result=%r %s cv=%s", result, uuid, cv)
 
     async def _ack_command(
         self, db: AsyncSession, uuid: str, seq: int, result: str, data: dict[str, Any],
@@ -323,11 +403,12 @@ class Dispatcher:
         self, db: AsyncSession, uuid: str, msg_type: str, data: dict[str, Any], now: dt.datetime
     ) -> None:
         if msg_type == MsgType.LWT.value:
-            # 버퍼에 남은 그 단말의 TM 은 버리지 않는다(aircast 와 다른 점). 여기서는 TM 이
-            # 이력이라 한 건도 아깝고, 되살아남 위험도 없다 — TM flush 는 `online` 을 건드리지
-            # 않고 presence 는 "LWT 가 마지막 TM 보다 뒤면 오프라인"으로 판정한다(core/presence.py).
-            # seen_at=None: LWT 는 단말이 아니라 브로커가 보낸다.
-            await _touch_device(db, uuid, seen_at=None, online=False, offline_at=now)
+            # 모뎀은 Will 을 못 넣지만 시뮬레이터·후속 모뎀은 넣을 수 있다(ADR-004). 브로커 로그
+            # 경로와 같은 apply_presence 로 처리한다 — 플래그가 바뀔 때만 OFFLINE 이력.
+            # 버퍼에 남은 그 단말의 TM 은 버리지 않는다(이력이라 한 건도 아깝다). TM flush 는
+            # `online` 을 건드리지 않으므로 늦게 적재된 TM 이 단말을 되살리지 않는다(S2-13).
+            # seen_at 갱신 없음: LWT 는 단말이 아니라 브로커가 보낸다.
+            await presence.apply_presence(db, {uuid: False}, now, source="lwt")
             await _insert_event(
                 db, uuid=uuid, kind=EventKind.LWT, payload=data, key=None, received_at=now
             )

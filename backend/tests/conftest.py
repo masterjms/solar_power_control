@@ -13,5 +13,12 @@ os.environ.setdefault("MQTT_USERNAME", "server")
 os.environ.setdefault("MQTT_PASSWORD", "server-pw")
 os.environ.setdefault("MQTT_TEST_ACCOUNT_ENABLED", "false")
 os.environ.setdefault("DEVICE_ONLINE_FACTOR", "3")
+os.environ.setdefault("PENDING_OFFLINE_SEC", "4200")
 os.environ.setdefault("MOSQUITTO_PASSWD_EXPORT", "")
 os.environ.setdefault("MOSQUITTO_ACL_EXPORT", "")
+os.environ.setdefault("MOSQUITTO_LOG_PATH", "")
+# 사양서 §1.1.2.2 공개 시험 키. 운영 .env 의 K1 이 시험에 섞이지 않게 고정한다.
+os.environ["MQTT_HMAC_KEYS"] = (
+    "TEST:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+)
+os.environ["MQTT_AUTH_SHARED_SECRET"] = ""
