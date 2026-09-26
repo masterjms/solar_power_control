@@ -68,3 +68,41 @@ export function str(v: unknown): string {
   if (typeof v === "boolean") return v ? "true" : "false";
   return String(v);
 }
+
+/** 이벤트 payload 를 kind 별로 사람이 읽을 요약 한 줄로. 모르는 kind 는 JSON 그대로. */
+export function eventSummary(kind: string, payload: unknown): string {
+  const p = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const pick = (keys: string[]) =>
+    keys
+      .filter((k) => p[k] !== undefined && p[k] !== null)
+      .map((k) => `${k}=${typeof p[k] === "object" ? JSON.stringify(p[k]) : String(p[k])}`)
+      .join(" ");
+  switch (kind) {
+    case "REGISTER_ACK": {
+      const s = pick(["state", "site", "reason", "grp", "published"]);
+      return `단말에 발행 ${s}`.trim();
+    }
+    case "STATE_CHANGE": {
+      const from = p.from ?? p.old_state ?? p.prev;
+      const to = p.to ?? p.new_state ?? p.state;
+      const base = from !== undefined || to !== undefined ? `${str(from)} → ${str(to)}` : "";
+      return `${base} ${pick(["site", "reason"])}`.trim() || JSON.stringify(payload);
+    }
+    case "CONFIG_SET":
+      return `서버→단말 ${pick(["cv", "ti", "ka", "lat", "lon", "published", "reason"])}`.trim();
+    case "CONFIG_ACK":
+      return `단말→서버 ${pick(["cv", "result", "ok", "err", "ti", "ka"])}`.trim() || JSON.stringify(payload);
+    case "ONLINE":
+    case "OFFLINE":
+      return `${kind} ${pick(["source", "reason", "at", "ts"])}`.trim();
+    case "REGISTER":
+      return pick(["fw", "cv", "ti", "ka", "ss", "device_model"]) || JSON.stringify(payload);
+    case "PONG":
+      return pick(["seq", "ts"]) || JSON.stringify(payload);
+    case "LOST":
+    case "REBOOT":
+      return pick(["sq", "last_sq", "prev_sq", "gap"]) || JSON.stringify(payload);
+    default:
+      return JSON.stringify(payload);
+  }
+}

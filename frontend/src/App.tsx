@@ -1,34 +1,25 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, Device, Health, errorText } from "./api";
+import { api, DeviceCounts, Health, errorText } from "./api";
 import DeviceList from "./DeviceList";
 import DeviceDetail from "./DeviceDetail";
-import ImportAccounts from "./ImportAccounts";
+import Profiles from "./Profiles";
+import System from "./System";
 
 const REFRESH_MS = 10_000;
 
-type Tab = "devices" | "admin";
+type Tab = "devices" | "profiles" | "system";
 
 function tabFromHash(): Tab {
-  return location.hash === "#admin" ? "admin" : "devices";
-}
-
-/** 전체 단말을 size=500 으로 끝까지 읽어 집계한다(개발용, 규모 커지면 서버 집계 API 로). */
-async function fetchAllDevices(): Promise<Device[]> {
-  const size = 500;
-  const first = await api.listDevices({ page: 1, size });
-  const all = [...first.items];
-  const pages = Math.ceil(first.total / size);
-  for (let p = 2; p <= pages; p++) {
-    const r = await api.listDevices({ page: p, size });
-    all.push(...r.items);
-  }
-  return all;
+  if (location.hash === "#profiles") return "profiles";
+  if (location.hash === "#system") return "system";
+  return "devices";
 }
 
 export default function App() {
   const [tab, setTab] = useState<Tab>(tabFromHash);
   const [health, setHealth] = useState<Health | null>(null);
-  const [devices, setDevices] = useState<Device[]>([]);
+  const [counts, setCounts] = useState<DeviceCounts | null>(null);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -39,11 +30,13 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  /** 요약: /health 1회 + 목록 API 1회(size=1, counts 만 쓴다). */
   const refresh = useCallback(async () => {
     try {
-      const [h, d] = await Promise.all([api.health(), fetchAllDevices()]);
+      const [h, l] = await Promise.all([api.health(), api.listDevices({ page: 1, size: 1 })]);
       setHealth(h);
-      setDevices(d);
+      setCounts(l.counts);
+      setTotal(l.total);
       setError(null);
     } catch (e) {
       setError(errorText(e));
@@ -56,32 +49,40 @@ export default function App() {
     return () => clearInterval(id);
   }, [refresh, tick]);
 
-  const online = devices.filter((d) => d.is_online).length;
-  const byState: Record<string, number> = {};
-  for (const d of devices) byState[d.state] = (byState[d.state] ?? 0) + 1;
+  const pending = counts?.PENDING ?? 0;
 
   return (
     <>
       <header>
         <nav>
-          <a href="#devices">장치</a>
-          <a href="#admin">관리</a>
+          <a href="#devices" className={tab === "devices" ? "cur" : ""}>단말</a>
+          <a href="#profiles" className={tab === "profiles" ? "cur" : ""}>프로필</a>
+          <a href="#system" className={tab === "system" ? "cur" : ""}>시스템</a>
         </nav>
-        <span>
-          전체 <b>{devices.length}</b> / 온라인 <b className="on">{online}</b> / 오프라인{" "}
-          <b className="off">{devices.length - online}</b>
+        <span className={pending > 0 ? "pending-badge" : ""}>
+          승인 대기 <b>{pending}</b>
         </span>
         <span>
-          {Object.entries(byState)
-            .sort()
-            .map(([s, n]) => `${s} ${n}`)
-            .join(" · ") || "-"}
+          전체 <b>{total}</b> / 온라인 <b className="on">{counts?.online ?? "-"}</b> / 오프라인{" "}
+          <b className="off">{counts ? total - counts.online : "-"}</b>
+        </span>
+        <span>
+          {counts
+            ? (["ACTIVE", "SUSPENDED", "REJECTED", "RETIRED"] as const).map((s) => `${s} ${counts[s]}`).join(" · ")
+            : "-"}
         </span>
         {health ? (
           <span>
             mqtt <b className={health.mqtt_connected ? "on" : "warn"}>{String(health.mqtt_connected)}</b>{" "}
             db <b className={health.db_ok ? "on" : "warn"}>{String(health.db_ok)}</b>{" "}
+            broker_log <b className={health.broker_log_tail ? "on" : "warn"}>{String(health.broker_log_tail)}</b>{" "}
+            hmac <b>{health.hmac_keys?.length ? health.hmac_keys.join(",") : "없음"}</b>{" "}
             dropped <b className={health.telemetry_dropped ? "warn" : ""}>{health.telemetry_dropped}</b>{" "}
+            {health.test_account_enabled && (
+              <b className="warn" title="MQTT_TEST_ACCOUNT_ENABLED — 1차 공용 시험 계정(solarlte-test)이 아직 열려 있음">
+                공용 시험계정 열림
+              </b>
+            )}{" "}
             <small>({health.env})</small>
           </span>
         ) : (
@@ -91,26 +92,31 @@ export default function App() {
         {error && <span className="error">{error}</span>}
       </header>
 
-      {tab === "admin" ? (
+      {tab === "profiles" ? (
         <div className="right">
-          <ImportAccounts onDone={refresh} />
+          <Profiles onChanged={refresh} />
+        </div>
+      ) : tab === "system" ? (
+        <div className="right">
+          <System />
         </div>
       ) : (
         <main>
           <section className="left">
-            <DeviceList devices={devices} selected={selected} onSelect={setSelected} />
+            <DeviceList tick={tick} selected={selected} onSelect={setSelected} />
           </section>
           <section className="right">
             {selected ? (
               <DeviceDetail
                 uuid={selected}
+                onChanged={refresh}
                 onDeleted={() => {
                   setSelected(null);
                   refresh();
                 }}
               />
             ) : (
-              <p>왼쪽 목록에서 단말을 선택하세요.</p>
+              <p>왼쪽 목록에서 단말을 선택하세요. 승인 대기(PENDING) 단말이 맨 위에 옵니다.</p>
             )}
           </section>
         </main>

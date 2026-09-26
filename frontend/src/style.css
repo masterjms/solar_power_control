@@ -19,3 +19,21 @@ dd { margin: 0; font-family: monospace; }
 fieldset { margin: 6px 0; }
 .toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
 .on { color: #090; } .off { color: #999; }
+.warn { color: #b00; }
+nav a.cur { font-weight: bold; text-decoration: none; }
+.pending-badge { background: #fff3c4; border: 1px solid #e0b000; padding: 1px 6px; }
+tr.pending { background: #fff8dc; }
+tr.pending.selected { background: #ffe9a8; }
+fieldset.pending { border-color: #e0b000; background: #fffdf3; }
+.badge { padding: 0 5px; border: 1px solid #999; border-radius: 3px; font-size: 12px; }
+.st-PENDING { color: #a06000; font-weight: bold; }
+.st-ACTIVE { color: #090; }
+.st-SUSPENDED { color: #a06000; }
+.st-REJECTED, .st-RETIRED { color: #888; }
+button.primary { font-weight: bold; }
+button.danger { color: #b00; }
+.recv { margin-top: 4px; padding: 4px 6px; border-left: 3px solid #999; background: #f7f7f7; }
+.ev-REGISTER_ACK, .ev-STATE_CHANGE, .ev-CONFIG_SET { color: #06c; }
+.ev-CONFIG_ACK, .ev-PONG, .ev-ONLINE { color: #090; }
+.ev-OFFLINE, .ev-LWT, .ev-LOST, .ev-ERR { color: #b00; }
+pre.mono { margin: 0; font-size: 12px; }
