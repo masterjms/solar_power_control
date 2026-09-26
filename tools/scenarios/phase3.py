@@ -360,7 +360,7 @@ async def s3_08(ctx: Ctx) -> None:
         await ctx.wait_until(lambda d=d: d.state == "PENDING", timeout=20, what=f"{d.uuid[-4:]} PENDING")
         r = await ctx.s.rest.patch_config(d.uuid, profile_id=pid)
         ctx.check(r.status_code < 300 and r.json().get("published") is False, f"PENDING 중 프로필 배정 published=false ({r.text[:80]})")
-    await approve(ctx, devices, site="P")
+    await approve(ctx, devices, site="P", override=False)  # 프로필 값이 내려와야 하므로 override 없음
     for d in devices:
         cfg = await wait_config_set(ctx, d, count=1, what=f"{d.uuid[-4:]} 승인 뒤 CONFIG_SET")
         check_config_set_shape(ctx, cfg, ti=900, ka=300, lat_lon=False)

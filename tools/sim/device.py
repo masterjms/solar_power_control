@@ -254,18 +254,19 @@ def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-def validate_config_set(payload: dict[str, Any]) -> str | None:
+def validate_config_set(payload: dict[str, Any], *, ti_min: int = TI_MIN, ka_min: int = KA_MIN) -> str | None:
     """CONFIG_SET 항목 검증(§1.1.7). 문제가 있으면 항목 이름, 없으면 None.
 
     `cv` 0~65535, `ti` 60~3600, `ka` 60~1800, `lat`/`lon` WGS84 범위. 5차 `grp` 는 REGISTER_ACK 로
     오는 것이 사양이지만(§3.10.9) 시뮬레이터는 CONFIG_SET 에 실려 와도 받아 둔다(형식만 검사).
+    `ti_min`/`ka_min` 은 시험용 하한(백엔드 `CONFIG_TI_MIN_SEC`/`CONFIG_KA_MIN_SEC` 와 짝) — 기본은 사양값.
     """
     cv = payload.get("cv")
     if not _is_int(cv) or not (CV_MIN <= cv <= CV_MAX):
         return "cv"
-    if "ti" in payload and (not _is_int(payload["ti"]) or not (TI_MIN <= payload["ti"] <= TI_MAX)):
+    if "ti" in payload and (not _is_int(payload["ti"]) or not (ti_min <= payload["ti"] <= TI_MAX)):
         return "ti"
-    if "ka" in payload and (not _is_int(payload["ka"]) or not (KA_MIN <= payload["ka"] <= KA_MAX)):
+    if "ka" in payload and (not _is_int(payload["ka"]) or not (ka_min <= payload["ka"] <= KA_MAX)):
         return "ka"
     for key in ("lat", "lon"):
         if key in payload and (not isinstance(payload[key], (int, float)) or isinstance(payload[key], bool)):
@@ -354,6 +355,7 @@ class SimDevice:
       silent_results    result 를 아예 보내지 않는다(무응답 단말)
       register_on_connect False 면 접속 직후 REGISTER 를 건너뛴다(유실 흉내)
       time_scale        재전송·재접속 대기를 이 배수로 줄인다(시험용). `ti`/`ka` 에는 적용하지 않는다
+      ti_min, ka_min    CONFIG_SET 검증 하한(기본 60 = 사양). 시나리오는 1 로 두어 ti=5 같은 시험값을 RANGE 로 거부하지 않는다
     """
 
     def __init__(
@@ -387,6 +389,8 @@ class SimDevice:
         register_on_connect: bool = True,
         time_scale: float = 1.0,
         reconnect_jitter: float = 0.0,
+        ti_min: int = TI_MIN,
+        ka_min: int = KA_MIN,
         seed: int | None = None,
         on_message: Callable[["SimDevice", str, bytes], Awaitable[None] | None] | None = None,
     ) -> None:
@@ -429,6 +433,7 @@ class SimDevice:
         self.register_on_connect = register_on_connect
         self.time_scale = max(time_scale, 1e-6)
         self.reconnect_jitter = reconnect_jitter
+        self.ti_min, self.ka_min = ti_min, ka_min
         self.on_message = on_message
 
         seed_val = seed if seed is not None else int(uuid[-8:], 16)
@@ -576,7 +581,7 @@ class SimDevice:
             self.stats.config_ack_state += 1
             log.info("[%s] CONFIG_SET 거부(STATE, 승인 상태 %s)", self.uuid, self.gate.state)
             return self._config_ack("STATE")
-        problem = validate_config_set(payload)
+        problem = validate_config_set(payload, ti_min=self.ti_min, ka_min=self.ka_min)
         if problem is not None:
             self.stats.config_ack_range += 1
             log.info("[%s] CONFIG_SET 거부(RANGE:%s) cv 유지 %d", self.uuid, problem, self.cv)

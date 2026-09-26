@@ -82,6 +82,15 @@ def test_flash_fail_next_replies_flash_and_keeps_values():
     assert ack["result"] == "OK" and d.cv == 3 and d.ti == 300 and d.ka == 600
 
 
+def test_ti_min_ka_min_lower_the_range_for_tests_only():
+    d = make(ti_min=1, ka_min=1)
+    assert d.handle_config_set({"cv": 1, "ti": 5, "ka": 10})["result"] == "OK" and d.ti == 5 and d.ka == 10
+    assert d.handle_config_set({"cv": 2, "ti": 0, "ka": 10})["result"] == "RANGE"
+    assert d.handle_config_set({"cv": 2, "ti": 5, "ka": 0})["result"] == "RANGE"
+    assert make().handle_config_set({"cv": 1, "ti": 5, "ka": 300})["result"] == "RANGE"  # 기본은 사양 하한 60
+    assert validate_config_set({"cv": 1, "ti": 5, "ka": 5}, ti_min=1, ka_min=1) is None
+
+
 def test_flash_does_not_mask_range():
     d = make(flash_fail_next=1)
     assert d.handle_config_set({"cv": 1, "ti": 10, "ka": 300})["result"] == "RANGE"

@@ -65,12 +65,26 @@ async def wait_rows(ctx: Ctx, uuids: list[str], *, timeout: float = 60.0, what: 
                          what=what or f"device 행 {len(uuids)}개 생성(REGISTER 처리)")
 
 
+async def _override_config(ctx: Ctx, uuid: str, ti: int, ka: int) -> None:
+    """승인 전에 단말 시험값(ti/ka)을 서버 override 로 걸어 둔다.
+
+    승인 뒤 서버는 프로필 기본값(600/300)을 CONFIG_SET 으로 내려 시뮬레이터 주기를 바꿔 버린다(서버가 맞다).
+    PENDING 중 PATCH 는 `published=false` 로 저장만 되고 ACTIVE 뒤 첫 TM 때 이 값으로 CONFIG_SET 이 나간다.
+    백엔드 하한은 `CONFIG_TI_MIN_SEC`/`CONFIG_KA_MIN_SEC`(로컬 compose 1) — 시뮬레이터 `ti_min`/`ka_min` 과 짝.
+    """
+    r = await ctx.s.rest.patch_config(uuid, ti_override=ti, ka_override=ka)
+    if r.status_code >= 400:
+        raise Fail(f"override 실패 {uuid} (ti={ti}, ka={ka}): {_describe(r)} — 백엔드 CONFIG_TI_MIN_SEC/CONFIG_KA_MIN_SEC 확인")
+
+
 async def approve(ctx: Ctx, devices: list[SimDevice], *, site: str | None = None, timeout: float = 30.0,
-                  concurrency: int = 20) -> None:
+                  concurrency: int = 20, override: bool = True) -> None:
     """2cha 단말을 ACTIVE 로 승인한다 — `PATCH /api/devices/{uuid}/state {"state":"ACTIVE"}` (docs/05).
 
-    REGISTER 로 행이 생긴 뒤에만 승인할 수 있다(PATCH 는 없는 uuid 에 404). 승인 뒤 단말이 retain/실시간
-    REGISTER_ACK ACTIVE 를 받을 때까지 기다린다. 게이트가 꺼진 단말(1cha)은 건너뛴다.
+    REGISTER 로 행이 생긴 뒤에만 승인할 수 있다(PATCH 는 없는 uuid 에 404). `override=True`(기본)면 그 전에
+    `PATCH /config {ti_override: d.ti, ka_override: d.ka}` 로 시험값을 걸어 승인 뒤 CONFIG_SET 이 시뮬레이터 주기를
+    프로필 기본값으로 바꾸지 않게 한다. 승인 뒤 단말이 retain/실시간 REGISTER_ACK ACTIVE 를 받을 때까지 기다린다.
+    게이트가 꺼진 단말(1cha)은 건너뛴다.
     """
     gated = [d for d in devices if d.gate.enabled]
     if not gated:
@@ -80,6 +94,8 @@ async def approve(ctx: Ctx, devices: list[SimDevice], *, site: str | None = None
 
     async def one(d: SimDevice) -> None:
         async with sem:
+            if override:
+                await _override_config(ctx, d.uuid, d.ti, d.ka)
             r = await ctx.s.rest.patch_state(d.uuid, "ACTIVE", site=site)
             if r.status_code >= 400:
                 raise Fail(f"승인 실패 {d.uuid}: {_describe(r)}")
@@ -92,8 +108,9 @@ async def approve(ctx: Ctx, devices: list[SimDevice], *, site: str | None = None
 
 
 async def approve_uuids(ctx: Ctx, uuids: list[str], *, site: str | None = None, timeout: float = 120.0,
-                        concurrency: int = 20) -> int:
-    """fleet 이 별도 프로세스라 SimDevice 핸들이 없을 때(S2-10). 행이 생긴 것부터 승인하고 성공 수를 돌려준다."""
+                        concurrency: int = 20, ti: int | None = None, ka: int | None = None) -> int:
+    """fleet 이 별도 프로세스라 SimDevice 핸들이 없을 때(S2-10). 행이 생긴 것부터 승인하고 성공 수를 돌려준다.
+    `ti`/`ka` 를 주면 승인 전에 override 를 건다(`approve` 와 같은 이유)."""
     await wait_rows(ctx, uuids, timeout=timeout)
     sem = asyncio.Semaphore(concurrency)
     ok = 0
@@ -101,6 +118,8 @@ async def approve_uuids(ctx: Ctx, uuids: list[str], *, site: str | None = None, 
     async def one(u: str) -> None:
         nonlocal ok
         async with sem:
+            if ti is not None and ka is not None:
+                await _override_config(ctx, u, ti, ka)
             r = await ctx.s.rest.patch_state(u, "ACTIVE", site=site)
             if r.status_code < 400:
                 ok += 1
@@ -118,6 +137,7 @@ async def make_devices(ctx: Ctx, count: int, *, mode: str | None = None, start: 
 
     2cha(기본): username=UUID, password=HMAC(MQTT_HMAC_KEY, UUID). 서버 쪽 준비는 필요 없다.
     `approve_now=True` 면 REGISTER 가 처리된 뒤 REST 로 ACTIVE 승인까지 하고 돌아온다(Telemetry 가 필요한 시나리오).
+    CONFIG 검증 하한은 `ti_min=1, ka_min=1`(시험값 ti=5 를 RANGE 로 거부하지 않게) — 사양 하한을 보려면 flags 로 60 을 준다.
     """
     mode = mode or sim_mode(ctx)
     ns = namespace_of(ctx.scenario.id)
@@ -127,7 +147,7 @@ async def make_devices(ctx: Ctx, count: int, *, mode: str | None = None, start: 
     devices = []
     for u in uuids:
         kwargs: dict[str, Any] = dict(host=env.mqtt_host, port=env.mqtt_port, topic_root=env.topic_root,
-                                      mode=mode)
+                                      mode=mode, ti_min=1, ka_min=1)
         if mode == "2cha":
             kwargs["hmac_key"] = key
         else:
