@@ -8,9 +8,11 @@
 #   - backend 8000 을 호스트로 연다 (브라우저에서 /health, /docs 확인)
 #   - mosquitto 1883/8883 은 기본 파일이 이미 호스트로 열고 있다 (tools/sim 이 붙는 곳)
 #   - 로그 레벨 DEBUG
+#   - web(관리 화면) 을 호스트 8088 로 연다 (Windows 는 80 이 다른 프로세스에 잡혀 있기 쉽다)
 #
 # 주의: 오버라이드의 ports 는 기본 파일의 ports 와 합쳐진다(교체가 아님).
-#       그래서 mosquitto 포트는 여기 다시 적지 않는다.
+#       그래서 mosquitto 포트는 여기 다시 적지 않는다. web 은 `!override` 태그로
+#       기본 파일의 80:80 을 교체한다(compose v2.24+).
 
 services:
   backend:
@@ -26,6 +28,10 @@ services:
   postgres:
     ports:
       - "5432:5432"
+
+  web:
+    ports: !override
+      - "8088:80"
 
   mosquitto:
     # 로컬에서는 fd 65536 이 필요 없지만 값이 달라서 생기는 차이를 없애려고 그대로 둔다.

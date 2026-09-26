@@ -1,7 +1,7 @@
 # solar_power_control 운영 스택 — 개발 EC2(t3.small) 1대에 이 구성 한 벌.
 #
-# 서비스 3개뿐이다: mosquitto / backend / postgres. Icecast·nginx·TTS 는 없다
-# (마을방송과 다른 제품이다). 관리 화면(3차)이 붙을 때 nginx 를 추가한다.
+# 서비스 4개: mosquitto / backend / postgres / web(nginx, 관리 화면). Icecast·TTS 는 없다
+# (마을방송과 다른 제품이다).
 #
 # DB 는 개발 중엔 이 파일의 postgres(local-db 프로파일)를 쓰고, 운영 전환 시
 # RDS 로 옮긴다. 그때는 프로파일을 빼고 .env 의 DATABASE_URL 만 바꾼다.
@@ -99,6 +99,32 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  # 관리 화면: Vite 빌드 결과를 nginx 가 서빙하고 /api, /health 를 backend 로 프록시한다.
+  # /api 에 아직 로그인이 없어서 전 경로에 HTTP Basic auth 를 건다(.env ADMIN_USER/ADMIN_PASSWORD).
+  # 견본 비밀번호(change-me-admin)면 컨테이너가 기동을 거부한다. backend 8000 은 여전히
+  # 호스트에 열지 않는다 — 밖에서 백엔드에 닿는 길은 이 nginx 뿐이다. HTTPS 는 4차 certbot 과 함께.
+  web:
+    build: ./frontend
+    container_name: iotlight-web
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      # 로컬(Windows) 개발은 docker-compose.dev.yml 이 !override 로 8088:80 으로 바꾼다.
+      - "80:80"
+    environment:
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      # 인증 없이 요청하면 401 이 와야 정상 — nginx 와 htpasswd 가 모두 준비된 상태.
+      # 127.0.0.1 로 — 컨테이너 안 localhost 는 ::1 로 풀리는데 nginx 는 IPv4 만 듣는다.
+      test: ["CMD-SHELL", "wget -S --spider http://127.0.0.1/ 2>&1 | grep -q ' 401 '"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   # 개발 DB. 운영은 RDS 이므로 프로파일로 감싼다.
   #   docker compose --profile local-db up -d   또는 .env 의 COMPOSE_PROFILES=local-db

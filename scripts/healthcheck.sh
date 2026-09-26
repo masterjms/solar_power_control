@@ -11,6 +11,7 @@
 #   · 컨테이너 상태        호스트는 멀쩡한데 컨테이너만 죽은 경우
 #   · mosquitto 1883/8883  리스너가 실제로 듣고 있는지 (8883 은 인증서가 있을 때만)
 #   · backend /health      DB·MQTT 까지 정상인지 (2차부터. 없으면 경고만)
+#   · web (nginx)          Basic auth 를 통과해 /health 가 200 인지 (.env 의 ADMIN_*)
 #   · passwd/aclfile 적용  aclfile.applied 가 generated 와 같은지 (2차)
 #   · 백업 최신성          pg_dump cron 이 멈춘 걸 알아채기 위해
 #   · 인증서 만료          4차. 없으면 정보만
@@ -67,7 +68,7 @@ fi
 
 # ── 컨테이너 ────────────────────────────────────────────────────────
 # postgres 는 local-db 프로파일. RDS 전환 후엔 목록에서 뺀다.
-EXPECTED=(iotlight-mosquitto iotlight-backend iotlight-postgres)
+EXPECTED=(iotlight-mosquitto iotlight-backend iotlight-postgres iotlight-web)
 DOWN=()
 for name in "${EXPECTED[@]}"; do
     state="$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null | tr -d '[:space:]')"
@@ -112,6 +113,26 @@ case "$HEALTH" in
     *'"status"'*)                          add_bad "backend /health: $HEALTH" ;;
     *)                                     add_warn "backend /health 응답 없음 (1차엔 정상)" ;;
 esac
+
+# ── web (nginx + Basic auth) ────────────────────────────────────────
+# .env 의 ADMIN_USER/ADMIN_PASSWORD 로 호스트 80 → nginx → backend /health 가 200 인지.
+# 운영 compose 는 backend 8000 을 호스트에 열지 않으므로 이것이 밖에서 보는 유일한 경로다.
+ADMIN_USER="$(grep -E '^ADMIN_USER=' .env 2>/dev/null | cut -d= -f2- | tr -d "\"'" || true)"
+ADMIN_PASSWORD="$(grep -E '^ADMIN_PASSWORD=' .env 2>/dev/null | cut -d= -f2- | tr -d "\"'" || true)"
+WEB_PORT="${WEB_PORT:-80}"
+if [ -z "$ADMIN_PASSWORD" ]; then
+    add_warn "web: .env 에 ADMIN_PASSWORD 가 없다 — web 컨테이너가 기동을 거부한다(docs/04 §6A)"
+else
+    WEB_CODE="$(curl -s -o /dev/null -w '%{http_code}' -u "${ADMIN_USER:-admin}:$ADMIN_PASSWORD" "http://localhost:$WEB_PORT/health" 2>/dev/null || echo '000')"
+    NOAUTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$WEB_PORT/health" 2>/dev/null || echo '000')"
+    if [ "$WEB_CODE" = "200" ] && [ "$NOAUTH_CODE" = "401" ]; then
+        add_ok "web /health 200 (Basic auth), 무인증 401"
+    elif [ "$WEB_CODE" = "200" ]; then
+        add_bad "web: 인증 없이도 /health 가 ${NOAUTH_CODE} — Basic auth 가 안 걸려 있다"
+    else
+        add_bad "web /health ${WEB_CODE} (401 이면 .env ADMIN_* 와 컨테이너 환경 불일치 → docker compose up -d web)"
+    fi
+fi
 
 # ── passwd/aclfile 적용 상태 (2차) ──────────────────────────────────
 GEN_MD5="$(docker compose exec -T mosquitto sh -c 'f=/mosquitto/dynamic/aclfile.generated; [ -f $f ] && md5sum $f | cut -d" " -f1' 2>/dev/null | tr -d '[:space:]')"

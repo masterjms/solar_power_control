@@ -2,7 +2,7 @@
 #
 # 배포 (서버에서 실행. 담당자가 돌린다 — 개발자는 서버에 직접 접근하지 않는다)
 #
-#   bash scripts/deploy.sh                 평소 배포: pull → build → migrate → up → 점검
+#   bash scripts/deploy.sh                 평소 배포: pull → pull mosquitto → build(backend, web) → migrate → up → 점검
 #   bash scripts/deploy.sh --no-pull       현재 체크아웃 그대로 재빌드·재기동
 #   bash scripts/deploy.sh --infra-only    backend 없이 mosquitto/postgres 만 (1차, 또는 conf 만 바꿨을 때)
 #
@@ -48,8 +48,10 @@ if [ "$INFRA_ONLY" -eq 1 ]; then
     docker compose up -d mosquitto postgres
 else
     # ── 2. 빌드 ─────────────────────────────────────────────────────
-    log "backend 이미지 빌드"
-    docker compose build backend
+    log "mosquitto 이미지 갱신"
+    docker compose pull mosquitto
+    log "backend / web 이미지 빌드"
+    docker compose build backend web
 
     # ── 3. 마이그레이션 (컨테이너 교체 전) ──────────────────────────
     log "DB 마이그레이션"
@@ -76,6 +78,6 @@ fi
 
 echo
 echo "!! 점검에서 이상이 보고됐다."
-echo "   로그:      docker compose logs --tail 100 backend mosquitto"
+echo "   로그:      docker compose logs --tail 100 backend mosquitto web"
 echo "   되돌리기:  git checkout $PREV_SHA && bash scripts/deploy.sh --no-pull"
 exit 1
