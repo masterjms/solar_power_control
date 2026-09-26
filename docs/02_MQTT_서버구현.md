@@ -334,3 +334,12 @@ MQTT 연결 → 브로커 로그 tail → 스케줄러. 종료는 역순(로그 
 - S3-04 서버 재시작 → 단말 REGISTER 재전송 → 큐가 ACK. 브로커 로그는 EOF 부터라 online 은 REGISTER 가 맞춘다.
 - S3-05 SUSPENDED → TELEMETRY 중지·연결 유지·CONFIG_ACK STATE 없음(안 보내니까) → ACTIVE 로 해제 → 재개.
 - 인증: 시험 키로 `mosquitto_pub -u <UUID> -P <계산값>` 성공, 한 글자 틀리면 거부, 남의 UUID topic 발행 거부, `iotlight/#` 구독 거부.
+
+
+## 연결 세션 (2026-09-26 S2-11 반영)
+
+- 백엔드 연결은 **영속 세션**(`clean_session=False`, client id `iotlight-backend` 고정). 브로커 재기동·백엔드
+  재시작 직후 단말이 보낸 QoS1 REGISTER/status 를 브로커가 큐(`max_queued_messages 10000`)에 쌓았다가
+  넘겨준다. 전제: 브로커 `persistence true`.
+- 재접속 백오프 1→2→4→**5초 상한**. 30초 상한이면 브로커 재시작 뒤 단말(7~30초)보다 늦게 돌아와
+  REGISTER 를 놓쳤다(S2-11 실측: 1+2+4+8 = 15초 공백).

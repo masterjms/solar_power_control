@@ -30,7 +30,9 @@ log = logging.getLogger(__name__)
 MessageHandler = Callable[[str, bytes], Awaitable[None]]
 
 _RECONNECT_MIN_SEC = 1.0
-_RECONNECT_MAX_SEC = 30.0
+# 상한 5초. 서버 연결은 하나뿐이라 폭주 걱정이 없고, 브로커 재시작 뒤 단말(30초 backoff, 시험에선
+# 7초)보다 늦게 돌아오면 그 사이 REGISTER 를 놓친다(S2-11 에서 1→2→4→8초 누적 15초 동안 유실).
+_RECONNECT_MAX_SEC = 5.0
 
 
 class MqttConnection:
@@ -116,6 +118,10 @@ class MqttConnection:
             identifier=settings.mqtt_client_id,
             tls_context=self._tls_context(),
             keepalive=60,
+            # 영속 세션: 백엔드가 잠깐 끊긴 동안(재시작·브로커 재기동 직후) 단말이 보낸 QoS1
+            # REGISTER/status 를 브로커가 큐에 쌓아 두었다가 재접속 때 넘겨준다.
+            # 브로커 `persistence true` + `max_queued_messages 10000` 이 전제다.
+            clean_session=False,
         ) as client:
             self._client = client
             self._connected.set()

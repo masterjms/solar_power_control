@@ -112,12 +112,31 @@ class Db:
                 await self.execute(sql, uuid)
 
 
+class _RetryClient(httpx.AsyncClient):
+    """전송 오류(연결 리셋·ReadError)를 3회까지 재시도한다.
+
+    브로커 재시작·폭주 직후 백엔드가 잠깐 연결을 끊는 일이 있어(S2-11 에서 1회) 시나리오 판정과
+    무관한 전송 오류로 ERROR 가 나지 않게 한다. 4xx/5xx 응답은 재시도하지 않는다.
+    """
+
+    async def request(self, *args: Any, **kwargs: Any) -> httpx.Response:  # type: ignore[override]
+        last: Exception | None = None
+        for attempt in range(3):
+            try:
+                return await super().request(*args, **kwargs)
+            except httpx.TransportError as e:
+                last = e
+                await asyncio.sleep(1.0 * (attempt + 1))
+        assert last is not None
+        raise last
+
+
 class Rest:
     """백엔드 REST — docs/05_API.md 그대로. 응답 검증은 시나리오가 한다(여기서는 상태코드를 올리지 않는다)."""
 
     def __init__(self, base: str) -> None:
         self.base = base
-        self.client = httpx.AsyncClient(base_url=base, timeout=20.0)
+        self.client = _RetryClient(base_url=base, timeout=20.0)
 
     async def close(self) -> None:
         await self.client.aclose()
