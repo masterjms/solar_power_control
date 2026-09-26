@@ -97,6 +97,12 @@ async def approve(ctx: Ctx, devices: list[SimDevice], *, site: str | None = None
             if override:
                 await _override_config(ctx, d.uuid, d.ti, d.ka)
             r = await ctx.s.rest.patch_state(d.uuid, "ACTIVE", site=site)
+            if r.status_code == 409:
+                # 이전 실행의 잔여 행이 이미 ACTIVE 면 같은 상태 전이라 409 — 그대로 진행한다.
+                cur = await ctx.s.db.device(d.uuid)
+                if cur and cur.get("state") == "ACTIVE":
+                    await ctx.s.rest.republish_register_ack(d.uuid)
+                    return
             if r.status_code >= 400:
                 raise Fail(f"승인 실패 {d.uuid}: {_describe(r)}")
     await asyncio.gather(*(one(d) for d in gated))

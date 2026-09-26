@@ -52,6 +52,7 @@ RESEND_FAST_SEC, RESEND_FAST_COUNT, RESEND_SLOW_SEC = 300, 5, 1800
 RECONNECT_SCHEDULE: tuple[tuple[int, int], ...] = ((30, 5), (300, 5))
 RECONNECT_SLOW_SEC = 1800
 #: `sq` 는 uint32 로 가정한다(개발계획 §7 확인 요청 항목).
+FORGED_SQ = 777_777  # publish_foreign_topic 표식
 SQ_MOD = 2**32
 #: 시뮬레이터가 흉내내는 펌웨어. 1cha 모드는 1차 펌웨어 모양(type:"TM", ka 없음).
 FW_DEFAULT, FW_LEGACY = "1.4.0", "1.0.0"
@@ -988,6 +989,8 @@ class SimDevice:
         결과 dict: published(전송 자체 성공 여부), still_connected(1초 뒤 연결 유지 여부).
         """
         payload = self.build_tm()
+        # 남의 topic 에 넣은 건이 DB 에 섞였는지 sq 로 가려낼 수 있게 표식을 단다(상대 단말의 자기 TM 과 구분).
+        payload["sq"] = FORGED_SQ
         published = await self._publish(self.topic("status", other_uuid), payload, qos=1)
         await asyncio.sleep(1.0)
         return {"published": published, "still_connected": self.is_connected, "payload": payload}

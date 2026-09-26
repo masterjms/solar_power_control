@@ -19,7 +19,7 @@ from tools.scenarios.common import (FLUSH_WAIT, approve, approve_uuids, check_co
                                     send_tm_and_wait, sim_mode, tm_in_db, uuid_prefix, wait_config_set)
 from tools.scenarios.framework import Ctx, Fail, scenario
 from tools.scenarios.services import error_code
-from tools.sim.device import SQ_MOD, device_password, hmac_key_from_hex, uuid_from_index
+from tools.sim.device import FORGED_SQ, SQ_MOD, device_password, hmac_key_from_hex, uuid_from_index
 
 _send_tm_and_wait = send_tm_and_wait
 _tm_in_db = tm_in_db
@@ -446,15 +446,16 @@ async def s2_06(ctx: Ctx) -> None:
     await approve(ctx, [b])
     await _send_tm_and_wait(ctx, b, since)
     b_row = await ctx.s.db.device(b.uuid)
-    n_before = await ctx.s.db.telemetry_count(b.uuid, since)
     result = await a.publish_foreign_topic(b.uuid)
     ctx.log(f"남의 topic 발행 결과: {result['published']=} {result['still_connected']=}")
     ctx.check(result["still_connected"], "ACL 위반 뒤에도 연결 유지(mosquitto 는 조용히 버림)")
     await ctx.hold(2.0, "배치 flush")
-    n_after = await ctx.s.db.telemetry_count(b.uuid, since)
-    ctx.check_eq(n_after, n_before, "B 의 telemetry 건수 불변 (A 의 발행이 브로커에서 차단)")
+    # B 는 자기 주기 TM 을 계속 보내므로 건수 비교는 안 된다 — A 가 넣은 표식(sq=FORGED_SQ)이 B 행에 없어야 한다.
+    forged = await ctx.s.db.fetchval(
+        "SELECT count(*) FROM telemetry WHERE uuid = $1 AND sq = $2 AND received_at >= $3", b.uuid, FORGED_SQ, since)
+    ctx.check_eq(forged, 0, "A 의 위조 TM 이 B 의 telemetry 에 없음 (브로커 ACL 차단)")
     b_row2 = await ctx.s.db.device(b.uuid)
-    ctx.check_eq(b_row2["last_sq"], b_row["last_sq"], "B 의 last_sq 불변")
+    ctx.check(b_row2["last_sq"] != FORGED_SQ, f"B 의 last_sq 가 위조 sq 로 바뀌지 않음 ({b_row2['last_sq']})")
     ghost = uuid_from_index(999, namespace_of(ctx.scenario.id))
     await a.publish_foreign_topic(ghost)
     await ctx.hold(2.0, "배치 flush")
