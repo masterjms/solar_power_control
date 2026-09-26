@@ -1,33 +1,65 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, DeviceCounts, Health, errorText } from "./api";
+import Dashboard from "./Dashboard";
 import DeviceList from "./DeviceList";
 import DeviceDetail from "./DeviceDetail";
+import Pending from "./Pending";
+import DeviceConfig from "./DeviceConfig";
 import Profiles from "./Profiles";
 import System from "./System";
+import { nf } from "./ui";
 
 const REFRESH_MS = 10_000;
 
-type Tab = "devices" | "profiles" | "system";
+type Page = "dash" | "devices" | "pending" | "config" | "profiles" | "system";
 
-function tabFromHash(): Tab {
-  if (location.hash === "#profiles") return "profiles";
-  if (location.hash === "#system") return "system";
-  return "devices";
+const PAGES: { id: Page; ico: string; label: string; title: string }[] = [
+  { id: "dash", ico: "▦", label: "대시보드", title: "통합 관제 대시보드" },
+  { id: "devices", ico: "≡", label: "단말 목록", title: "단말 목록" },
+  { id: "pending", ico: "＋", label: "단말 등록·승인", title: "단말 등록·승인" },
+  { id: "config", ico: "≣", label: "단말 설정", title: "단말 설정" },
+  { id: "profiles", ico: "◫", label: "프로필(설정)", title: "설정 프로필" },
+  { id: "system", ico: "⚙", label: "시스템", title: "시스템" },
+];
+/** 아직 백엔드가 없는 메뉴 — 회색으로만 보인다(docs/00 §2 단계). */
+const LATER: { ico: string; label: string; stage: string }[] = [
+  { ico: "◎", label: "지도", stage: "7차" },
+  { ico: "⊞", label: "그룹 제어", stage: "5차" },
+  { ico: "◷", label: "스케줄", stage: "6차" },
+  { ico: "!", label: "알람", stage: "6차" },
+  { ico: "⇪", label: "OTA", stage: "7차" },
+  { ico: "∿", label: "통계", stage: "7차" },
+];
+
+function pageFromHash(): Page {
+  const h = location.hash.replace(/^#/, "");
+  return (PAGES.find((p) => p.id === h)?.id ?? "dash") as Page;
+}
+
+function themeNow(): "dark" | "light" {
+  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>(tabFromHash);
+  const [page, setPage] = useState<Page>(pageFromHash);
   const [health, setHealth] = useState<Health | null>(null);
   const [counts, setCounts] = useState<DeviceCounts | null>(null);
-  const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null); // 드로어에 띄운 단말
   const [tick, setTick] = useState(0);
+  const [updAt, setUpdAt] = useState<Date | null>(null);
+  const [now, setNow] = useState(new Date());
+  const [theme, setTheme] = useState<"dark" | "light">(themeNow);
 
   useEffect(() => {
-    const onHash = () => setTab(tabFromHash());
+    const onHash = () => setPage(pageFromHash());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
   }, []);
 
   /** 요약: /health 1회 + 목록 API 1회(size=1, counts 만 쓴다). */
@@ -36,7 +68,7 @@ export default function App() {
       const [h, l] = await Promise.all([api.health(), api.listDevices({ page: 1, size: 1 })]);
       setHealth(h);
       setCounts(l.counts);
-      setTotal(l.total);
+      setUpdAt(new Date());
       setError(null);
     } catch (e) {
       setError(errorText(e));
@@ -49,78 +81,118 @@ export default function App() {
     return () => clearInterval(id);
   }, [refresh, tick]);
 
+  // ESC 로 드로어 닫기
+  useEffect(() => {
+    if (!selected) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setSelected(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
+
+  function toggleTheme() {
+    const t = theme === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", t);
+    try { localStorage.setItem("slc-theme", t); } catch { /* 무시 */ }
+    setTheme(t);
+  }
+
   const pending = counts?.PENDING ?? 0;
+  const total = counts ? counts.PENDING + counts.ACTIVE + counts.SUSPENDED + counts.REJECTED + counts.RETIRED : null;
+  const serverOk = !!health && health.ok && health.mqtt_connected && health.db_ok;
+  const cur = PAGES.find((p) => p.id === page)!;
+
+  const dotOf = (ok: boolean | undefined) =>
+    ok === undefined ? "var(--off)" : ok ? "var(--ok)" : "var(--alarm)";
 
   return (
-    <>
-      <header>
-        <nav>
-          <a href="#devices" className={tab === "devices" ? "cur" : ""}>단말</a>
-          <a href="#profiles" className={tab === "profiles" ? "cur" : ""}>프로필</a>
-          <a href="#system" className={tab === "system" ? "cur" : ""}>시스템</a>
+    <div className="shell">
+      <aside className="side">
+        <div className="logo"><b>Solar Light Control</b><span>태양광 조명 통합관제</span></div>
+        <nav className="nav">
+          {PAGES.map((p) => (
+            <a key={p.id} href={`#${p.id}`} className={page === p.id ? "on" : ""}>
+              <span className="ico">{p.ico}</span>{p.label}
+              {p.id === "pending" && pending > 0 && <span className="cnt b">{nf(pending)}</span>}
+            </a>
+          ))}
+          <div className="sep">이후 단계</div>
+          {LATER.map((p) => (
+            <a key={p.label} className="dis" title={`${p.stage}에 추가`} onClick={(e) => e.preventDefault()} href="#">
+              <span className="ico">{p.ico}</span>{p.label}<span className="stg">{p.stage}</span>
+            </a>
+          ))}
         </nav>
-        <span className={pending > 0 ? "pending-badge" : ""}>
-          승인 대기 <b>{pending}</b>
-        </span>
-        <span>
-          전체 <b>{total}</b> / 온라인 <b className="on">{counts?.online ?? "-"}</b> / 오프라인{" "}
-          <b className="off">{counts ? total - counts.online : "-"}</b>
-        </span>
-        <span>
-          {counts
-            ? (["ACTIVE", "SUSPENDED", "REJECTED", "RETIRED"] as const).map((s) => `${s} ${counts[s]}`).join(" · ")
-            : "-"}
-        </span>
-        {health ? (
-          <span>
-            mqtt <b className={health.mqtt_connected ? "on" : "warn"}>{String(health.mqtt_connected)}</b>{" "}
-            db <b className={health.db_ok ? "on" : "warn"}>{String(health.db_ok)}</b>{" "}
-            broker_log <b className={health.broker_log_tail ? "on" : "warn"}>{String(health.broker_log_tail)}</b>{" "}
-            hmac <b>{health.hmac_keys?.length ? health.hmac_keys.join(",") : "없음"}</b>{" "}
-            dropped <b className={health.telemetry_dropped ? "warn" : ""}>{health.telemetry_dropped}</b>{" "}
-            {health.test_account_enabled && (
-              <b className="warn" title="MQTT_TEST_ACCOUNT_ENABLED — 1차 공용 시험 계정(solarlte-test)이 아직 열려 있음">
-                공용 시험계정 열림
-              </b>
-            )}{" "}
-            <small>({health.env})</small>
-          </span>
-        ) : (
-          <span>health -</span>
-        )}
-        <button onClick={() => setTick((t) => t + 1)}>새로고침</button>
-        {error && <span className="error">{error}</span>}
-      </header>
+        <div className="foot">
+          <div><span className="dot" style={{ background: dotOf(health?.mqtt_connected) }} />MQTT Broker {health ? (health.mqtt_connected ? "정상" : "끊김") : "-"}</div>
+          <div><span className="dot" style={{ background: dotOf(health?.db_ok) }} />DB {health ? (health.db_ok ? "정상" : "장애") : "-"}</div>
+          <div><span className="dot" style={{ background: dotOf(health?.broker_log_tail) }} />브로커 로그 {health ? (health.broker_log_tail ? "추적 중" : "중단") : "-"}</div>
+          <div className="muted">{health ? `env ${health.env}` : ""}</div>
+        </div>
+      </aside>
 
-      {tab === "profiles" ? (
-        <div className="right">
-          <Profiles onChanged={refresh} />
-        </div>
-      ) : tab === "system" ? (
-        <div className="right">
-          <System />
-        </div>
-      ) : (
-        <main>
-          <section className="left">
+      <main>
+        <header className="top">
+          <div>
+            <h1>{cur.title}</h1>
+            <div className="sub">
+              {updAt ? `마지막 갱신 ${updAt.toLocaleDateString("ko-KR")} ${updAt.toTimeString().slice(0, 8)}` : "불러오는 중…"}
+              {error && <span className="c-alarm"> · {error}</span>}
+            </div>
+          </div>
+          <span className="sp" />
+          {health?.test_account_enabled && (
+            <span className="pill warn" title="MQTT_TEST_ACCOUNT_ENABLED — 1차 공용 시험 계정(solarlte-test)이 아직 열려 있음. 운영 전 닫을 것">
+              <span className="dot" style={{ background: "var(--warn)" }} />공용 시험 계정 열림
+            </span>
+          )}
+          {health && health.telemetry_dropped > 0 && (
+            <span className="pill alarm" title="telemetry_dropped">Telemetry 유실 {nf(health.telemetry_dropped)}</span>
+          )}
+          <span className="pill" title={health ? `mqtt ${health.mqtt_connected} · db ${health.db_ok} · broker_log_tail ${health.broker_log_tail}` : ""}>
+            <span className="dot" style={{ background: health ? (serverOk ? "var(--ok)" : "var(--alarm)") : "var(--off)" }} />
+            {health ? (serverOk ? "서버 정상" : "서버 이상") : "서버 -"}
+          </span>
+          <span className="pill" title="활성 HMAC 키(ADR-003)">
+            HMAC {health ? (health.hmac_keys?.length ? health.hmac_keys.join(", ") : "없음") : "-"}
+          </span>
+          <span className="pill clock">{now.toLocaleDateString("ko-KR")} {now.toTimeString().slice(0, 8)}</span>
+          <button className="btn" onClick={() => setTick((t) => t + 1)} title="지금 다시 읽기(자동 10초)">새로고침</button>
+          <button className="btn icon" onClick={toggleTheme} aria-label={theme === "dark" ? "밝은 화면으로" : "어두운 화면으로"}>
+            {theme === "dark" ? "☀" : "☾"}
+          </button>
+        </header>
+
+        {page === "dash" && <Dashboard counts={counts} total={total} health={health} tick={tick} onSelect={setSelected} />}
+        {page === "devices" && (
+          <div className="content">
             <DeviceList tick={tick} selected={selected} onSelect={setSelected} />
-          </section>
-          <section className="right">
-            {selected ? (
-              <DeviceDetail
-                uuid={selected}
-                onChanged={refresh}
-                onDeleted={() => {
-                  setSelected(null);
-                  refresh();
-                }}
-              />
-            ) : (
-              <p>왼쪽 목록에서 단말을 선택하세요. 승인 대기(PENDING) 단말이 맨 위에 옵니다.</p>
-            )}
-          </section>
-        </main>
-      )}
-    </>
+          </div>
+        )}
+        {page === "pending" && <Pending tick={tick} onChanged={refresh} onSelect={setSelected} />}
+        {page === "config" && <DeviceConfig />}
+        {page === "profiles" && (
+          <div className="content">
+            <Profiles onChanged={refresh} />
+          </div>
+        )}
+        {page === "system" && <System />}
+      </main>
+
+      {selected && <div className="ov" onClick={() => setSelected(null)} />}
+      <aside className={`drawer wide ${selected ? "open" : ""}`} aria-label="단말 상세" aria-hidden={!selected}>
+        {selected && (
+          <DeviceDetail
+            uuid={selected}
+            onChanged={refresh}
+            onClose={() => setSelected(null)}
+            onDeleted={() => {
+              setSelected(null);
+              refresh();
+              setTick((t) => t + 1);
+            }}
+          />
+        )}
+      </aside>
+    </div>
   );
 }

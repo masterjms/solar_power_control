@@ -3,6 +3,7 @@ import {
   api, ConfigPatchBody, ConfigPatchRes, Device, DeviceEvent, DeviceState, Profile, Telemetry, errorText,
 } from "./api";
 import { div100, erLabel, eventSummary, hex, localTime, mdLabel, pct, relTime, str } from "./format";
+import { Battery, Lamp, Met, OnlineMark, StateBadge } from "./ui";
 
 const REFRESH_MS = 10_000;
 const WATCH_POLL_MS = 5_000; // 승인/설정 후 "단말이 받음" 확인 폴링
@@ -13,6 +14,7 @@ interface Props {
   uuid: string;
   onChanged: () => void; // 요약바 갱신
   onDeleted: () => void;
+  onClose: () => void;
 }
 
 /** docs/05 상태 전이표. 버튼 = 현재 state 에서 갈 수 있는 곳. */
@@ -58,7 +60,12 @@ function after(a: string | null | undefined, b: string | null | undefined): bool
   return Date.parse(a) > Date.parse(b);
 }
 
-export default function DeviceDetail({ uuid, onChanged, onDeleted }: Props) {
+const evClass = (kind: string) =>
+  ["REGISTER_ACK", "STATE_CHANGE", "CONFIG_SET", "PING"].includes(kind) ? "dn"
+    : ["OFFLINE", "LWT", "LOST", "ERR"].includes(kind) ? "er" : "up";
+
+/** 단말 상세 드로어(§3.9.2 화면 2). 승인·설정·PING·삭제·이력 전부 여기. */
+export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Props) {
   const [dev, setDev] = useState<Device | null>(null);
   const [tm, setTm] = useState<Telemetry[]>([]);
   const [ev, setEv] = useState<DeviceEvent[]>([]);
@@ -303,8 +310,20 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted }: Props) {
     }
   }
 
-  if (error && !dev) return <div className="error">{error}</div>;
-  if (!dev) return <p>불러오는 중…</p>;
+  const header = (
+    <div className="dh">
+      <div style={{ minWidth: 0 }}>
+        <h3>{dev ? (dev.site ?? "(장소 없음)") : "단말 상세"}</h3>
+        <div className="u">{uuid}</div>
+      </div>
+      {dev && <StateBadge state={dev.state} />}
+      {dev && <OnlineMark on={dev.is_online} title={`is_online=${dev.is_online} / 브로커 online=${dev.online}`} />}
+      <button type="button" className="x" onClick={onClose} aria-label="닫기">✕</button>
+    </div>
+  );
+
+  if (error && !dev) return <>{header}<div className="db"><div className="err">{error}</div></div></>;
+  if (!dev) return <>{header}<div className="db"><div className="muted">불러오는 중…</div></div></>;
   const lt = dev.last_telemetry;
   const selProfile = profiles.find((p) => p.id === Number(profileId));
   const tiEff = tiOv.trim() === "" ? selProfile?.ti ?? dev.ti_effective : Number(tiOv);
@@ -314,63 +333,66 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted }: Props) {
 
   return (
     <>
-      <h3 className="mono" style={{ margin: "4px 0" }}>
-        {dev.uuid} <span className={dev.is_online ? "on" : "off"}>{dev.is_online ? "● 온라인" : "○ 오프라인"}</span>{" "}
-        <span className={`badge st-${dev.state}`}>{dev.state}</span>
-      </h3>
-      {error && <div className="error">{error}</div>}
+      {header}
+      <div className="db">
+        {error && <div className="err">{error}</div>}
 
-      {/* ---------- 승인 패널 (화면 2) ---------- */}
-      <fieldset className={dev.state === "PENDING" ? "pending" : ""}>
-        <legend>승인 상태 (PATCH /state)</legend>
-        <dl>
-          <dt>state</dt><dd><span className={`badge st-${dev.state}`}>{dev.state}</span> {dev.state === "PENDING" && <b className="warn">승인 대기</b>}</dd>
-          <dt>state_reason</dt><dd>{str(dev.state_reason)}</dd>
-          <dt>state_changed_at</dt><dd>{localTime(dev.state_changed_at)}</dd>
-          <dt>마지막 REGISTER_ACK 발행</dt><dd>{localTime(dev.register_ack_at)} {dev.register_ack_at ? `(${relTime(dev.register_ack_at)})` : "(retain 없음)"}</dd>
-        </dl>
-        <div className="toolbar">
-          <label>site <input value={ackSite} maxLength={24} placeholder="24자 이내" onChange={(e) => setAckSite(e.target.value)} style={{ width: 140 }} /></label>
-          <label>reason <input value={ackReason} placeholder="거부·중지 사유(선택)" onChange={(e) => setAckReason(e.target.value)} style={{ width: 180 }} /></label>
-        </div>
-        <div className="toolbar">
-          {ACTIONS[dev.state].map((a) => (
-            <button key={a.to + a.label} type="button" onClick={() => doState(a)}
-              className={a.to === "ACTIVE" ? "primary" : a.to === "RETIRED" || a.to === "REJECTED" ? "danger" : ""}>
-              {a.label}
-            </button>
-          ))}
-          <button type="button" onClick={doRepublish} title="DB 상태 그대로 REGISTER_ACK retain 재발행(RETIRED 면 빈 retain)">REGISTER_ACK 재발행</button>
-        </div>
-        {ackMsg && <div className="mono">{ackMsg}</div>}
-        {ackErr && <div className="error">{ackErr}</div>}
-        {watch?.kind === "state" && recv && (
-          <div className="recv">
-            <div>발행함: <b>{localTime(dev.register_ack_at) === "-" ? localTime(new Date(watch.since).toISOString()) : localTime(dev.register_ack_at)}</b></div>
-            <div>단말이 받음: <b className={recv.done ? "on" : "warn"}>{recv.text}</b>{watchExpired && " (10분 지나 폴링 중단 — 새로고침으로 확인)"}</div>
+        {/* ---------- 현재 상태 (목업 dMet) ---------- */}
+        <div className="sec">
+          <h4>현재 상태 <span>마지막 수신 {relTime(dev.last_seen_at)}</span></h4>
+          <div className="grid2">
+            <Met l="조명" v={<Lamp on={lt?.on} />} h={lt ? mdLabel(lt.md) : "Telemetry 없음"} />
+            <Met l="배터리" v={<Battery sc={lt?.sc} />} h={lt ? `${div100(lt.bv, "V")} · ${div100(lt.bi, "A", true)}` : ""} cls={lt && lt.sc !== undefined && lt.sc < 20 ? "a" : ""} />
+            <Met l="패널 출력 / 부하 전류" v={lt ? `${div100(lt.pp, "W")} / ${div100(lt.li, "A")}` : "-"} />
+            <Met l="오류 er" v={erLabel(lt?.er)} cls={lt?.er ? "a" : ""} />
+            <Met l="통신" v={<OnlineMark on={dev.is_online} />} h={`브로커 online=${str(dev.online)} · lost ${dev.lost_count} · reboot ${dev.reboot_count}`} cls={dev.is_online ? "" : "o"} />
+            <Met l="설정 버전 cv (서버/단말)" v={`${dev.cv_server} / ${str(dev.cv_device)}`} h={dev.config_pending ? "CONFIG 미반영" : dev.cv_server === 0 ? "아직 보낸 적 없음" : "일치"} cls={dev.config_pending ? "w" : ""} />
           </div>
-        )}
-      </fieldset>
+        </div>
 
-      {/* ---------- 설정 패널 ---------- */}
-      <fieldset>
-        <legend>설정 (PATCH /config)</legend>
-        <dl>
-          <dt>cv server / device</dt>
-          <dd>
-            {dev.cv_server} / {str(dev.cv_device)}{" "}
-            {dev.config_pending && <b className="warn">CONFIG 미반영: cv_server {dev.cv_server} / cv_device {str(dev.cv_device)}</b>}
-            {dev.cv_server === 0 && <small> (0 = 아직 보낸 적 없음)</small>}
-          </dd>
-          <dt>ti 의도 / 보고</dt><dd className={dev.ti_device !== null && dev.ti_device !== dev.ti_effective ? "warn" : ""}>{dev.ti_effective} / {str(dev.ti_device)}</dd>
-          <dt>ka 의도 / 보고</dt><dd className={dev.ka_device !== null && dev.ka_device !== dev.ka_effective ? "warn" : ""}>{dev.ka_effective} / {str(dev.ka_device)}</dd>
-          <dt>config_mismatch</dt><dd>{str(dev.config_mismatch)}</dd>
-          <dt>config_sent_at</dt><dd>{localTime(dev.config_sent_at)}</dd>
-          <dt>grp</dt><dd>{str(dev.grp)}</dd>
-        </dl>
-        <form onSubmit={submitConfig} onChange={() => (formTouched.current = true)}>
-          <div className="toolbar">
-            <label>프로필{" "}
+        {/* ---------- 승인 패널 (화면 2) ---------- */}
+        <div className={`sec ${dev.state === "PENDING" ? "pending" : ""}`}>
+          <h4>승인 상태 <span>PATCH /state</span></h4>
+          <div className="grid2">
+            <Met l="state" v={<StateBadge state={dev.state} />} h={dev.state === "PENDING" ? "승인 대기 — 승인 전에는 Telemetry 를 안 보낸다" : str(dev.state_reason)} />
+            <Met l="마지막 REGISTER_ACK 발행" v={localTime(dev.register_ack_at)} h={dev.register_ack_at ? relTime(dev.register_ack_at) : "retain 없음"} />
+            <Met l="state_changed_at" v={localTime(dev.state_changed_at)} />
+            <Met l="state_reason" v={str(dev.state_reason)} />
+          </div>
+          <div className="form2" style={{ marginTop: 12 }}>
+            <label>시설명 site <small>24자 이내, 단말 OLED 표시</small><input value={ackSite} maxLength={24} placeholder="예: 산본동 22번 가로등" onChange={(e) => setAckSite(e.target.value)} /></label>
+            <label>사유 reason <small>거부·중지 때 선택</small><input value={ackReason} placeholder="REGISTER_ACK 에 실림" onChange={(e) => setAckReason(e.target.value)} /></label>
+          </div>
+          <div className="bar2" style={{ marginTop: 12 }}>
+            {ACTIONS[dev.state].map((a) => (
+              <button key={a.to + a.label} type="button" onClick={() => doState(a)}
+                className={`btn ${a.to === "ACTIVE" ? "pri" : a.to === "RETIRED" || a.to === "REJECTED" ? "danger" : ""}`}>
+                {a.label}
+              </button>
+            ))}
+            <button type="button" className="btn" onClick={doRepublish} title="DB 상태 그대로 REGISTER_ACK retain 재발행(RETIRED 면 빈 retain)">REGISTER_ACK 재발행</button>
+          </div>
+          {ackMsg && <code className="payload">{ackMsg}</code>}
+          {ackErr && <div className="err" style={{ marginTop: 8 }}>{ackErr}</div>}
+          {watch?.kind === "state" && recv && (
+            <div className="recv">
+              <div>발행함: <b>{localTime(dev.register_ack_at) === "-" ? localTime(new Date(watch.since).toISOString()) : localTime(dev.register_ack_at)}</b></div>
+              <div>단말이 받음: <b className={recv.done ? "c-ok" : "c-warn"}>{recv.text}</b>{watchExpired && " (10분 지나 폴링 중단 — 새로고침으로 확인)"}</div>
+            </div>
+          )}
+        </div>
+
+        {/* ---------- 설정 패널 ---------- */}
+        <div className="sec">
+          <h4>설정 <span>PATCH /config</span></h4>
+          <div className="grid2">
+            <Met l="ti 의도 / 보고" v={`${dev.ti_effective} / ${str(dev.ti_device)}`} cls={dev.ti_device !== null && dev.ti_device !== dev.ti_effective ? "a" : ""} h="Telemetry 주기(초)" />
+            <Met l="ka 의도 / 보고" v={`${dev.ka_effective} / ${str(dev.ka_device)}`} cls={dev.ka_device !== null && dev.ka_device !== dev.ka_effective ? "a" : ""} h="keepalive(초)" />
+            <Met l="config_mismatch / pending" v={`${str(dev.config_mismatch)} / ${str(dev.config_pending)}`} cls={dev.config_mismatch || dev.config_pending ? "w" : ""} />
+            <Met l="config_sent_at" v={localTime(dev.config_sent_at)} h={`grp ${str(dev.grp)}`} />
+          </div>
+          <form onSubmit={submitConfig} onChange={() => (formTouched.current = true)} className="form2" style={{ marginTop: 12 }}>
+            <label className="w2">프로필
               <select value={profileId} onChange={(e) => setProfileId(e.target.value)}>
                 {profiles.map((p) => (
                   <option key={p.id} value={p.id}>{p.name} (ti {p.ti} / ka {p.ka})</option>
@@ -378,141 +400,104 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted }: Props) {
                 {!profiles.some((p) => p.id === dev.profile_id) && <option value={dev.profile_id}>#{dev.profile_id} {dev.profile_name ?? ""}</option>}
               </select>
             </label>
-            <label>ti_override <input type="number" min={60} max={3600} value={tiOv} placeholder="프로필 값" onChange={(e) => setTiOv(e.target.value)} style={{ width: 80 }} /> <small>→ 적용 {tiEff}</small></label>
-            <label>ka_override <input type="number" min={60} max={1800} value={kaOv} placeholder="프로필 값" onChange={(e) => setKaOv(e.target.value)} style={{ width: 80 }} /> <small>→ 적용 {kaEff}</small></label>
-          </div>
-          <div className="toolbar">
-            <label>lat <input type="number" step="any" value={lat} onChange={(e) => setLat(e.target.value)} style={{ width: 100 }} /></label>
-            <label>lon <input type="number" step="any" value={lon} onChange={(e) => setLon(e.target.value)} style={{ width: 100 }} /></label>
-            <label>site <input value={site} maxLength={24} onChange={(e) => setSite(e.target.value)} style={{ width: 140 }} /></label>
-          </div>
-          <div className="toolbar">
-            <label>address <input value={address} onChange={(e) => setAddress(e.target.value)} style={{ width: 260 }} /></label>
-            <label>bjd_code <input value={bjd} maxLength={10} placeholder="법정동 10자리" onChange={(e) => setBjd(e.target.value)} style={{ width: 110 }} /></label>
-            <button type="submit" className="primary">설정 변경</button>
-            <small>profile/override/lat/lon 이 바뀌면 cv_server +1 → CONFIG_SET. site/address/bjd 만 바꾸면 cv 그대로.</small>
-          </div>
-        </form>
-        {cfgRes && (
-          <div className="mono">
-            응답: cv_server={cfgRes.cv_server} ti={cfgRes.ti_effective} ka={cfgRes.ka_effective} site={str(cfgRes.site)} published=<b className={cfgRes.published ? "on" : "warn"}>{String(cfgRes.published)}</b>
-            {!cfgRes.published && cfgRes.reason === "NOT_ACTIVE" && <b className="warn"> — 승인 후 첫 Telemetry 때 전송됨</b>}
-            {!cfgRes.published && cfgRes.reason && cfgRes.reason !== "NOT_ACTIVE" && <b className="warn"> — reason={cfgRes.reason}</b>}
-            {cfgRes.payload !== undefined && cfgRes.payload !== null && <div>payload: {JSON.stringify(cfgRes.payload)}</div>}
-          </div>
-        )}
-        {cfgErr && <div className="error">{cfgErr}</div>}
-        {watch?.kind === "config" && recv && (
-          <div className="recv">
-            <div>발행함: <b>{cfgRes?.published ? localTime(dev.config_sent_at) : `(미발행 — ${dev.state === "ACTIVE" ? "브로커 미연결" : "승인 후 첫 Telemetry 때"})`}</b></div>
-            <div>단말이 받음: <b className={recv.done ? "on" : "warn"}>{recv.text}</b>{watchExpired && " (10분 지나 폴링 중단)"}</div>
-          </div>
-        )}
-      </fieldset>
-
-      <fieldset>
-        <legend>기본정보</legend>
-        <dl>
-          <dt>fw</dt><dd>{str(dev.fw)}</dd>
-          <dt>device_model</dt><dd>{str(dev.device_model)}</dd>
-          <dt>site / address</dt><dd>{str(dev.site)} / {str(dev.address)}</dd>
-          <dt>bjd_code</dt><dd>{str(dev.bjd_code)}</dd>
-          <dt>lat / lon</dt><dd>{str(dev.lat)} / {str(dev.lon)}</dd>
-          <dt>created / updated</dt><dd>{localTime(dev.created_at)} / {localTime(dev.updated_at)}</dd>
-        </dl>
-      </fieldset>
-
-      <fieldset>
-        <legend>LTE · SIM</legend>
-        <dl>
-          <dt>modem_model</dt><dd>{str(dev.modem_model)}</dd>
-          <dt>imei</dt><dd>{str(dev.imei)}</dd>
-          <dt>iccid</dt><dd>{str(dev.iccid)}</dd>
-          <dt>msisdn</dt><dd>{str(dev.msisdn)}</dd>
-          <dt>ss_device</dt><dd>{str(dev.ss_device)}</dd>
-        </dl>
-      </fieldset>
-
-      <fieldset>
-        <legend>연결 상태</legend>
-        <dl>
-          <dt>is_online / online(브로커)</dt><dd>{str(dev.is_online)} / {str(dev.online)}</dd>
-          <dt>online_changed_at</dt><dd>{localTime(dev.online_changed_at)}</dd>
-          <dt>offline_at</dt><dd>{localTime(dev.offline_at)}</dd>
-          <dt>last_register_at</dt><dd>{localTime(dev.last_register_at)}</dd>
-          <dt>last_telemetry_at</dt><dd>{localTime(dev.last_telemetry_at)} ({relTime(dev.last_telemetry_at)})</dd>
-          <dt>last_seen_at</dt><dd>{localTime(dev.last_seen_at)} ({relTime(dev.last_seen_at)})</dd>
-          <dt>last_sq</dt><dd>{str(dev.last_sq)}</dd>
-          <dt>lost / reboot</dt><dd>{dev.lost_count} / {dev.reboot_count}</dd>
-        </dl>
-      </fieldset>
-
-      <fieldset>
-        <legend>마지막 텔레메트리</legend>
-        {lt ? (
-          <table>
-            <tbody>
-              <tr><th>배터리 전압 bv</th><td>{div100(lt.bv, "V")}</td><th>배터리 전류 bi</th><td>{div100(lt.bi, "A", true)}</td></tr>
-              <tr><th>충전량 sc</th><td>{pct(lt.sc)}</td><th>패널 출력 pp</th><td>{div100(lt.pp, "W")}</td></tr>
-              <tr><th>부하 전류 li</th><td>{div100(lt.li, "A")}</td><th>점등 on</th><td>{str(lt.on)}</td></tr>
-              <tr><th>모드 md</th><td>{mdLabel(lt.md)}</td><th>오류 er</th><td>{erLabel(lt.er)}</td></tr>
-              <tr><th>cs</th><td>{hex(lt.cs)}</td><th>pw</th><td>{lt.pw ? lt.pw.join(", ") : "-"}</td></tr>
-              <tr><th>sq / cv / ss</th><td>{str(lt.sq)} / {str(lt.cv)} / {str(lt.ss)}</td><th>ts / fw</th><td>{str(lt.ts ?? lt.ts_device)} / {str(lt.fw)}</td></tr>
-            </tbody>
-          </table>
-        ) : (
-          <p>없음 (아직 TM 수신 전)</p>
-        )}
-      </fieldset>
-
-      <fieldset>
-        <legend>PING · 삭제</legend>
-        <div className="toolbar">
-          <button type="button" onClick={doPing}>PING</button>
-          <button type="button" onClick={doDelete} className="danger">삭제</button>
+            <label>ti_override <small>빈칸 = 프로필 값 → 적용 {tiEff}</small><input type="number" min={60} max={3600} value={tiOv} placeholder="프로필 값" onChange={(e) => setTiOv(e.target.value)} /></label>
+            <label>ka_override <small>빈칸 = 프로필 값 → 적용 {kaEff}</small><input type="number" min={60} max={1800} value={kaOv} placeholder="프로필 값" onChange={(e) => setKaOv(e.target.value)} /></label>
+            <label>위도 lat<input type="number" step="any" value={lat} onChange={(e) => setLat(e.target.value)} /></label>
+            <label>경도 lon<input type="number" step="any" value={lon} onChange={(e) => setLon(e.target.value)} /></label>
+            <label>시설명 site <small>24자</small><input value={site} maxLength={24} onChange={(e) => setSite(e.target.value)} /></label>
+            <label>법정동코드 bjd_code <small>10자리</small><input value={bjd} maxLength={10} onChange={(e) => setBjd(e.target.value)} /></label>
+            <label className="w2">주소 address<input value={address} onChange={(e) => setAddress(e.target.value)} /></label>
+            <div className="w2 bar2">
+              <button type="submit" className="btn pri">설정 변경</button>
+              <span className="cap">profile/override/lat/lon 이 바뀌면 cv_server +1 → CONFIG_SET. site/address/bjd 만 바꾸면 cv 그대로.</span>
+            </div>
+          </form>
+          {cfgRes && (
+            <code className="payload">
+              응답: cv_server={cfgRes.cv_server} ti={cfgRes.ti_effective} ka={cfgRes.ka_effective} site={str(cfgRes.site)} published=<b className={cfgRes.published ? "c-ok" : "c-warn"}>{String(cfgRes.published)}</b>
+              {!cfgRes.published && cfgRes.reason === "NOT_ACTIVE" && <b className="c-warn"> — 승인 후 첫 Telemetry 때 전송됨</b>}
+              {!cfgRes.published && cfgRes.reason && cfgRes.reason !== "NOT_ACTIVE" && <b className="c-warn"> — reason={cfgRes.reason}</b>}
+              {cfgRes.payload !== undefined && cfgRes.payload !== null && <div>payload: {JSON.stringify(cfgRes.payload)}</div>}
+            </code>
+          )}
+          {cfgErr && <div className="err" style={{ marginTop: 8 }}>{cfgErr}</div>}
+          {watch?.kind === "config" && recv && (
+            <div className="recv">
+              <div>발행함: <b>{cfgRes?.published ? localTime(dev.config_sent_at) : `(미발행 — ${dev.state === "ACTIVE" ? "브로커 미연결" : "승인 후 첫 Telemetry 때"})`}</b></div>
+              <div>단말이 받음: <b className={recv.done ? "c-ok" : "c-warn"}>{recv.text}</b>{watchExpired && " (10분 지나 폴링 중단)"}</div>
+            </div>
+          )}
         </div>
-        {actionMsg && <div className="mono">{actionMsg}</div>}
-        {actionErr && <div className="error">{actionErr}</div>}
-      </fieldset>
 
-      <fieldset>
-        <legend>최근 텔레메트리 ({tm.length})</legend>
-        <table>
-          <thead>
-            <tr><th>received_at</th><th>sq</th><th>cv</th><th>bv</th><th>bi</th><th>sc</th><th>pp</th><th>li</th><th>on</th><th>er</th></tr>
-          </thead>
-          <tbody>
-            {tm.map((t, i) => (
-              <tr key={i}>
-                <td>{localTime(t.received_at)}</td><td>{str(t.sq)}</td><td>{str(t.cv)}</td>
-                <td>{div100(t.bv)}</td><td>{div100(t.bi, "", true)}</td><td>{str(t.sc)}</td>
-                <td>{div100(t.pp)}</td><td>{div100(t.li)}</td><td>{str(t.on)}</td><td>{erLabel(t.er)}</td>
-              </tr>
-            ))}
-            {tm.length === 0 && <tr><td colSpan={10}>없음</td></tr>}
-          </tbody>
-        </table>
-      </fieldset>
+        {/* ---------- PING · 삭제 ---------- */}
+        <div className="sec">
+          <h4>PING · 삭제 <span>PONG 은 단말 송신 직후에만 온다(60초 대기)</span></h4>
+          <div className="bar2">
+            <button type="button" className="btn" onClick={doPing}>PING</button>
+            <button type="button" className="btn danger" onClick={doDelete}>삭제</button>
+          </div>
+          {actionMsg && <code className="payload">{actionMsg}</code>}
+          {actionErr && <div className="err" style={{ marginTop: 8 }}>{actionErr}</div>}
+        </div>
 
-      <fieldset>
-        <legend>이벤트 ({ev.length})</legend>
-        <table>
-          <thead>
-            <tr><th>received_at</th><th>kind</th><th>요약</th><th>payload</th></tr>
-          </thead>
-          <tbody>
+        {/* ---------- 단말기 정보 ---------- */}
+        <details className="sec info">
+          <summary>단말기 정보</summary>
+          <div className="grid2">
+            <Met l="모델" v={str(dev.device_model)} />
+            <Met l="펌웨어" v={str(dev.fw)} />
+            <Met l="모뎀" v={str(dev.modem_model)} h={`ss ${str(dev.ss_device)}`} />
+            <Met l="IMEI" v={str(dev.imei)} />
+            <Met l="ICCID" v={str(dev.iccid)} />
+            <Met l="MSISDN" v={str(dev.msisdn)} />
+            <Met l="시설명 / 주소" v={`${str(dev.site)} / ${str(dev.address)}`} />
+            <Met l="법정동코드 / 좌표" v={`${str(dev.bjd_code)} / ${str(dev.lat)}, ${str(dev.lon)}`} />
+            <Met l="online_changed_at" v={localTime(dev.online_changed_at)} h={`offline_at ${localTime(dev.offline_at)}`} />
+            <Met l="last_register_at" v={localTime(dev.last_register_at)} />
+            <Met l="last_telemetry_at" v={localTime(dev.last_telemetry_at)} h={relTime(dev.last_telemetry_at)} />
+            <Met l="last_seen_at" v={localTime(dev.last_seen_at)} h={`last_sq ${str(dev.last_sq)}`} />
+            <Met l="created / updated" v={localTime(dev.created_at)} h={localTime(dev.updated_at)} />
+            {lt && <Met l="마지막 TM cs / pw" v={`${hex(lt.cs)} / ${lt.pw ? lt.pw.join(", ") : "-"}`} h={`sq ${str(lt.sq)} · cv ${str(lt.cv)} · ss ${str(lt.ss)} · ts ${str(lt.ts ?? lt.ts_device)} · fw ${str(lt.fw)}`} />}
+          </div>
+        </details>
+
+        {/* ---------- 최근 텔레메트리 ---------- */}
+        <div className="sec">
+          <h4>최근 텔레메트리 <span>{tm.length}건</span></h4>
+          <div style={{ overflowX: "auto" }}>
+            <table className="mini">
+              <thead>
+                <tr><th>received_at</th><th className="n">sq</th><th className="n">cv</th><th className="n">bv</th><th className="n">bi</th><th className="n">sc</th><th className="n">pp</th><th className="n">li</th><th className="n">on</th><th>er</th></tr>
+              </thead>
+              <tbody>
+                {tm.map((t, i) => (
+                  <tr key={i}>
+                    <td>{localTime(t.received_at)}</td><td className="n">{str(t.sq)}</td><td className="n">{str(t.cv)}</td>
+                    <td className="n">{div100(t.bv)}</td><td className="n">{div100(t.bi, "", true)}</td><td className="n">{pct(t.sc)}</td>
+                    <td className="n">{div100(t.pp)}</td><td className="n">{div100(t.li)}</td><td className="n">{str(t.on)}</td><td>{erLabel(t.er)}</td>
+                  </tr>
+                ))}
+                {tm.length === 0 && <tr><td colSpan={10} className="muted">없음 (아직 TM 수신 전)</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* ---------- 이벤트 ---------- */}
+        <div className="sec">
+          <h4>이벤트 <span>{ev.length}건 · config / result</span></h4>
+          <ul className="log">
             {ev.map((e) => (
-              <tr key={e.id}>
-                <td>{localTime(e.received_at)}</td>
-                <td className={`ev-${e.kind}`}>{e.kind}</td>
-                <td style={{ whiteSpace: "normal" }}>{eventSummary(e.kind, e.payload)}</td>
-                <td className="mono" style={{ whiteSpace: "normal" }}>{JSON.stringify(e.payload)}</td>
-              </tr>
+              <li key={e.id} title={JSON.stringify(e.payload)}>
+                <span className="t">{localTime(e.received_at)}</span>
+                <span className={evClass(e.kind)}>{e.kind}</span>
+                <span className="body">{eventSummary(e.kind, e.payload)}</span>
+              </li>
             ))}
-            {ev.length === 0 && <tr><td colSpan={4}>없음</td></tr>}
-          </tbody>
-        </table>
-      </fieldset>
+            {ev.length === 0 && <li><span className="t">-</span><span /><span className="muted">없음</span></li>}
+          </ul>
+        </div>
+      </div>
     </>
   );
 }

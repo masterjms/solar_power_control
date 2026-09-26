@@ -1,11 +1,12 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { api, Profile, errorText } from "./api";
+import { Card, nf } from "./ui";
 
 interface Props {
   onChanged: () => void;
 }
 
-/** 프로필 탭: 표 + 행 안에서 name/ti/ka 편집·저장, 삭제, 아래에 추가 폼. */
+/** 프로필: 표 안에서 name/ti/ka 편집·저장, 삭제, 오른쪽 카드에 추가 폼. */
 export default function Profiles({ onChanged }: Props) {
   const [rows, setRows] = useState<Profile[]>([]);
   const [edit, setEdit] = useState<Record<number, { name: string; ti: string; ka: string }>>({});
@@ -95,46 +96,50 @@ export default function Profiles({ onChanged }: Props) {
 
   return (
     <>
-      <h3 style={{ margin: "4px 0" }}>설정 프로필 (/api/profiles)</h3>
-      <p>
-        <small>
+      <Card title="설정 프로필" meta={`${rows.length}개 · /api/profiles`}>
+        <div className="cap">
           ti = Telemetry 주기(60~3600초), ka = keepalive(60~1800초). ti/ka 를 바꾸면 그 프로필의 단말 전부 cv_server +1
           → 각 단말의 다음 송신 때 CONFIG_SET 이 나간다(즉시 발행 아님, §1.1.10). id 1 은 삭제 불가.
-        </small>
-      </p>
-      {error && <div className="error">{error}</div>}
-      {msg && <div className="mono">{msg}</div>}
-      <table style={{ width: "auto" }}>
-        <thead>
-          <tr><th>id</th><th>name</th><th>ti</th><th>ka</th><th>단말 수</th><th></th></tr>
-        </thead>
-        <tbody>
-          {rows.map((p) => {
-            const e = getEdit(p);
-            return (
-              <tr key={p.id}>
-                <td>{p.id}</td>
-                <td><input value={e.name} onChange={(ev) => setField(p, "name", ev.target.value)} style={{ width: 180 }} /></td>
-                <td><input type="number" min={60} max={3600} value={e.ti} onChange={(ev) => setField(p, "ti", ev.target.value)} style={{ width: 70 }} /></td>
-                <td><input type="number" min={60} max={1800} value={e.ka} onChange={(ev) => setField(p, "ka", ev.target.value)} style={{ width: 70 }} /></td>
-                <td>{p.device_count}</td>
-                <td>
-                  <button type="button" disabled={!dirty(p)} onClick={() => save(p)}>저장</button>{" "}
-                  <button type="button" disabled={p.id === 1} className="danger" onClick={() => del(p)}>삭제</button>
-                </td>
-              </tr>
-            );
-          })}
-          {rows.length === 0 && <tr><td colSpan={6}>없음</td></tr>}
-        </tbody>
-      </table>
-      <form onSubmit={create} className="toolbar" style={{ marginTop: 8 }}>
-        <b>추가</b>
-        <label>name <input value={nName} required onChange={(e) => setNName(e.target.value)} style={{ width: 180 }} /></label>
-        <label>ti <input type="number" min={60} max={3600} value={nTi} onChange={(e) => setNTi(e.target.value)} style={{ width: 70 }} /></label>
-        <label>ka <input type="number" min={60} max={1800} value={nKa} onChange={(e) => setNKa(e.target.value)} style={{ width: 70 }} /></label>
-        <button type="submit" className="primary">추가</button>
-      </form>
+        </div>
+        {error && <div className="err">{error}</div>}
+        {msg && <code className="payload">{msg}</code>}
+        <div className="tw">
+          <table className="list">
+            <thead>
+              <tr><th>id</th><th>이름</th><th>ti (초)</th><th>ka (초)</th><th>단말 수</th><th></th></tr>
+            </thead>
+            <tbody>
+              {rows.map((p) => {
+                const e = getEdit(p);
+                return (
+                  <tr key={p.id}>
+                    <td className="muted">{p.id}</td>
+                    <td><input value={e.name} onChange={(ev) => setField(p, "name", ev.target.value)} style={{ width: 220 }} /></td>
+                    <td><input type="number" min={60} max={3600} value={e.ti} onChange={(ev) => setField(p, "ti", ev.target.value)} /></td>
+                    <td><input type="number" min={60} max={1800} value={e.ka} onChange={(ev) => setField(p, "ka", ev.target.value)} /></td>
+                    <td>{nf(p.device_count)}</td>
+                    <td>
+                      <div className="bar2" style={{ flexWrap: "nowrap" }}>
+                        <button type="button" className={`btn sm ${dirty(p) ? "pri" : ""}`} disabled={!dirty(p)} onClick={() => save(p)}>저장</button>
+                        <button type="button" className="btn sm danger" disabled={p.id === 1} onClick={() => del(p)}>삭제</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {rows.length === 0 && <tr><td colSpan={6} className="empty">없음</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      <Card title="프로필 추가" meta="POST /api/profiles">
+        <form onSubmit={create} className="form2">
+          <label className="w2">이름<input value={nName} required onChange={(e) => setNName(e.target.value)} placeholder="예: 2,200원 관제" /></label>
+          <label>ti (초)<input type="number" min={60} max={3600} value={nTi} onChange={(e) => setNTi(e.target.value)} /></label>
+          <label>ka (초)<input type="number" min={60} max={1800} value={nKa} onChange={(e) => setNKa(e.target.value)} /></label>
+          <div className="w2"><button type="submit" className="btn pri">추가</button></div>
+        </form>
+      </Card>
     </>
   );
 }

@@ -3,7 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>태양광 가로등 관제 (개발용)</title>
+    <title>태양광 조명 통합관제</title>
+    <script>
+      // 목업(v15)과 같은 테마 규칙: localStorage "slc-theme" → 없으면 OS 설정. 기본은 어두운 화면.
+      (function () {
+        var t;
+        try { t = localStorage.getItem("slc-theme"); } catch (e) {}
+        if (!t) t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", t);
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="root"></div>

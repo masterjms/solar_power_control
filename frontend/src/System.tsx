@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
-import { api, errorText } from "./api";
+import { api, Health, errorText } from "./api";
+import { Card, Met, nf } from "./ui";
 
 const REFRESH_MS = 10_000;
 
-/** 시스템 탭: /health 와 /api/metrics 원본 JSON. 10초마다 갱신. */
+/** 시스템: /health 요약 타일 + /health, /api/metrics 원본 JSON. 10초마다 갱신. */
 export default function System() {
-  const [health, setHealth] = useState<unknown>(null);
-  const [metrics, setMetrics] = useState<unknown>(null);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [metrics, setMetrics] = useState<Record<string, unknown> | null>(null);
   const [at, setAt] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
@@ -32,24 +33,31 @@ export default function System() {
     };
   }, []);
 
+  const okv = (b: boolean | undefined) => (b === undefined ? "-" : b ? "정상" : "이상");
+  const okc = (b: boolean | undefined) => (b === undefined ? "" : b ? "k" : "a");
+
   return (
-    <>
-      <h3 style={{ margin: "4px 0" }}>시스템 <small>({at || "-"} 갱신, 10초마다)</small></h3>
-      <p>
-        <small>
-          broker_log_tail = 브로커 로그로 presence 갱신 중(ADR-004). hmac_keys = 활성 HMAC 키 이름(ADR-003).
-          test_account_enabled = true 면 1차 공용 시험 계정이 아직 열려 있음(운영 전 닫을 것).
-        </small>
-      </p>
-      {error && <div className="error">{error}</div>}
-      <fieldset>
-        <legend>GET /health</legend>
-        <pre className="mono">{health ? JSON.stringify(health, null, 2) : "-"}</pre>
-      </fieldset>
-      <fieldset>
-        <legend>GET /api/metrics</legend>
-        <pre className="mono">{metrics ? JSON.stringify(metrics, null, 2) : "-"}</pre>
-      </fieldset>
-    </>
+    <div className="content">
+      <Card title="서버 상태" meta={`${at || "-"} 갱신 · 10초마다`}>
+        {error && <div className="err">{error}</div>}
+        <div className="grid2" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+          <Met l="MQTT 연결" v={okv(health?.mqtt_connected)} cls={okc(health?.mqtt_connected)} />
+          <Met l="DB" v={okv(health?.db_ok)} cls={okc(health?.db_ok)} />
+          <Met l="브로커 로그 추적" v={health ? (health.broker_log_tail ? "추적 중" : "중단") : "-"} cls={okc(health?.broker_log_tail)} h="presence 갱신(ADR-004)" />
+          <Met l="HMAC 키" v={health ? (health.hmac_keys?.length ? health.hmac_keys.join(", ") : "없음") : "-"} h="활성 키 이름(ADR-003)" />
+          <Met l="버퍼 대기" v={nf(health?.buffer_pending)} h="telemetry flush 전" />
+          <Met l="등록 큐" v={nf(health?.register_queue)} />
+          <Met l="Telemetry 유실" v={nf(health?.telemetry_dropped)} cls={health?.telemetry_dropped ? "a" : ""} h={`flush 실패 ${nf(health?.flush_failures)}`} />
+          <Met l="공용 시험 계정" v={health ? (health.test_account_enabled ? "열림" : "닫힘") : "-"} cls={health?.test_account_enabled ? "w" : "k"} h="운영 전 닫을 것" />
+        </div>
+        <div className="cap">env {health?.env ?? "-"}</div>
+      </Card>
+      <Card title="GET /health" meta="원본">
+        <pre className="json">{health ? JSON.stringify(health, null, 2) : "-"}</pre>
+      </Card>
+      <Card title="GET /api/metrics" className="full" meta="프로세스 카운터 (docs/02 §10)">
+        <pre className="json">{metrics ? JSON.stringify(metrics, null, 2) : "-"}</pre>
+      </Card>
+    </div>
   );
 }
