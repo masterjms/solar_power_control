@@ -15,7 +15,7 @@ import datetime as dt
 from sqlalchemy import CheckConstraint, DateTime, Integer, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.constants import KA_MAX_SEC, KA_MIN_SEC, TI_MAX_SEC, TI_MIN_SEC
+from app.constants import KA_MAX_SEC, TI_MAX_SEC
 from app.models.base import Base
 
 #: device.profile_id 기본값. 마이그레이션 시드의 첫 행.
@@ -25,8 +25,8 @@ DEFAULT_PROFILE_ID = 1
 class ConfigProfile(Base):
     __tablename__ = "config_profile"
     __table_args__ = (
-        CheckConstraint(f"ti BETWEEN {TI_MIN_SEC} AND {TI_MAX_SEC}", name="ck_profile_ti_range"),
-        CheckConstraint(f"ka BETWEEN {KA_MIN_SEC} AND {KA_MAX_SEC}", name="ck_profile_ka_range"),
+        CheckConstraint(f"ti BETWEEN 1 AND {TI_MAX_SEC}", name="ck_profile_ti_range"),
+        CheckConstraint(f"ka BETWEEN 1 AND {KA_MAX_SEC}", name="ck_profile_ka_range"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

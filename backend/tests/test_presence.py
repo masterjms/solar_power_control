@@ -45,7 +45,7 @@ def test_sql_clause_compiles_with_same_rules():
     assert "device.online IS true" in sql
     assert "device.last_seen_at IS NOT NULL" in sql
     assert "CASE WHEN (device.state = 'ACTIVE')" in sql
-    assert "coalesce(device.ti_override, (SELECT config_profile.ti" in sql
+    assert "coalesce(device.ti_override, (SELECT config_profile_1.ti" in sql
     assert "* 3" in sql and "ELSE 4200" in sql
     assert "interval '1 second'" in sql
 

@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     # ── 온라인 판정 ────────────────────────────────────
     #: 2차 대체 규칙: 마지막 Telemetry 가 `ti × 이 배수` 안이면 온라인 (사양서 §16.1).
     device_online_factor: int = 3
+    # CONFIG ti/ka 하한. 사양은 60 이지만 시뮬레이터로 주기 5초 시험을 하려면 개발 환경에서만 낮춘다
+    # (docker-compose.dev.yml). 운영은 기본값 60 을 그대로 둔다. 상한(3600/1800)은 상수.
+    config_ti_min_sec: int = 60
+    config_ka_min_sec: int = 60
 
     # ── 보존·집계 ───────────────────────────────────────
     #: telemetry 월 파티션 보존 개월 수. 13 = 1년 + 여유 1달.

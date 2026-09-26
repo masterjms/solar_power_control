@@ -33,10 +33,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.constants import (
     KA_MAX_SEC,
-    KA_MIN_SEC,
     SITE_MAX_LEN,
     TI_MAX_SEC,
-    TI_MIN_SEC,
     UUID_LENGTH,
     DeviceState,
 )
@@ -49,11 +47,11 @@ class Device(Base):
     __table_args__ = (
         CheckConstraint("uuid ~ '^[0-9A-F]{24}$'", name="ck_device_uuid_format"),
         CheckConstraint(
-            f"ti_override IS NULL OR ti_override BETWEEN {TI_MIN_SEC} AND {TI_MAX_SEC}",
+            f"ti_override IS NULL OR ti_override BETWEEN 1 AND {TI_MAX_SEC}",
             name="ck_device_ti_override_range",
         ),
         CheckConstraint(
-            f"ka_override IS NULL OR ka_override BETWEEN {KA_MIN_SEC} AND {KA_MAX_SEC}",
+            f"ka_override IS NULL OR ka_override BETWEEN 1 AND {KA_MAX_SEC}",
             name="ck_device_ka_override_range",
         ),
         CheckConstraint(

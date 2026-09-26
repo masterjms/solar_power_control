@@ -52,8 +52,8 @@ def upgrade() -> None:
         sa.Column("ka", sa.Integer, nullable=False),
         sa.Column("created_at", _TS, nullable=False, server_default=_NOW),
         sa.Column("updated_at", _TS, nullable=False, server_default=_NOW),
-        sa.CheckConstraint("ti BETWEEN 60 AND 3600", name="ck_profile_ti_range"),
-        sa.CheckConstraint("ka BETWEEN 60 AND 1800", name="ck_profile_ka_range"),
+        sa.CheckConstraint("ti BETWEEN 1 AND 3600", name="ck_profile_ti_range"),
+        sa.CheckConstraint("ka BETWEEN 1 AND 1800", name="ck_profile_ka_range"),
     )
     for pid, name, ti, ka in _PROFILE_SEED:
         op.execute(
@@ -100,11 +100,11 @@ def upgrade() -> None:
                     existing_nullable=False)
     op.create_check_constraint(
         "ck_device_ti_override_range", "device",
-        "ti_override IS NULL OR ti_override BETWEEN 60 AND 3600",
+        "ti_override IS NULL OR ti_override BETWEEN 1 AND 3600",
     )
     op.create_check_constraint(
         "ck_device_ka_override_range", "device",
-        "ka_override IS NULL OR ka_override BETWEEN 60 AND 1800",
+        "ka_override IS NULL OR ka_override BETWEEN 1 AND 1800",
     )
     op.create_index("ix_device_last_seen_at", "device", ["last_seen_at"])
     op.create_index("ix_device_grp", "device", ["grp"])

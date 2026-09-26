@@ -7,14 +7,20 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.config import settings
 from app.constants import (
     KA_MAX_SEC,
-    KA_MIN_SEC,
     SITE_MAX_LEN,
     TI_MAX_SEC,
-    TI_MIN_SEC,
     DeviceState,
 )
+
+
+def _check_min(value: int | None, name: str, minimum: int) -> int | None:
+    # 하한은 settings(개발 환경에서만 낮춤). pydantic Field(ge=) 는 import 시점 상수라 여기서 본다.
+    if value is not None and value < minimum:
+        raise ValueError(f"{name} 은 {minimum} 이상이어야 한다")
+    return value
 
 
 class DeviceOut(BaseModel):
@@ -124,13 +130,23 @@ class ConfigPatch(BaseModel):
     """전부 선택. 보낸 키만 바꾼다 — `ti_override: null` 은 override 해제(프로필 값으로)."""
 
     profile_id: int | None = None
-    ti_override: int | None = Field(default=None, ge=TI_MIN_SEC, le=TI_MAX_SEC)
-    ka_override: int | None = Field(default=None, ge=KA_MIN_SEC, le=KA_MAX_SEC)
+    ti_override: int | None = Field(default=None, ge=1, le=TI_MAX_SEC)
+    ka_override: int | None = Field(default=None, ge=1, le=KA_MAX_SEC)
     lat: float | None = Field(default=None, ge=-90, le=90)
     lon: float | None = Field(default=None, ge=-180, le=180)
     site: str | None = Field(default=None, max_length=SITE_MAX_LEN)
     address: str | None = Field(default=None, max_length=500)
     bjd_code: str | None = Field(default=None, min_length=10, max_length=10)
+
+    @field_validator("ti_override")
+    @classmethod
+    def _ti_min(cls, v: int | None) -> int | None:
+        return _check_min(v, "ti_override", settings.config_ti_min_sec)
+
+    @field_validator("ka_override")
+    @classmethod
+    def _ka_min(cls, v: int | None) -> int | None:
+        return _check_min(v, "ka_override", settings.config_ka_min_sec)
 
 
 class ConfigPatchOut(BaseModel):
