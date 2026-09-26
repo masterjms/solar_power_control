@@ -23,7 +23,20 @@ SCALE = 60.0
 IMMEDIATE = 2.0
 
 
-async def _set_state(ctx: Ctx, uuid: str, state: str, *, site: str | None = None, reason: str | None = None) -> dict:
+#: 3차 단말 주기(초). time_scale 은 ti 에 적용되지 않으므로(사양 그대로) 짧게 두고, 승인 때 override 로 고정한다.
+PH3_TI = 5
+PH3_KA = 300
+#: 값 변경 시험용 두 번째 ti (300 은 실제 300초 주기라 이후 TM 대기가 전부 실패한다).
+PH3_TI2 = 7
+
+
+async def _set_state(ctx: Ctx, uuid: str, state: str, *, site: str | None = None, reason: str | None = None,
+                     override: bool = True) -> dict:
+    if override and state.upper() == "ACTIVE":
+        # 승인하면 서버가 프로필 기본값(ti 600)을 CONFIG_SET 으로 내려 주기가 600초가 된다 → 시험 주기로 고정.
+        rc = await ctx.s.rest.patch_config(uuid, ti_override=PH3_TI, ka_override=PH3_KA)
+        if rc.status_code >= 400:
+            raise Fail(f"승인 전 ti/ka override 실패 {uuid}: {rc.status_code} {rc.text[:120]}")
     r = await ctx.s.rest.patch_state(uuid, state, site=site, reason=reason)
     if r.status_code >= 400:
         raise Fail(f"state={state} 설정 실패 {r.status_code} {error_code(r)}: {r.text[:200]}")
@@ -33,7 +46,7 @@ async def _set_state(ctx: Ctx, uuid: str, state: str, *, site: str | None = None
 
 
 async def _gate_device(ctx: Ctx, offset: int = 0, **flags):
-    (dev,) = await make_devices(ctx, 1, offset=offset, ti=600, mode="2cha", time_scale=SCALE, **flags)
+    (dev,) = await make_devices(ctx, 1, offset=offset, ti=PH3_TI, mode="2cha", time_scale=SCALE, **flags)
     return dev
 
 
@@ -47,6 +60,8 @@ async def _tm_count(ctx: Ctx, uuid: str, since) -> int:
 
 async def _assert_no_tm(ctx: Ctx, dev, since, seconds: float = 6.0) -> None:
     """seconds 동안 TM 이 하나도 적재되지 않아야 한다. 단말이 주기를 스스로 당겨 보내도록 kick 한다."""
+    # 직전에 보낸 TM 이 서버 1초 버퍼에 남아 있을 수 있다 — flush 가 끝난 뒤를 기준값으로 잡는다.
+    await asyncio.sleep(2.0)
     n0 = await _tm_count(ctx, dev.uuid, since)
     sent0 = dev.stats.tm_sent
     for _ in range(max(1, int(seconds / 2))):
@@ -355,7 +370,7 @@ async def s3_08(ctx: Ctx) -> None:
     profile = r.json()
     pid = profile["id"]
     ctx.defer(lambda: ctx.s.rest.delete_profile(pid))  # 단말 정리(LIFO 뒤에 등록되는 것) 다음에 돈다
-    devices = await make_devices(ctx, 3, mode="2cha", ti=600, time_scale=SCALE)
+    devices = await make_devices(ctx, 3, mode="2cha", ti=PH3_TI, time_scale=SCALE)
     for d in devices:
         await ctx.wait_until(lambda d=d: d.state == "PENDING", timeout=20, what=f"{d.uuid[-4:]} PENDING")
         r = await ctx.s.rest.patch_config(d.uuid, profile_id=pid)
@@ -400,7 +415,7 @@ async def s3_08(ctx: Ctx) -> None:
     ctx.log(f"프로필 변경 → ACTIVE 단말 CONFIG_SET 까지 {time.monotonic() - t0:.0f}s (쿨다운 영향 포함)")
     ctx.check_eq(suspended.stats.config_set_rx, rx[suspended.uuid], "SUSPENDED 단말은 CONFIG_SET 없음")
 
-    await _set_state(ctx, suspended.uuid, "ACTIVE")
+    await _set_state(ctx, suspended.uuid, "ACTIVE", override=False)  # 프로필 값(1200)이 내려와야 한다
     await _wait_gate(ctx, suspended, "ACTIVE")
     async def got_s() -> bool:
         await suspended.send_tm_now()
@@ -452,27 +467,27 @@ async def s3_10(ctx: Ctx) -> None:
     since = await ctx.s.db.now()
     dev = await _gate_device(ctx)
     await _wait_gate(ctx, dev, "PENDING")
-    r = await ctx.s.rest.patch_config(dev.uuid, ti_override=300, lat=37.3617, lon=126.9352)
+    r = await ctx.s.rest.patch_config(dev.uuid, ti_override=PH3_TI2, lat=37.3617, lon=126.9352)
     ctx.check(r.status_code < 300, f"PENDING 중 PATCH 허용 ({r.status_code} {r.text[:100]})")
     body = r.json()
     ctx.check(body.get("published") is False, f"published=false: {body}")
     ctx.check_eq(body.get("reason"), "NOT_ACTIVE", "reason")
-    ctx.check_eq(body.get("ti_effective"), 300, "ti_effective=300")
+    ctx.check_eq(body.get("ti_effective"), PH3_TI2, "ti_effective=PH3_TI2")
     await asyncio.sleep(1.5)
     ctx.check_eq(dev.stats.config_set_rx, 0, "PENDING 이라 CONFIG_SET 은 아직 안 내려감")
     row = await ctx.s.db.device(dev.uuid)
     ctx.check(row["cv_server"] >= 1, f"PATCH 로 cv_server 는 올라감({row['cv_server']})")
     ctx.check(row.get("config_sent_at") is None, "config_sent_at 은 아직 없음")
 
-    await _set_state(ctx, dev.uuid, "ACTIVE", site="X")
+    await _set_state(ctx, dev.uuid, "ACTIVE", site="X", override=False)  # 위에서 PATCH 한 값이 그대로 나가야 한다
     await _wait_gate(ctx, dev, "ACTIVE")
     cfg = await wait_config_set(ctx, dev, count=1, what="승인 뒤 첫 TM 직후 CONFIG_SET")
     delay = rx_delay(dev, "CONFIG_SET", dev.last_tm_sent_at)
     ctx.check(delay is not None and delay < IMMEDIATE, f"TM → CONFIG_SET {delay and round(delay, 3)}s")
-    check_config_set_shape(ctx, cfg, ti=300, cv=row["cv_server"], lat_lon=True)
+    check_config_set_shape(ctx, cfg, ti=PH3_TI2, cv=row["cv_server"], lat_lon=True)
     ctx.check(abs(cfg["lat"] - 37.3617) < 1e-6 and abs(cfg["lon"] - 126.9352) < 1e-6, "lat/lon 값")
     await ctx.wait_until(lambda: dev.stats.config_ack_ok >= 1, timeout=10, what="CONFIG_ACK OK")
-    ctx.check(dev.ti == 300 and dev.lat == 37.3617, "단말 적용")
+    ctx.check(dev.ti == PH3_TI2 and dev.lat == 37.3617, "단말 적용")
     payload = await send_tm_and_wait(ctx, dev, since)
     ctx.check_eq(payload["cv"], row["cv_server"], "다음 TM cv == cv_server")
 
@@ -492,10 +507,10 @@ async def s3_11(ctx: Ctx) -> None:
 
     dev.state_ack_next = 1
     acks = dev.stats.register_ack_rx
-    r = await ctx.s.rest.patch_config(dev.uuid, ti_override=300)
+    r = await ctx.s.rest.patch_config(dev.uuid, ti_override=PH3_TI2)
     ctx.check(r.status_code < 300 and r.json().get("published") is True, "PATCH → 즉시 CONFIG_SET")
     await ctx.wait_until(lambda: dev.stats.config_ack_state >= 1, timeout=15, what="단말이 STATE 로 응답")
-    ctx.check_eq(dev.ti, 600, "STATE 면 아무것도 적용 안 함")
+    ctx.check_eq(dev.ti, PH3_TI, "STATE 면 아무것도 적용 안 함")
     await ctx.wait_until(lambda: dev.stats.register_ack_rx > acks, timeout=15, what="서버가 REGISTER_ACK 재발행")
     ctx.check_eq(dev.state, "ACTIVE", "재발행된 ACK 는 DB 대로 ACTIVE")
     ack = await _retained_ack(ctx, dev)
@@ -511,7 +526,7 @@ async def s3_11(ctx: Ctx) -> None:
         await asyncio.sleep(2.0)
         return dev.stats.config_ack_ok > ok0
     await ctx.wait_until(got, timeout=75, interval=0.1, what="다음 TM 에 CONFIG_SET 재전송 → OK")
-    ctx.check_eq(dev.ti, 300, "ti=300 적용")
+    ctx.check_eq(dev.ti, PH3_TI2, "ti=PH3_TI2 적용")
     async def converged() -> bool:
         await dev.send_tm_now()
         r2 = await ctx.s.db.device(dev.uuid)
@@ -524,4 +539,5 @@ async def s3_11(ctx: Ctx) -> None:
     ctx.check(r.status_code < 300, f"POST /register-ack → {r.status_code}")
     await ctx.wait_until(lambda: dev.stats.register_ack_rx > acks, timeout=10, what="재발행 ACK 수신")
     ctx.check_eq(dev.state, "ACTIVE", "여전히 ACTIVE")
-    ctx.check(await tm_in_db(ctx, dev.uuid, dev.last_tm["sq"], since), "TM 적재 계속")
+    await ctx.wait_until(lambda: tm_in_db(ctx, dev.uuid, dev.last_tm["sq"], since), timeout=FLUSH_WAIT,
+                         what="TM 적재 계속(마지막 sq 가 DB 에)")
