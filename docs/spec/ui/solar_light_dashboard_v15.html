@@ -466,8 +466,8 @@ input.tm{width:104px !important; text-align:left}
         <div class="ch"><h2>승인하면 보내는 것</h2><div class="meta">승인 + 설치 정보</div></div>
         <div class="cb">
           <ol class="steps">
-            <li><span class="no">1</span><div><div>승인</div><div class="s"><code>REGISTER_ACK</code> state = ACTIVE, 시설명</div></div></li>
-            <li><span class="no">2</span><div><div>설치 정보</div><div class="s"><code>CONFIG_SET</code> 법정동코드(grp), 좌표, 주기 → <code>CONFIG_ACK</code> 대기 (30초, 취소 가능)</div></div></li>
+            <li><span class="no">1</span><div><div>승인</div><div class="s"><code>REGISTER_ACK</code> state = ACTIVE, 시설명, 그룹(grp = 법정동코드 + 00) — retain</div></div></li>
+            <li><span class="no">2</span><div><div>설치 정보</div><div class="s"><code>CONFIG_SET</code> 좌표, 주기 → <code>CONFIG_ACK</code> 대기 (30초, 취소 가능). grp 는 CONFIG_SET 에 넣지 않는다</div></div></li>
           </ol>
           <div class="cap">응답이 없거나 취소하면 <code style="font-family:var(--mono)">REGISTER_ACK state=PENDING</code>을 다시 보내 되돌린다.</div>
           <div class="cap">설정값, 1년 스케줄, Flash 저장은 등록 뒤 단말 설정 화면에서 한다.</div>
@@ -687,9 +687,10 @@ function drawList(){
 /* ---------- 제어 버튼 공통 (개별 d / 그룹 g) ---------- */
 /* ---------- 제어 공통 (개별 d / 그룹 g) ----------
   채널: PWM1 주등(기본), PWM2 입간판(선택). PWM3 는 하드웨어에 있으나 쓰지 않는다.
-  CMD payload (서버 사양 §3.10.7 에 ch 추가 필요)
-    {"type":"CMD","seq":n,"exp":30,"act":"on|off|auto","ch":[1,2],"dur":3600}
-    {"type":"CMD","seq":n,"exp":30,"act":"pwm","ch":[1,2],"pwm":[70,40],"dur":3600}
+  COMMAND payload (서버 사양 §3.10.7). ts = 보낸 시각 YYMMDDThhmmss (KST)
+    {"type":"COMMAND","seq":n,"ts":"260927T013512","exp":30,"act":"on|off","ch":[1,2],"dur":3600}
+    {"type":"COMMAND","seq":n,"ts":"260927T013512","exp":30,"act":"pwm","ch":[1,2],"pwm":[70,40],"dur":3600}
+    {"type":"COMMAND","seq":n,"ts":"260927T013512","exp":30,"act":"auto","ch":[1,2]}
   ch 에 없는 채널은 건드리지 않는다. */
 const CHN={1:"주등",2:"입간판"};
 const newC=()=>({act:"on",ch:{1:true,2:false},pwm:{1:70,2:70},dur:3600});
@@ -709,7 +710,8 @@ function cmdLabel(c){
   if(c.act==="pwm") return `밝기 ${ch.map(k=>`${CHN[k]} ${c.pwm[k]}%`).join(", ")} ${DUR[c.dur]}`;
   return `${ch.map(k=>CHN[k]).join("+")} ${ACT[c.act]} ${DUR[c.dur]}`;
 }
-const payload=c=>{ const ch=selCh(c), p={type:"CMD",seq:seq+1,exp:30,act:c.act,ch};
+const tsKST=()=>{ const x=new Date(Date.now()+9*3600e3).toISOString(); return x.slice(2,4)+x.slice(5,7)+x.slice(8,10)+"T"+x.slice(11,13)+x.slice(14,16)+x.slice(17,19); };
+const payload=c=>{ const ch=selCh(c), p={type:"COMMAND",seq:seq+1,ts:tsKST(),exp:30,act:c.act,ch};
   if(c.act==="pwm") p.pwm=ch.map(k=>c.pwm[k]); if(c.act!=="auto") p.dur=c.dur; return JSON.stringify(p); };
 function ctlChanged(sc){ if(sc==="d") drawSendD(); else { G.stage="idle"; $("gPayload").textContent=payload(C.g); drawGAction(); } }
 
@@ -764,7 +766,7 @@ function gStats(){
   const n=NODES[G.node], a=agg(n), root=n.depth===0, cutOn=C.g.act==="on"||C.g.act==="pwm";
   const cut=Math.round(a.c.alarm*.7);
   return {tot:a.tot, off:a.c.off, online:a.tot-a.c.off, cut:cutOn?cut:0, cutAll:cut, root,
-    topics: root?["iotlight/all/cmd"]:leaves(n).map(l=>`iotlight/group/${l.code}/cmd`),
+    topics: root?["iotlight/all/cmd"]:leaves(n).map(l=>`iotlight/group/${l.code}00/cmd`),
     label: root?"전체 단말":pathName(n)+(n.children?"":` (${n.code})`)};
 }
 function treeHTML(n){
@@ -1211,8 +1213,8 @@ function runR(){
   const p=PENDING[R.pi], n=NODES[R.node], name=$("rName").value.trim(), lat=+$("rLat").value, lon=+$("rLon").value;
   R.stage="run"; drawR();
   $("rAct").innerHTML=`<h4>진행</h4><ol class="steps">
-      <li class="done"><span class="no">1</span><div><div>승인</div><div class="s"><code>REGISTER_ACK</code> state=ACTIVE, site="${name}" (retain)</div></div><span class="r st-ok">발행</span></li>
-      <li class="run" id="rS2"><span class="no">2</span><div><div>설치 정보</div><div class="s"><code>CONFIG_SET</code> grp="${n.code}", lat, lon, ti=600</div></div><span class="r muted">응답 대기</span></li>
+      <li class="done"><span class="no">1</span><div><div>승인</div><div class="s"><code>REGISTER_ACK</code> state=ACTIVE, site="${name}", grp="${n.code}00" (retain)</div></div><span class="r st-ok">발행</span></li>
+      <li class="run" id="rS2"><span class="no">2</span><div><div>설치 정보</div><div class="s"><code>CONFIG_SET</code> lat, lon, ti=600</div></div><span class="r muted">응답 대기</span></li>
     </ol><div id="rComm" style="margin-top:12px"></div><div id="rEnd"></div>`;
   $("rAct").scrollIntoView({behavior:"smooth",block:"start"});
   R.job=comm({box:$("rComm"),type:"CONFIG_SET",alive:!p.silent,writes:false,

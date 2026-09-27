@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, DeviceCounts, Health, errorText } from "./api";
+import { api, DeviceCounts, Health, Me, errorText } from "./api";
 import Dashboard from "./Dashboard";
 import DeviceList from "./DeviceList";
 import DeviceDetail from "./DeviceDetail";
@@ -7,16 +7,20 @@ import Pending from "./Pending";
 import DeviceConfig from "./DeviceConfig";
 import Profiles from "./Profiles";
 import System from "./System";
+import Regions from "./Regions";
+import GroupControl from "./GroupControl";
 import { nf } from "./ui";
 
 const REFRESH_MS = 10_000;
 
-type Page = "dash" | "devices" | "pending" | "config" | "profiles" | "system";
+type Page = "dash" | "devices" | "pending" | "group" | "regions" | "config" | "profiles" | "system";
 
 const PAGES: { id: Page; ico: string; label: string; title: string }[] = [
   { id: "dash", ico: "▦", label: "대시보드", title: "통합 관제 대시보드" },
   { id: "devices", ico: "≡", label: "단말 목록", title: "단말 목록" },
   { id: "pending", ico: "＋", label: "단말 등록·승인", title: "단말 등록·승인" },
+  { id: "group", ico: "⊞", label: "그룹 제어", title: "그룹 제어" },
+  { id: "regions", ico: "⌥", label: "지역(법정동)", title: "지역(법정동) 트리" },
   { id: "config", ico: "≣", label: "단말 설정", title: "단말 설정" },
   { id: "profiles", ico: "◫", label: "프로필(설정)", title: "설정 프로필" },
   { id: "system", ico: "⚙", label: "시스템", title: "시스템" },
@@ -24,7 +28,6 @@ const PAGES: { id: Page; ico: string; label: string; title: string }[] = [
 /** 아직 백엔드가 없는 메뉴 — 회색으로만 보인다(docs/00 §2 단계). */
 const LATER: { ico: string; label: string; stage: string }[] = [
   { ico: "◎", label: "지도", stage: "7차" },
-  { ico: "⊞", label: "그룹 제어", stage: "5차" },
   { ico: "◷", label: "스케줄", stage: "6차" },
   { ico: "!", label: "알람", stage: "6차" },
   { ico: "⇪", label: "OTA", stage: "7차" },
@@ -50,6 +53,13 @@ export default function App() {
   const [updAt, setUpdAt] = useState<Date | null>(null);
   const [now, setNow] = useState(new Date());
   const [theme, setTheme] = useState<"dark" | "light">(themeNow);
+  const [me, setMe] = useState<Me | null>(null);
+  const [meErr, setMeErr] = useState<string | null>(null);
+
+  // 사용자·역할(5차 §3.9.3 #9). 실패하면 관리자 권한으로 본다(최고관리자 버튼을 숨긴다).
+  useEffect(() => {
+    api.me().then((m) => (setMe(m), setMeErr(null))).catch((e) => setMeErr(errorText(e)));
+  }, [tick]);
 
   useEffect(() => {
     const onHash = () => setPage(pageFromHash());
@@ -155,6 +165,9 @@ export default function App() {
           <span className="pill" title="활성 HMAC 키(ADR-003)">
             HMAC {health ? (health.hmac_keys?.length ? health.hmac_keys.join(", ") : "없음") : "-"}
           </span>
+          <span className={`pill ${me?.role === "super_admin" ? "role" : ""}`} title={meErr ?? "nginx Basic auth 사용자 → X-Remote-User (ADR-005)"}>
+            {me ? `${me.user} · ${me.role === "super_admin" ? "최고관리자" : "관리자"}` : meErr ? "사용자 확인 실패 · 관리자로 표시" : "사용자 -"}
+          </span>
           <span className="pill clock">{now.toLocaleDateString("ko-KR")} {now.toTimeString().slice(0, 8)}</span>
           <button className="btn" onClick={() => setTick((t) => t + 1)} title="지금 다시 읽기(자동 10초)">새로고침</button>
           <button className="btn icon" onClick={toggleTheme} aria-label={theme === "dark" ? "밝은 화면으로" : "어두운 화면으로"}>
@@ -169,6 +182,8 @@ export default function App() {
           </div>
         )}
         {page === "pending" && <Pending tick={tick} onChanged={refresh} onSelect={setSelected} />}
+        {page === "group" && <GroupControl role={me?.role ?? null} counts={counts} tick={tick} onSelect={setSelected} />}
+        {page === "regions" && <Regions role={me?.role ?? null} health={health} tick={tick} onSelect={setSelected} />}
         {page === "config" && <DeviceConfig />}
         {page === "profiles" && (
           <div className="content">

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { api, DeviceList as DeviceListRes, STATES, errorText } from "./api";
+import { MouseEvent, useEffect, useState } from "react";
+import { api, Device, DeviceList as DeviceListRes, STATES, errorText } from "./api";
 import { div100, relTime, str } from "./format";
 import { Battery, Card, OnlineMark, StateBadge, stateLabel, nf } from "./ui";
 
@@ -42,10 +42,45 @@ function Pager({ page, pages, total, size, onPage }: { page: number; pages: numb
   );
 }
 
-/** 단말 목록(§3.9.2 화면 1). state/online/q 전부 서버 필터. 서버가 PENDING 을 먼저 준다. 행 클릭 → 드로어. */
+/** 지역 경로를 짧게: "경기도 > 안양시 만안구 > 안양동" → "안양시 만안구 > 안양동". */
+function shortPath(d: Device): string {
+  if (!d.node_path) return d.node_name ?? "-";
+  const parts = d.node_path.split(">").map((x) => x.trim());
+  return parts.slice(-2).join(" > ");
+}
+
+/** "원격 n분 남음" 배지 + 해제(act:auto 개별 명령). 사양서 §3.9.3 #7. */
+export function RemoteBadge({ d, onReleased }: { d: Device; onReleased?: (msg: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  if (!d.remote_active) return <span className="muted">-</span>;
+  const min = Math.max(1, Math.ceil((d.remote_remaining_sec ?? 0) / 60));
+  async function release(e: MouseEvent) {
+    e.stopPropagation();
+    if (!confirm(`${d.site ?? d.uuid}\n원격 제어를 해제하고 스케줄로 복귀시킬까요? (개별 COMMAND act=auto)`)) return;
+    setBusy(true);
+    try {
+      const r = await api.createCommand({ target: { kind: "device", id: d.uuid }, act: "auto", ch: [1, 2] });
+      onReleased?.(`${d.site ?? d.uuid}: 해제 명령 #${r.seq} 발행함 — 단말은 다음 송신 뒤 받는다(최대 약 5분)`);
+    } catch (x) {
+      onReleased?.(errorText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <span className="bar2" style={{ flexWrap: "nowrap" }}>
+      <span className="badge b-blue" title={`override ${d.override_act ?? "?"} · ${d.override_level ?? ""} · seq ${d.override_seq ?? "-"} · until ${d.override_until ?? "-"}`}>원격 {min}분 남음</span>
+      <button type="button" className="btn sm" disabled={busy} onClick={release}>해제</button>
+    </span>
+  );
+}
+
+/** 단말 목록(§3.9.2 화면 1). state/online/q/remote 전부 서버 필터. 서버가 PENDING 을 먼저 준다. 행 클릭 → 드로어. */
 export default function DeviceList({ tick, selected, onSelect }: Props) {
   const [state, setState] = useState("");
   const [online, setOnline] = useState("");
+  const [remote, setRemote] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [q, setQ] = useState(""); // 입력 후 300ms 지나면 text → q
   const [page, setPage] = useState(1);
@@ -62,7 +97,7 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
     let alive = true;
     const load = () =>
       api
-        .listDevices({ page, size, state: state || undefined, online: online || undefined, q: q || undefined })
+        .listDevices({ page, size, state: state || undefined, online: online || undefined, q: q || undefined, remote })
         .then((r) => alive && (setRes(r), setError(null)))
         .catch((e) => alive && setError(errorText(e)));
     load();
@@ -71,7 +106,7 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
       alive = false;
       clearInterval(id);
     };
-  }, [page, size, state, online, q, tick]);
+  }, [page, size, state, online, q, remote, tick]);
 
   const rows = res?.items ?? [];
   const total = res?.total ?? 0;
@@ -95,6 +130,9 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
           <option value="true">온라인</option>
           <option value="false">오프라인</option>
         </select>
+        <label className="chk2" title="remote=true — Telemetry md=2 이고 override 유효">
+          <input type="checkbox" checked={remote} onChange={(e) => (setRemote(e.target.checked), setPage(1))} />원격 제어 중만
+        </label>
         <input type="search" placeholder="시설명 / UUID 검색" aria-label="검색" value={text} onChange={(e) => setText(e.target.value)} style={{ width: 220 }} />
         <span className="sp" />
         <select value={size} aria-label="페이지 크기" onChange={(e) => (setSize(Number(e.target.value)), setPage(1))}>
@@ -104,11 +142,12 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
         </select>
       </div>
       {error && <div className="err">{error}</div>}
+      {note && <div className="okl">{note}</div>}
       <div className="tw">
         <table className="list">
           <thead>
             <tr>
-              <th>상태</th><th>시설명</th><th>UUID</th><th>통신</th><th>조명</th><th>배터리</th>
+              <th>상태</th><th>시설명</th><th>지역</th><th>UUID</th><th>통신</th><th>조명</th><th>원격</th><th>배터리</th>
               <th>F/W</th><th>프로필</th><th>ti 의도/보고</th><th>ka 의도/보고</th><th>bv</th>
             </tr>
           </thead>
@@ -117,6 +156,7 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
               <tr key={d.uuid} data-click className={d.uuid === selected ? "sel" : ""} onClick={() => onSelect(d.uuid)}>
                 <td><StateBadge state={d.state} /></td>
                 <td>{str(d.site)}{d.config_mismatch && <span className="md c-warn" title="config_mismatch">불일치</span>}{d.config_pending && <span className="md c-warn" title="config_pending">CONFIG 대기</span>}</td>
+                <td title={d.node_path ?? "지역 미배정"}>{d.node_id ? shortPath(d) : <span className="muted">미배정</span>}</td>
                 <td className="mono">{d.uuid}</td>
                 <td title={`is_online=${d.is_online} (브로커 online=${d.online}, 수신 보조 규칙 AND)\nlast_seen_at ${d.last_seen_at ?? "-"}`}>
                   <OnlineMark on={d.is_online} /> <span className="md">{relTime(d.last_seen_at)}</span>
@@ -124,6 +164,7 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
                 <td>
                   {d.last_telemetry?.on === 1 ? <><span className="bulb on" /> 점등</> : d.last_telemetry?.on === 0 ? <><span className="bulb" /> 소등</> : <span className="muted">-</span>}
                 </td>
+                <td><RemoteBadge d={d} onReleased={setNote} /></td>
                 <td><Battery sc={d.last_telemetry?.sc} /></td>
                 <td>{str(d.fw)}</td>
                 <td title={`profile_id=${d.profile_id}`}>{str(d.profile_name)}</td>
@@ -133,7 +174,7 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={11} className="empty">{res ? "조건에 맞는 단말이 없습니다. 필터를 바꿔 보세요." : "불러오는 중…"}</td></tr>
+              <tr><td colSpan={13} className="empty">{res ? "조건에 맞는 단말이 없습니다. 필터를 바꿔 보세요." : "불러오는 중…"}</td></tr>
             )}
           </tbody>
         </table>

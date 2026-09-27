@@ -94,3 +94,16 @@ export function Met({ l, v, h, cls }: { l: ReactNode; v: ReactNode; h?: ReactNod
 }
 
 export const nf = (n: number | null | undefined) => (n === null || n === undefined ? "-" : n.toLocaleString("ko-KR"));
+
+const SITE_MAX = 24; // 백엔드 site 한도(docs/05)
+const SITE_HINT = 16; // 사양서 §3.9.3 #2 — 단말 OLED 한글 16자
+
+/** 시설명 길이 안내 — 24자까지 받지만 단말 화면은 한글 16자. */
+export function SiteHint({ value }: { value: string }) {
+  const n = [...value].length;
+  return (
+    <small className={n > SITE_HINT ? "c-warn" : ""}>
+      {n}/{SITE_HINT}자 권장 (단말 OLED 한글 {SITE_HINT}자, 최대 {SITE_MAX})
+    </small>
+  );
+}

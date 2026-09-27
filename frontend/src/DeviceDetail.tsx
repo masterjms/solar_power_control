@@ -3,7 +3,10 @@ import {
   api, ConfigPatchBody, ConfigPatchRes, Device, DeviceEvent, DeviceState, Profile, Telemetry, errorText,
 } from "./api";
 import { div100, erLabel, eventSummary, hex, localTime, mdLabel, pct, relTime, str } from "./format";
-import { Battery, Lamp, Met, OnlineMark, StateBadge } from "./ui";
+import { Battery, Lamp, Met, OnlineMark, SiteHint, StateBadge } from "./ui";
+import { CommandForm, CommandHistory, CommandResult, durText } from "./Command";
+import { RemoteBadge } from "./DeviceList";
+import { RegionTree, isLeaf, pathOf, useRegions } from "./Tree";
 
 const REFRESH_MS = 10_000;
 const WATCH_POLL_MS = 5_000; // 승인/설정 후 "단말이 받음" 확인 폴링
@@ -64,7 +67,25 @@ const evClass = (kind: string) =>
   ["REGISTER_ACK", "STATE_CHANGE", "CONFIG_SET", "PING"].includes(kind) ? "dn"
     : ["OFFLINE", "LWT", "LOST", "ERR"].includes(kind) ? "er" : "up";
 
-/** 단말 상세 드로어(§3.9.2 화면 2). 승인·설정·PING·삭제·이력 전부 여기. */
+/** 말단 법정동 고르기(드로어 설정 패널용). 펼 때만 트리를 읽는다. */
+function NodePicker({ value, onPick }: { value: number | null; onPick: (id: number, label: string) => void }) {
+  const { tree, list, error } = useRegions();
+  const [filter, setFilter] = useState("");
+  return (
+    <div className="w2" style={{ display: "grid", gap: 8 }}>
+      <input type="search" placeholder="법정동 찾기" aria-label="트리 필터" value={filter} onChange={(e) => setFilter(e.target.value)} />
+      {error && <div className="err">{error}</div>}
+      <RegionTree tree={tree} selected={value} onSelect={(v) => {
+          if (typeof v !== "number") return;
+          const n = tree.byId.get(v);
+          onPick(v, n ? pathOf(n) : String(v));
+        }} canSelect={isLeaf}
+        filter={filter} className="short" empty={list ? "지역이 없습니다." : "불러오는 중…"} />
+    </div>
+  );
+}
+
+/** 단말 상세 드로어(§3.9.2 화면 2). 승인·설정·원격 제어·PING·삭제·이력 전부 여기. */
 export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Props) {
   const [dev, setDev] = useState<Device | null>(null);
   const [tm, setTm] = useState<Telemetry[]>([]);
@@ -88,10 +109,16 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
   const [lon, setLon] = useState("");
   const [site, setSite] = useState("");
   const [address, setAddress] = useState("");
-  const [bjd, setBjd] = useState("");
+  const [nodeSel, setNodeSel] = useState<number | null | undefined>(undefined); // undefined = 그대로
+  const [nodeLabel, setNodeLabel] = useState<string | null>(null);
+  const [picker, setPicker] = useState(false);
   const formTouched = useRef(false);
   const [cfgRes, setCfgRes] = useState<ConfigPatchRes | null>(null);
   const [cfgErr, setCfgErr] = useState<string | null>(null);
+
+  // 원격 제어(5차)
+  const [cmdSeq, setCmdSeq] = useState<number | null>(null);
+  const [cmdNote, setCmdNote] = useState<string | null>(null);
 
   // PING / 삭제
   const [actionMsg, setActionMsg] = useState<string | null>(null);
@@ -112,7 +139,8 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
         setLon(d.lon === null ? "" : String(d.lon));
         setSite(d.site ?? "");
         setAddress(d.address ?? "");
-        setBjd(d.bjd_code ?? "");
+        setNodeSel(undefined);
+        setNodeLabel(null);
         setAckSite(d.site ?? "");
       }
       return d;
@@ -137,6 +165,9 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
     setCfgErr(null);
     setActionMsg(null);
     setActionErr(null);
+    setCmdSeq(null);
+    setCmdNote(null);
+    setPicker(false);
     load();
     const id = setInterval(load, REFRESH_MS);
     return () => clearInterval(id);
@@ -188,7 +219,9 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
     setAckMsg(null);
     setAckErr(null);
     setConfigAck(null);
-    const body: { state: DeviceState; site?: string; reason?: string | null } = { state: a.to };
+    const body: { state: DeviceState; site?: string; reason?: string | null; node_id?: number } = { state: a.to };
+    // 설정 패널에서 말단을 골라 두었으면 승인과 함께 배정(docs/05 PATCH /state node_id)
+    if (a.to === "ACTIVE" && typeof nodeSel === "number") body.node_id = nodeSel;
     if (a.needSite) {
       let s = ackSite.trim();
       if (!s) {
@@ -256,11 +289,12 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
       body.site = site;
     }
     if (address !== (dev.address ?? "")) body.address = address || null;
-    if (bjd !== (dev.bjd_code ?? "")) body.bjd_code = bjd || null;
+    if (nodeSel !== undefined && nodeSel !== dev.node_id) body.node_id = nodeSel;
     if (Object.keys(body).length === 0) { setCfgErr("바뀐 값 없음"); return; }
     try {
       const r = await api.patchConfig(uuid, body);
       setCfgRes(r);
+      setPicker(false);
       const affectsDevice = ["profile_id", "ti_override", "ka_override", "lat", "lon"].some((k) => k in body);
       if (affectsDevice) setWatch({ kind: "config", since: Date.now(), published: r.published || r.reason === "NOT_ACTIVE" });
       formTouched.current = false;
@@ -360,8 +394,14 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
             <Met l="state_reason" v={str(dev.state_reason)} />
           </div>
           <div className="form2" style={{ marginTop: 12 }}>
-            <label>시설명 site <small>24자 이내, 단말 OLED 표시</small><input value={ackSite} maxLength={24} placeholder="예: 산본동 22번 가로등" onChange={(e) => setAckSite(e.target.value)} /></label>
+            <label>시설명 site <SiteHint value={ackSite} /><input value={ackSite} maxLength={24} placeholder="예: 산본동 22번 가로등" onChange={(e) => setAckSite(e.target.value)} /></label>
             <label>사유 reason <small>거부·중지 때 선택</small><input value={ackReason} placeholder="REGISTER_ACK 에 실림" onChange={(e) => setAckReason(e.target.value)} /></label>
+          </div>
+          <div className="cap" style={{ marginTop: 8 }}>
+            지역: <b>{dev.node_path ?? "미배정"}</b>{dev.grp ? ` · grp ${dev.grp}` : ""}
+            {typeof nodeSel === "number" && nodeSel !== dev.node_id && <> → <b className="c-blue">{nodeLabel}</b> (승인하면 같이 배정)</>}
+            {!dev.node_id && typeof nodeSel !== "number" && (dev.state === "PENDING" || dev.state === "SUSPENDED") &&
+              " — 승인하려면 말단 법정동이 필요하다(NODE_REQUIRED). 아래 설정의 '지역'에서 고르거나 등록·승인 화면을 쓴다."}
           </div>
           <div className="bar2" style={{ marginTop: 12 }}>
             {ACTIONS[dev.state].map((a) => (
@@ -404,12 +444,27 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
             <label>ka_override <small>빈칸 = 프로필 값 → 적용 {kaEff}</small><input type="number" min={60} max={1800} value={kaOv} placeholder="프로필 값" onChange={(e) => setKaOv(e.target.value)} /></label>
             <label>위도 lat<input type="number" step="any" value={lat} onChange={(e) => setLat(e.target.value)} /></label>
             <label>경도 lon<input type="number" step="any" value={lon} onChange={(e) => setLon(e.target.value)} /></label>
-            <label>시설명 site <small>24자</small><input value={site} maxLength={24} onChange={(e) => setSite(e.target.value)} /></label>
-            <label>법정동코드 bjd_code <small>10자리</small><input value={bjd} maxLength={10} onChange={(e) => setBjd(e.target.value)} /></label>
+            <label>시설명 site <SiteHint value={site} /><input value={site} maxLength={24} onChange={(e) => setSite(e.target.value)} /></label>
+            <label>지역 (말단 법정동) <small>bjd_code·grp 는 지역에서 자동</small>
+              <span className="bar2" style={{ flexWrap: "nowrap" }}>
+                <span className="mono" style={{ flex: 1, minWidth: 0 }} title={dev.node_path ?? ""}>
+                  {nodeSel === undefined ? (dev.node_name ?? "미배정") : nodeSel === null ? "배정 해제" : nodeLabel}
+                  {nodeSel === undefined && dev.bjd_code ? ` · ${dev.bjd_code}` : ""}
+                </span>
+                <button type="button" className="btn sm" onClick={() => setPicker((o) => !o)}>{picker ? "닫기" : "변경"}</button>
+                {dev.node_id !== null && nodeSel !== null && (
+                  <button type="button" className="btn sm" title="배정 해제(node_id: null)" onClick={() => { formTouched.current = true; setNodeSel(null); setNodeLabel(null); }}>해제</button>
+                )}
+              </span>
+            </label>
+            {picker && (
+              <NodePicker value={typeof nodeSel === "number" ? nodeSel : dev.node_id}
+                onPick={(id, label) => { formTouched.current = true; setNodeSel(id); setNodeLabel(label); }} />
+            )}
             <label className="w2">주소 address<input value={address} onChange={(e) => setAddress(e.target.value)} /></label>
             <div className="w2 bar2">
               <button type="submit" className="btn pri">설정 변경</button>
-              <span className="cap">profile/override/lat/lon 이 바뀌면 cv_server +1 → CONFIG_SET. site/address/bjd 만 바꾸면 cv 그대로.</span>
+              <span className="cap">profile/override/lat/lon 이 바뀌면 cv_server +1 → CONFIG_SET. site·지역이 바뀌면 REGISTER_ACK(retain) 재발행(site·grp), cv 그대로.</span>
             </div>
           </form>
           {cfgRes && (
@@ -418,6 +473,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
               {!cfgRes.published && cfgRes.reason === "NOT_ACTIVE" && <b className="c-warn"> — 승인 후 첫 Telemetry 때 전송됨</b>}
               {!cfgRes.published && cfgRes.reason && cfgRes.reason !== "NOT_ACTIVE" && <b className="c-warn"> — reason={cfgRes.reason}</b>}
               {cfgRes.payload !== undefined && cfgRes.payload !== null && <div>payload: {JSON.stringify(cfgRes.payload)}</div>}
+              {cfgRes.register_ack_republished && <div>REGISTER_ACK 재발행함(site·grp)</div>}
             </code>
           )}
           {cfgErr && <div className="err" style={{ marginTop: 8 }}>{cfgErr}</div>}
@@ -427,6 +483,27 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
               <div>단말이 받음: <b className={recv.done ? "c-ok" : "c-warn"}>{recv.text}</b>{watchExpired && " (10분 지나 폴링 중단)"}</div>
             </div>
           )}
+        </div>
+
+        {/* ---------- 원격 제어 (5차 개별 COMMAND) ---------- */}
+        <div className="sec">
+          <h4>원격 제어 <span>개별 COMMAND · device/…/cmd · 그룹·전체보다 우선</span></h4>
+          <div className="grid2">
+            <Met l="운전 모드 md" v={mdLabel(lt?.md)} h={lt ? "Telemetry 기준" : "Telemetry 없음"} />
+            <Met l="원격 override" v={dev.remote_active ? `원격 ${Math.max(1, Math.ceil((dev.remote_remaining_sec ?? 0) / 60))}분 남음` : "없음"}
+              h={dev.override_act ? `${dev.override_act}${dev.override_level ? ` · ${dev.override_level}` : ""} · seq ${str(dev.override_seq)} · ~${localTime(dev.override_until)}` : "OK 응답 받은 명령 없음"}
+              cls={dev.remote_active ? "w" : ""} />
+          </div>
+          {dev.remote_active && <div style={{ marginTop: 8 }}><RemoteBadge d={dev} onReleased={(m) => (setCmdNote(m), load())} /></div>}
+          {cmdNote && <div className="okl" style={{ marginTop: 8 }}>{cmdNote}</div>}
+          <div style={{ marginTop: 12 }}>
+            <CommandForm target={{ kind: "device", id: uuid }} targetLabel={dev.site ?? uuid}
+              blocked={dev.state !== "ACTIVE" ? "운영(ACTIVE) 단말에만 보낼 수 있다" : null}
+              onSent={(c) => (setCmdSeq(c.seq), setCmdNote(`명령 #${c.seq} 발행함 ${localTime(c.sent_at)}${c.payload.dur ? ` · 유지 ${durText(Number(c.payload.dur))}` : ""}`))} />
+          </div>
+          {cmdSeq !== null && <CommandResult seq={cmdSeq} onClose={() => setCmdSeq(null)} />}
+          <h4 style={{ marginTop: 12 }}>명령 이력 <span>이 단말이 대상에 든 명령</span></h4>
+          <CommandHistory uuid={uuid} limit={20} selected={cmdSeq} onOpen={setCmdSeq} />
         </div>
 
         {/* ---------- PING · 삭제 ---------- */}

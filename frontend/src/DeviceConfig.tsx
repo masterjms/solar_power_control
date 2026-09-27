@@ -12,7 +12,7 @@ export default function DeviceConfig() {
         </div>
       </Card>
       <div className="row3 full">
-        <PlaceholderCard title="밝기" meta="채널 기준" className="h200" stage="5차" note="CMD act=pwm, ch, pwm" />
+        <PlaceholderCard title="밝기" meta="채널 기준" className="h200" stage="6차" note="원격 밝기(COMMAND act=pwm)는 그룹 제어 · 단말 드로어에서 보낸다. 설치 기준 밝기 설정은 6차" />
         <PlaceholderCard title="다단계 밝기" meta="밤사이 변경 시각" className="h200" stage="6차" />
         <PlaceholderCard title="배터리 보호" meta="V / 분" className="h200" stage="6차" />
       </div>
