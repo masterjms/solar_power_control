@@ -112,7 +112,8 @@ class Db:
 
     async def delete_device_rows(self, uuid: str) -> None:
         """REST DELETE 가 없거나 실패했을 때의 정리. telemetry/event 도 지운다."""
-        for sql in ("DELETE FROM telemetry WHERE uuid = $1", "DELETE FROM device_event WHERE uuid = $1",
+        for sql in ("DELETE FROM device_settings_history WHERE uuid = $1", "DELETE FROM device_settings WHERE uuid = $1",
+                    "DELETE FROM telemetry WHERE uuid = $1", "DELETE FROM device_event WHERE uuid = $1",
                     "DELETE FROM command_ack WHERE uuid = $1", "DELETE FROM command_target WHERE uuid = $1",
                     "DELETE FROM device WHERE uuid = $1"):
             with contextlib.suppress(Exception):
@@ -295,6 +296,38 @@ class Rest:
 
     async def retry_command(self, seq: int, uuids: list[str] | None, user: str | None = None) -> httpx.Response:
         return await self.client.post(f"/api/commands/{seq}/retry", json={"uuids": uuids}, headers=self._h(user))
+
+    # ── 단말 설정 S-23 (docs/05 "단말 설정 API", ADR-007) ───────────────
+    async def settings_schema(self, user: str | None = None) -> httpx.Response:
+        return await self.client.get("/api/settings/schema", headers=self._h(user))
+
+    async def get_settings(self, uuid: str, user: str | None = None) -> httpx.Response:
+        return await self.client.get(f"/api/devices/{uuid}/settings", headers=self._h(user))
+
+    async def read_settings(self, uuid: str, user: str | None = None) -> httpx.Response:
+        """`POST …/settings/read` → 202 `{seq, sent_at}` (SETTINGS_GET)."""
+        return await self.client.post(f"/api/devices/{uuid}/settings/read", headers=self._h(user))
+
+    async def put_settings(self, uuid: str, body: dict[str, Any], user: str | None = None, *,
+                           force: bool = False) -> httpx.Response:
+        """`PUT …/settings {values, tbl}` → 202 `{seq, sent_at, sh_expected, payload_bytes}` (SETTINGS_SET)."""
+        params = {"force": "true"} if force else None
+        return await self.client.put(f"/api/devices/{uuid}/settings", json=body, params=params, headers=self._h(user))
+
+    async def accept_settings(self, uuid: str, user: str | None = None) -> httpx.Response:
+        return await self.client.post(f"/api/devices/{uuid}/settings/accept", headers=self._h(user))
+
+    async def revert_settings(self, uuid: str, user: str | None = None) -> httpx.Response:
+        return await self.client.post(f"/api/devices/{uuid}/settings/revert", headers=self._h(user))
+
+    async def settings_history(self, uuid: str, limit: int = 100, user: str | None = None) -> httpx.Response:
+        return await self.client.get(f"/api/devices/{uuid}/settings/history", params={"limit": limit},
+                                     headers=self._h(user))
+
+    async def schedule_preview(self, lat: float, lon: float, on: int = 0, off: int = 0,
+                               user: str | None = None) -> httpx.Response:
+        return await self.client.get("/api/schedule/preview", params={"lat": lat, "lon": lon, "on": on, "off": off},
+                                     headers=self._h(user))
 
 
 def error_code(response: httpx.Response) -> str:

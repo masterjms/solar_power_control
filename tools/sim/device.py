@@ -9,6 +9,11 @@
   · 5차 (펌웨어 2026-09-27-3): COMMAND/COMMAND_ACK OK·LOCAL·EXPIRED·BAD·STATE (§3.10.7, §3.10.11),
     계층별 override 슬롯 개별>그룹>전체 (§3.10.8), REGISTER_ACK `grp` → `group/<grp>/cmd` 구독(§3.10.9),
     구독 6개 한도(§3.10.10), 최근 8개 seq 중복 방지
+  · 현장 우선 개정 (2026-09-27, §3.10.8): 현장 조작 중 COMMAND 는 `LOCAL` 로 **버린다**(끝나도 적용 안 함),
+    현장 조작 시작 = 원격 슬롯 전부 취소. 원격 OK·만료·현장 취소 뒤 약 2초에 Telemetry 1건 추가(겹치면 1건)
+  · 단말 설정 S-23 (펌웨어 2026-09-27-7, UI 명세 8장): SETTINGS_GET → SETTINGS, SETTINGS_SET → SETTINGS_ACK
+    OK·RANGE·RULE·CRC·BAD·STATE·FLASH, 지문 `sh`, 표 조건 `tbl`(CRC 는 suntable), 현장 저장 `local_save()` → `ss`+1.
+    수신 줄 1,024B 초과·줄바꿈 포함 payload 는 읽지 못한다(버림, 응답 없음)
   · 승인 게이트 (§3, 기본 ON): REGISTER_ACK state=ACTIVE 전에는 Telemetry 를 보내지 않고 REGISTER 재전송(§3.6)
   · 재접속 30초×5 → 5분×5 → 30분 (서버_MQTT_안내_README "단말 동작")
   · LWT 는 모뎀이 못 넣으므로 기본 없음(§16.1). `lwt=True` 로 켤 수 있다
@@ -38,6 +43,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 import aiomqtt
+
+from tools.sim import settings as st
 
 log = logging.getLogger("sim.device")
 
@@ -81,6 +88,8 @@ CMD_TS_FORMAT = "%y%m%dT%H%M%S"
 _CMD_TS_RE = re.compile(r"^\d{6}T\d{6}$")
 #: Telemetry `er` 비트 0 = BATT_LOW(저전압 차단, §3.10.8 "순위 밖").
 ER_BATT_LOW = 0x0001
+#: §3.10.8 — 원격 OK·만료·현장 취소 뒤 추가 Telemetry 까지(초). UI 명세 8.4 SETTINGS_SET OK 도 같다.
+EXTRA_TM_DELAY = 2.0
 
 #: 사양서 §1.1.2.2 공개 시험 키(운영 키 아님). 환경 변수 MQTT_HMAC_KEY 가 없을 때 쓴다.
 TEST_HMAC_KEY_HEX = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
@@ -294,6 +303,8 @@ class OverrideSlot:
     expires_at: float              # time.monotonic()
     seq: int = -1
     level: str = "device"
+    #: 덮어써짐·auto·현장 취소·재부팅으로 없어졌다(만료 감시가 추가 Telemetry 를 보내지 않게).
+    cancelled: bool = False
 
     def active(self, now: float) -> bool:
         return now < self.expires_at
@@ -430,7 +441,22 @@ class Stats:
     cmd_delayed: int = 0           # delay_commands_sec 로 늦게 처리
     cmd_foreign_group: int = 0     # 지금 구독 중이 아닌 그룹 topic 으로 온 것(해제 직후 등) — 무시
     cmd_legacy_rx: int = 0         # 옛 `type:"CMD"` — 1.4.0 이후 없음, 무시
-    local_applied: int = 0         # 현장 조작 종료 뒤 적용한 보류 명령
+    local_started: int = 0         # start_local() 횟수
+    local_cancelled_slots: int = 0  # 현장 조작 시작으로 취소한 원격 슬롯 수(§3.10.8 개정)
+    #: 추가 Telemetry(§3.10.8) — 보낸 건수와 2초 안에 겹쳐 합쳐진 요청 수.
+    extra_tm: int = 0
+    extra_tm_merged: int = 0
+    #: 단말 설정(S-23).
+    settings_get_rx: int = 0
+    settings_set_rx: int = 0
+    settings_ack: Counter = field(default_factory=Counter)  # SETTINGS_ACK result 별(읽기 STATE 포함)
+    settings_sent: int = 0         # SETTINGS(읽기 응답)
+    settings_silenced: int = 0     # settings_silent_next 로 무시
+    settings_ignored_topic: int = 0  # 그룹·전체 topic 으로 온 SETTINGS_* (무시)
+    settings_bad_seq: int = 0      # seq 없음·정수 아님·음수 → 응답 없이 버림
+    local_saves: int = 0           # local_save() 횟수
+    rx_oversize: int = 0           # 수신 줄 1,024B 초과 → 읽지 못함(버림)
+    rx_newline: int = 0            # payload 안 줄바꿈 → 여러 줄로 쪼개져 읽지 못함(버림)
     group_subscribe: int = 0
     group_unsubscribe: int = 0
     grp_rejected: int = 0          # 12자리 숫자가 아닌 grp — 이전 값 유지
@@ -467,7 +493,13 @@ class SimDevice:
       silent_commands   다음 N 개의 COMMAND 를 통째로 무시한다(처리·ACK·seq 기억 없음 — 서버 자동 재시도 시험)
       delay_commands_sec COMMAND 를 받고 이 초만큼 늦게 처리한다(모뎀 전달 지연 흉내 → EXPIRED). 0 = 즉시
       clock_skew_sec    단말 RTC 를 이만큼 앞당긴다(+) / 늦춘다(-). EXPIRED 판정에만 쓴다
-      local_mode        현장 조작 중(DIP/엔코더/OLED 메뉴). COMMAND 는 `LOCAL` 로 답하고 보류 → `end_local()` 이 적용
+      local_mode        현장 조작 중(DIP/엔코더/OLED 메뉴). COMMAND 는 `LOCAL` 로 답하고 **버린다**(§3.10.8 개정).
+                        켜는 순간 원격 슬롯 전부 취소(`start_local()`), 끄면 스케줄(`end_local()`)
+      extra_tm_delay    원격 OK·만료·현장 취소·SETTINGS_SET OK 뒤 추가 Telemetry 까지(초, 기본 2.0)
+      settings          운전 설정 25개 초기값(없으면 ui_items 기본값). `tbl` 은 펌웨어 기본 표(부산, src 0)
+      dip, bat          SETTINGS `dev` (DIP 비트, 배터리 계통 12/24/0)
+      settings_silent_next     다음 N 개의 SETTINGS_GET/SET 을 못 받은 척(서버 새 seq 재발송 시험)
+      settings_flash_fail_next 다음 N 개의 SETTINGS_SET 에 `FLASH`(이전 값 유지). CONFIG_SET 의 `flash_fail_next` 와 별개
     """
 
     def __init__(
@@ -507,6 +539,12 @@ class SimDevice:
         delay_commands_sec: float = 0.0,
         clock_skew_sec: float = 0.0,
         local_mode: bool = False,
+        extra_tm_delay: float = EXTRA_TM_DELAY,
+        settings: dict[str, int] | None = None,
+        dip: int = 8,
+        bat: int = 24,
+        settings_silent_next: int = 0,
+        settings_flash_fail_next: int = 0,
         seed: int | None = None,
         on_message: Callable[["SimDevice", str, bytes], Awaitable[None] | None] | None = None,
     ) -> None:
@@ -554,8 +592,30 @@ class SimDevice:
         self.silent_commands = silent_commands
         self.delay_commands_sec = delay_commands_sec
         self.clock_skew_sec = clock_skew_sec
-        self.local_mode = local_mode
+        self._local_mode = bool(local_mode)
+        self.extra_tm_delay = extra_tm_delay
         self.on_message = on_message
+        # 단말 설정(S-23). Flash 값이라 재부팅에도 남는다. `ss` 는 Telemetry `ss` 와 같은 스케줄 저장 번호.
+        self.settings: dict[str, int] = st.defaults()
+        if settings:
+            self.settings.update({k: int(v) for k, v in settings.items()})
+        #: 표 조건 region/lat_e6/lon_e6/on/off + src + crc. `ss` 는 따로 두지 않고 self.ss 를 쓴다.
+        self.tbl: dict[str, Any] = {k: v for k, v in st.default_tbl().items() if k != "ss"}
+        self.dip, self.bat = dip, bat
+        self.settings_silent_next = settings_silent_next
+        self.settings_flash_fail_next = settings_flash_fail_next
+        #: 받은 SETTINGS_* 원문 (monotonic, topic, raw bytes, payload dict|None) — 한 줄·크기 판정용.
+        self.settings_rx: list[tuple[float, str, bytes, Any]] = []
+        #: 보낸(보내려 한) SETTINGS / SETTINGS_ACK (monotonic, payload).
+        self.settings_tx: list[tuple[float, dict[str, Any]]] = []
+        #: 읽지 못해 버린 수신 (monotonic, topic, 이유 oversize|newline, 크기).
+        self.rx_dropped: list[tuple[float, str, str, int]] = []
+        #: 추가 Telemetry (monotonic 보낸 시각, 이유, payload|None). 이유 = command_ok / expiry / local / settings_ok.
+        self.extra_tm_log: list[tuple[float, str, dict[str, Any] | None]] = []
+        self._extra_tm_task: asyncio.Task | None = None
+        self._timer_tasks: set[asyncio.Task] = set()
+        self._tm_period_start = time.monotonic()
+        self._last_cmd_dup = False
 
         seed_val = seed if seed is not None else int(uuid[-8:], 16)
         self._rng = random.Random(seed_val)
@@ -575,8 +635,6 @@ class SimDevice:
         self._overrides: dict[str, OverrideSlot] = {}
         #: 최근 8개 seq → 첫 ACK(§3.10.7). 순서 = 받은 순.
         self._seq_memory: OrderedDict[int, dict[str, Any]] = OrderedDict()
-        #: 현장 조작 중 받은 명령 (level, payload, 받은 시각 monotonic). `end_local()` 이 적용.
-        self._pending_local: list[tuple[str, dict[str, Any], float]] = []
         self._subscriptions: list[str] = []
         #: 지금 구독 중인 그룹 topic(없으면 None). REGISTER_ACK 의 state·grp 로 정해진다(§3.10.9).
         self._group_topic: str | None = None
@@ -676,6 +734,44 @@ class SimDevice:
         return payload
 
     # ── override 슬롯 (§3.10.8) ──────────────────────────────────────────
+    @property
+    def local_mode(self) -> bool:
+        """현장 조작 중(DIP3 강제 점등, DIP1/2 엔코더, OLED 설정 메뉴)."""
+        return self._local_mode
+
+    @local_mode.setter
+    def local_mode(self, value: bool) -> None:
+        # 대입도 개정 규칙대로: 켜면 원격 전부 취소, 끄면 스케줄(보류 적용 없음).
+        if value and not self._local_mode:
+            self.start_local()
+        elif not value and self._local_mode:
+            self.end_local()
+
+    def _cancel_all_slots(self) -> int:
+        n = len(self._overrides)
+        for slot in self._overrides.values():
+            slot.cancelled = True
+        self._overrides.clear()
+        return n
+
+    def start_local(self) -> int:
+        """현장 조작 시작(§3.10.8 2026-09-27 개정). 살아 있던 원격 슬롯을 **전부 취소**하고, 취소한 것이 있으면
+        약 2초 뒤 Telemetry(md 1)를 한 건 더 보낸다(§3.10.8 표 "현장 조작 시작으로 원격이 취소됨"). 취소한 슬롯 수."""
+        if self._local_mode:
+            return 0
+        self._local_mode = True
+        self.stats.local_started += 1
+        n = self._cancel_all_slots()
+        self.stats.local_cancelled_slots += n
+        if n:
+            self._schedule_extra_tm("local")
+        log.info("[%s] 현장 조작 시작 — 원격 슬롯 %d개 취소", self.uuid, n)
+        return n
+
+    def end_local(self) -> None:
+        """현장 조작 종료 → **스케줄**(md 0). 현장 중 받은 명령(`LOCAL`)과 그 전 원격은 되살리지 않는다(§3.10.8 개정)."""
+        self._local_mode = False
+
     def _prune(self, now: float) -> None:
         for level in list(self._overrides):
             if not self._overrides[level].active(now):
@@ -809,21 +905,67 @@ class SimDevice:
         if self.gate.enabled and self.gate.state != "ACTIVE":
             return "STATE"  # 승인 전 원격 제어 불가(§3.8)
         if self.local_mode:
-            self._pending_local.append((level, dict(payload), now))
-            return "LOCAL"
+            return "LOCAL"  # 버린다 — 현장이 끝나도 적용하지 않는다(§3.10.8 개정, §3.10.11)
         self._apply(level, payload, received_at=now)
         return "OK"
 
     def _apply(self, level: str, payload: dict[str, Any], *, received_at: float) -> None:
-        """그 계층 슬롯에 적용. 만료 = 받은 시각 + dur. `auto` 는 그 계층 슬롯만 지운다(가정 B4)."""
+        """그 계층 슬롯에 적용. 만료 = 받은 시각 + dur. `auto` 는 그 계층 슬롯만 지운다(가정 B4).
+        만료 감시를 걸어 두어 유지시간이 끝나면 약 2초 뒤 Telemetry 를 한 건 더 보낸다(§3.10.8)."""
         act = payload["act"]
+        old = self._overrides.pop(level, None)
+        if old is not None:
+            old.cancelled = True
         if act == "auto":
-            self._overrides.pop(level, None)
             return
         ch = tuple(payload.get("ch") or CHANNELS)
         pwm = tuple(int(p) for p in payload["pwm"]) if act == "pwm" else None
-        self._overrides[level] = OverrideSlot(act=act, ch=ch, pwm=pwm, expires_at=received_at + int(payload["dur"]),
-                                              seq=int(payload["seq"]), level=level)
+        slot = OverrideSlot(act=act, ch=ch, pwm=pwm, expires_at=received_at + int(payload["dur"]),
+                            seq=int(payload["seq"]), level=level)
+        self._overrides[level] = slot
+        self._spawn(self._watch_expiry(slot))
+
+    async def _watch_expiry(self, slot: OverrideSlot) -> None:
+        await asyncio.sleep(max(0.0, slot.expires_at - time.monotonic()))
+        if slot.cancelled:
+            return
+        if self._overrides.get(slot.level) is slot:
+            del self._overrides[slot.level]
+        slot.cancelled = True
+        log.info("[%s] 원격 %s seq=%s 만료", self.uuid, slot.level, slot.seq)
+        self._schedule_extra_tm("expiry")
+
+    # ── 추가 Telemetry (§3.10.8) ─────────────────────────────────────────
+    def _spawn(self, coro: Any) -> asyncio.Task | None:
+        """이벤트 루프가 돌고 있으면 타이머 task 로 띄운다(동기 단위 시험에서는 조용히 버린다)."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            coro.close()
+            return None
+        task = loop.create_task(coro)
+        self._timer_tasks.add(task)
+        task.add_done_callback(self._timer_tasks.discard)
+        return task
+
+    def _schedule_extra_tm(self, reason: str) -> None:
+        """약 `extra_tm_delay`(2초) 뒤 Telemetry 1건. 이미 예약돼 있으면 합친다("2초 안에 겹치면 한 건만")."""
+        if self._extra_tm_task is not None and not self._extra_tm_task.done():
+            self.stats.extra_tm_merged += 1
+            return
+        self._extra_tm_task = self._spawn(self._extra_tm_after(reason))
+
+    async def _extra_tm_after(self, reason: str) -> None:
+        await asyncio.sleep(self.extra_tm_delay)
+        payload = await self.send_tm_now()   # 주기 보고는 이 건을 보낸 때부터 다시 센다(_tm_period_start)
+        self.stats.extra_tm += 1
+        self.extra_tm_log.append((time.monotonic(), reason, payload))
+
+    def _cancel_timers(self) -> None:
+        for task in list(self._timer_tasks):
+            task.cancel()
+        self._timer_tasks.clear()
+        self._extra_tm_task = None
 
     def handle_command(self, payload: dict[str, Any], level: str = "device", *, now: float | None = None,
                        rtc_now: datetime | None = None, topic: str = "") -> dict[str, Any]:
@@ -837,7 +979,8 @@ class SimDevice:
         self.stats.cmd_rx += 1
         self.stats.cmd_rx_by_level[level] += 1
         seq = payload.get("seq")
-        if _is_int(seq) and seq in self._seq_memory:
+        self._last_cmd_dup = bool(_is_int(seq) and seq in self._seq_memory)
+        if self._last_cmd_dup:
             self.stats.cmd_dup += 1
             ack = dict(self._seq_memory[seq])
             log.info("[%s] COMMAND seq=%s 중복 — 재실행 없이 첫 결과 %s", self.uuid, seq, ack.get("result"))
@@ -854,20 +997,6 @@ class SimDevice:
             self.stats.cmd_rejected += 1
         self.ack_log.append((now, topic, ack))
         return ack
-
-    def end_local(self, now: float | None = None) -> list[int]:
-        """현장 조작 종료. 그동안 `LOCAL` 로 답한 명령 중 **아직 유효한 것**(받은 시각 + dur 전)을 받은 순서대로
-        적용한다(§3.10.11 "현장 조작이 끝났을 때 아직 유효하면 그때 적용"). 적용한 seq 목록을 돌려준다."""
-        now = time.monotonic() if now is None else now
-        self.local_mode = False
-        applied: list[int] = []
-        for level, payload, received in self._pending_local:
-            if payload["act"] == "auto" or received + int(payload["dur"]) > now:
-                self._apply(level, payload, received_at=received)
-                applied.append(int(payload["seq"]))
-        self._pending_local.clear()
-        self.stats.local_applied += len(applied)
-        return applied
 
     def acks_for(self, seq: int) -> list[dict[str, Any]]:
         """이 seq 로 보낸(보내려 한) COMMAND_ACK 전부."""
@@ -967,6 +1096,7 @@ class SimDevice:
     async def stop(self, *, graceful: bool = True) -> None:
         """단말을 내린다. graceful=False 면 TCP 를 그냥 끊는다(DISCONNECT 없음)."""
         self._stopping = True
+        self._cancel_timers()
         if not graceful:
             self._hard_cut()
         if self._run_task is not None:
@@ -1116,7 +1246,8 @@ class SimDevice:
         return ok
 
     async def send_tm_now(self) -> dict[str, Any] | None:
-        """주기를 기다리지 않고 Telemetry 1건. 승인 전(게이트)이면 보내지 않고 None."""
+        """주기를 기다리지 않고 Telemetry 1건. 승인 전(게이트)이면 보내지 않고 None. 주기는 이때부터 다시 센다."""
+        self._tm_period_start = time.monotonic()
         if not self.gate.telemetry_allowed:
             self.stats.tm_suppressed += 1
             return None
@@ -1139,13 +1270,18 @@ class SimDevice:
     async def _tm_loop(self) -> None:
         """REGISTER 직후 1건, 이후 `ti` 초마다(§1.1.6). 승인 게이트가 닫혀 있으면 건너뛴다.
 
-        `ti` 는 CONFIG_SET 으로 바뀌면 다음 대기부터 즉시 반영된다.
+        `ti` 는 CONFIG_SET 으로 바뀌면 다음 대기부터 즉시 반영된다. 주기 밖에서 보낸 건(추가 Telemetry, 시나리오의
+        `send_tm_now()`)이 있으면 다음 주기 보고는 그 건을 보낸 때부터 다시 센다(§3.10.8).
         """
         await self.send_tm_now()
         while True:
             self._tm_kick.clear()
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(self._tm_kick.wait(), timeout=self.ti)
+            remaining = self.ti - (time.monotonic() - self._tm_period_start)
+            if remaining > 0:
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._tm_kick.wait(), timeout=remaining)
+                if not self._tm_kick.is_set():
+                    continue  # 기다리는 사이 주기 밖 TM 이 나갔으면 기준이 옮겨졌다 — 다시 계산
             await self.send_tm_now()
 
     async def _register_resend_loop(self) -> None:
@@ -1161,6 +1297,17 @@ class SimDevice:
     # ── 수신 분기 ────────────────────────────────────────────────────────
     async def _dispatch(self, topic: str, raw: bytes, retained: bool) -> None:
         now = time.monotonic()
+        # 모뎀은 수신 payload 를 줄 단위로 넘긴다(UI 명세 8.4). 줄바꿈이 있으면 여러 줄로 쪼개지고, 1,024B 를 넘으면
+        # 수신 줄 버퍼에 다 들어가지 않는다 → 단말은 한 메시지로 읽지 못한다. 응답도 없다.
+        if len(raw) > st.RX_LINE_MAX or b"\n" in raw or b"\r" in raw:
+            why = "oversize" if len(raw) > st.RX_LINE_MAX else "newline"
+            if why == "oversize":
+                self.stats.rx_oversize += 1
+            else:
+                self.stats.rx_newline += 1
+            self.rx_dropped.append((now, topic, why, len(raw)))
+            log.warning("[%s] 수신 버림(%s, %dB) %s", self.uuid, why, len(raw), topic)
+            return
         self.last_rx_at_monotonic = now
         data: Any = None
         if raw:
@@ -1209,6 +1356,9 @@ class SimDevice:
                 await self.send_result(self.handle_ping(data))
             elif kind == "COMMAND":
                 await self._on_command(topic, data)
+            elif kind in ("SETTINGS_GET", "SETTINGS_SET"):
+                self.settings_rx.append((now, topic, raw, data))
+                await self._on_settings(topic, data)
             elif kind == "CMD":
                 self.stats.cmd_legacy_rx += 1  # 2차 전 초안 이름. 1.4.0 이후 단말은 모른다(§3.10.7 "CMD 로 줄이지 않는다")
                 self.stats.unknown_rx += 1
@@ -1245,7 +1395,131 @@ class SimDevice:
 
     async def _send_command_ack(self, topic: str, level: str, data: dict[str, Any]) -> None:
         ack = self.handle_command(data, level, topic=topic)
+        dup = self._last_cmd_dup
         await self.send_result(ack)   # §3.10.11 — 그룹·전체로 받아도 각자 device/<uuid>/result, QoS1
+        if ack["result"] == "OK" and not dup:
+            # §3.10.8 — OK(auto 포함, 같은 seq 재수신 제외)면 ACK 발행을 마치고 2초 뒤 Telemetry 1건 더.
+            self._schedule_extra_tm("command_ok")
+
+    # ── 단말 설정 S-23 (UI 명세 8장, 펌웨어 2026-09-27-7) ─────────────────
+    @property
+    def sh(self) -> str:
+        """지금 25개 값의 지문(8.6)."""
+        return st.settings_sh(self.settings)
+
+    def build_settings(self, seq: Any) -> dict[str, Any]:
+        """8.4 SETTINGS. `v` 는 ui_items 순서, `tbl.region` 은 따옴표·역슬래시·제어문자를 `?` 로."""
+        tbl = {"region": st.region_for_report(str(self.tbl["region"])), "lat_e6": self.tbl["lat_e6"],
+               "lon_e6": self.tbl["lon_e6"], "on": self.tbl["on"], "off": self.tbl["off"], "src": self.tbl["src"],
+               "ss": self.ss, "crc": self.tbl["crc"]}
+        return {"type": "SETTINGS", "uuid": self.uuid, "seq": seq, "sh": self.sh,
+                "v": {k: self.settings[k] for k in st.keys()}, "tbl": tbl, "dev": {"dip": self.dip, "bat": self.bat}}
+
+    def _settings_ack(self, seq: Any, result: str) -> dict[str, Any]:
+        return {"type": "SETTINGS_ACK", "uuid": self.uuid, "seq": seq, "result": result, "sh": self.sh, "ss": self.ss}
+
+    def handle_settings_get(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """8.4 읽기. PENDING·ACTIVE 만 SETTINGS, 그 밖(무응답·SUSPENDED 등)은 SETTINGS_ACK `STATE`."""
+        self.stats.settings_get_rx += 1
+        seq = payload.get("seq")
+        if self.gate.enabled and self.gate.state not in ("PENDING", "ACTIVE"):
+            self.stats.settings_ack["STATE"] += 1
+            return self._settings_ack(seq, "STATE")
+        self.stats.settings_sent += 1
+        return self.build_settings(seq)
+
+    def handle_settings_set(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """8.4 쓰기. ACTIVE 만. 전부 검사한 뒤 한꺼번에 적용하고 Flash 저장 — 하나라도 틀리면 아무것도 바꾸지 않는다.
+
+        판정 순서: STATE → BAD → RANGE → RULE → CRC(`tools.sim.settings.validate_settings_set`) → FLASH → 적용.
+        지금 값과 같으면(25개 + 실었다면 표 조건) Flash 를 쓰지 않고 OK, `ss` 그대로. 바뀌면 `ss` += 1,
+        `tbl` 을 실었으면 `src` = 2(서버). OK 면 2초 뒤 Telemetry 한 건 더(호출자가 예약).
+        """
+        self.stats.settings_set_rx += 1
+        seq = payload.get("seq")
+        if self.gate.enabled and self.gate.state != "ACTIVE":
+            result = "STATE"
+        else:
+            result, problem = st.validate_settings_set(payload, self.settings)
+            if result != "OK":
+                log.info("[%s] SETTINGS_SET 거부 %s (%s)", self.uuid, result, problem)
+            elif self.settings_flash_fail_next > 0:
+                self.settings_flash_fail_next -= 1
+                result = "FLASH"
+                log.info("[%s] SETTINGS_SET Flash 기록 실패 흉내(FLASH) — 이전 값 유지", self.uuid)
+            else:
+                self._apply_settings(payload)
+        self.stats.settings_ack[result] += 1
+        return self._settings_ack(seq, result)
+
+    def _apply_settings(self, payload: dict[str, Any]) -> bool:
+        """검사를 통과한 SETTINGS_SET 적용. 바뀐 것이 있으면 True(`ss` += 1)."""
+        new_values = {k: int(payload["v"][k]) for k in st.keys()}
+        tbl = payload.get("tbl")
+        new_cond = {k: tbl[k] for k in st.TBL_KEYS} if tbl is not None else None
+        cur_cond = {k: self.tbl[k] for k in st.TBL_KEYS}
+        changed = new_values != self.settings or (new_cond is not None and new_cond != cur_cond)
+        if not changed:
+            log.info("[%s] SETTINGS_SET 같은 값 — Flash 생략 OK", self.uuid)
+            return False
+        self.settings = new_values
+        if new_cond is not None and new_cond != cur_cond:
+            self.tbl = {**new_cond, "src": st.SRC_SERVER, "crc": tbl["crc"].upper()}
+        self.ss += 1
+        log.info("[%s] SETTINGS apply OK sh=%s ss=%d", self.uuid, self.sh, self.ss)
+        return True
+
+    def local_save(self, changes: dict[str, Any] | None = None) -> None:
+        """현장 PC 도구 `cfg save` / OLED 메뉴 저장 / 엔코더 SAVE 흉내(8.5). 값이 같아도 스케줄을 다시 저장해 `ss` += 1.
+
+        `changes` 는 25개 key 일부와 선택 `tbl`({region, lat_e6, lon_e6, on, off} 일부) — 검사 없이 넣는다(PC 도구는
+        자체 범위를 쓴다). 표 조건이 바뀌면 `src` = 1(PC 도구), CRC 는 suntable 로 다시 계산.
+        """
+        changes = dict(changes or {})
+        tbl = changes.pop("tbl", None)
+        unknown = set(changes) - set(st.keys())
+        if unknown:
+            raise KeyError(f"모르는 설정 key: {sorted(unknown)}")
+        self.settings.update({k: int(v) for k, v in changes.items()})
+        if tbl:
+            cond = {k: self.tbl[k] for k in st.TBL_KEYS}
+            cond.update(tbl)
+            self.tbl = {**cond, "src": st.SRC_PC_TOOL,
+                        "crc": st.table_crc(cond["lat_e6"], cond["lon_e6"], cond["on"], cond["off"])}
+        self.ss += 1
+        self.stats.local_saves += 1
+        log.info("[%s] 현장 저장 ss=%d sh=%s %s", self.uuid, self.ss, self.sh, changes or "")
+
+    def settings_requests(self, kind: str | None = None) -> list[dict[str, Any]]:
+        """받은 SETTINGS_GET/SET payload(읽은 것만, 순서대로)."""
+        return [p for (_, _, _, p) in self.settings_rx
+                if isinstance(p, dict) and (kind is None or p.get("type") == kind)]
+
+    def settings_replies(self, seq: int | None = None) -> list[dict[str, Any]]:
+        """보낸(보내려 한) SETTINGS / SETTINGS_ACK."""
+        return [p for (_, p) in self.settings_tx if seq is None or p.get("seq") == seq]
+
+    async def _on_settings(self, topic: str, data: dict[str, Any]) -> None:
+        if self.level_of(topic) != "device":
+            self.stats.settings_ignored_topic += 1   # 그룹·전체 topic 으로 보내면 무시(8.4)
+            return
+        seq = data.get("seq")
+        if not _is_int(seq) or seq < 0:
+            self.stats.settings_bad_seq += 1         # COMMAND 와 같이 응답 없이 버린다(가정 C4)
+            return
+        if self.settings_silent_next > 0:
+            self.settings_silent_next -= 1
+            self.stats.settings_silenced += 1
+            log.info("[%s] %s seq=%s 무시(settings_silent_next)", self.uuid, data.get("type"), seq)
+            return
+        if data.get("type") == "SETTINGS_GET":
+            reply = self.handle_settings_get(data)
+        else:
+            reply = self.handle_settings_set(data)
+        self.settings_tx.append((time.monotonic(), reply))
+        await self.send_result(reply)   # result topic, QoS1
+        if reply["type"] == "SETTINGS_ACK" and reply["result"] == "OK":
+            self._schedule_extra_tm("settings_ok")   # 8.4 "OK 면 2초 뒤 Telemetry 가 한 건 더"
 
     # ── 고장 주입 ────────────────────────────────────────────────────────
     def _hard_cut(self) -> None:
@@ -1286,9 +1560,9 @@ class SimDevice:
         sq=0 을 한 번 더 보내 서버가 재부팅을 두 번 센다(S2-03 에서 실제 발생)."""
         await self.disconnect(hard=True, reconnect=True, reconnect_after=reconnect_after)
         self.sq = 0
-        self._overrides.clear()        # §3.10.8 재부팅 → 슬롯 전부 소거
+        self._cancel_timers()
+        self._cancel_all_slots()       # §3.10.8 재부팅 → 슬롯 전부 소거
         self._seq_memory.clear()
-        self._pending_local.clear()
         self.grp = None                # 저장하지 않는 값(§3.10.9) — 접속 뒤 retain 으로 다시 받는다
         self.gate.reset()
         self.er = 0

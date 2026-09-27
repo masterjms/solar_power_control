@@ -165,11 +165,13 @@ def test_report_markdown(tmp_path: Path):
 
 
 def test_registry_has_all_required_scenarios():
-    from tools.scenarios import phase2, phase3, phase5  # noqa: F401
+    from tools.scenarios import phase2, phase3, phase5, phase6  # noqa: F401
     ids = set(framework.REGISTRY)
     assert {f"S2-{i:02d}" for i in range(1, 15)} <= ids
     assert {f"S3-{i:02d}" for i in range(1, 12)} <= ids
     assert {f"S5-{i:02d}" for i in range(1, 13)} <= ids
+    assert {f"S6-{i:02d}" for i in range(1, 12)} <= ids
+    assert all("settings" in framework.REGISTRY[f"S6-{i:02d}"].requires for i in range(1, 12))
     for s in framework.REGISTRY.values():
         assert s.doc, f"{s.id} 에 docstring(목적·합격 기준) 이 없다"
         if s.phase >= 5:
@@ -183,7 +185,7 @@ def test_run_list_does_not_need_services(capsys):
     from tools.scenarios.run import main
     assert main(["--list"]) == 0
     out = capsys.readouterr().out
-    assert "S2-01" in out and "S3-11" in out and "S5-01" in out and "S5-12" in out
+    assert "S2-01" in out and "S3-11" in out and "S5-01" in out and "S5-12" in out and "S6-11" in out
 
 
 def test_phase5_fake_bjd_codes_are_unique_10_digit_and_not_real_sido():
@@ -222,3 +224,18 @@ def test_phase_only_5_opens_group_cmd(monkeypatch):
     assert run.main(["--all", "--phase-only", "5", "--storm5-count", "50", "--cmd-finish-timeout", "5"]) == 0
     assert "group_cmd" in seen["flags"] and all(i.startswith("S5-") for i in seen["ids"]) and len(seen["ids"]) == 12
     assert seen["opt"].storm5_count == 50 and seen["opt"].cmd_finish_timeout == 5
+
+
+def test_phase_only_6_opens_settings_and_group_cmd(monkeypatch):
+    from tools.scenarios import run
+    seen = {}
+
+    async def fake_run_all(scenarios, opt, report):
+        seen["ids"] = [s.id for s in scenarios]
+        seen["flags"] = opt.flags
+        return 0
+    monkeypatch.setattr(run, "run_all", fake_run_all)
+    assert run.main(["--all", "--phase-only", "6"]) == 0
+    assert {"settings", "group_cmd"} <= seen["flags"] and len(seen["ids"]) == 11
+    assert all(i.startswith("S6-") for i in seen["ids"])
+    assert run.main(["--all", "--phase-only", "5"]) == 0 and "settings" not in seen["flags"]

@@ -15,12 +15,13 @@ tools/.venv/Scripts/python -m tools.sim.monitor                        # iotligh
 
 | 경로 | 내용 |
 |---|---|
-| `sim/device.py` | 단말 한 대 모델 `SimDevice`(펌웨어 1.4.0 + 5차 2026-09-27-3) — HMAC 계정, REGISTER(ka)/TELEMETRY/PONG/CONFIG_ACK(OK·RANGE·STATE·FLASH)/COMMAND_ACK(OK·LOCAL·EXPIRED·BAD·STATE), 계층별 override 슬롯, REGISTER_ACK grp → 그룹 구독(6개 한도), 승인 게이트, 재접속 표, 고장 주입 |
+| `sim/device.py` | 단말 한 대 모델 `SimDevice`(펌웨어 1.4.0 + 5차 2026-09-27-3) — HMAC 계정, REGISTER(ka)/TELEMETRY/PONG/CONFIG_ACK(OK·RANGE·STATE·FLASH)/COMMAND_ACK(OK·LOCAL·EXPIRED·BAD·STATE), 계층별 override 슬롯, 현장 우선 개정(LOCAL 버림·현장 시작 = 원격 취소·2초 추가 Telemetry), SETTINGS_GET/SET(2026-09-27-7), REGISTER_ACK grp → 그룹 구독(6개 한도), 승인 게이트, 재접속 표, 고장 주입 |
+| `sim/settings.py` | 단말 설정 순수 부분 — `ui_items.json` 실행 때 읽기, 지문 `sh`, 표 CRC(`docs/spec/ref/suntable.py` 경로 import), SETTINGS_SET 검사·규칙 |
 | `sim/fleet.py` | N 대 일괄 실행 CLI(`--ka`, `--hmac-key`, `--time-scale`), `gen-passwords`, 폭주 재접속(`--cut-after`) |
 | `sim/monitor.py` | 브로커 감시·사양 위반 검출 |
 | `sim/env.py` | 환경 변수(`MQTT_HOST`, `MQTT_HMAC_KEY`, `DATABASE_URL`, `BACKEND_URL` …) |
-| `scenarios/run.py` | 러너(`--all/--only/--list/--phase-only/--phase 5/--allow-docker/--report`) |
-| `scenarios/phase2.py` `phase3.py` `phase5.py` | 시나리오 본체 |
+| `scenarios/run.py` | 러너(`--all/--only/--list/--phase-only/--phase 5·6/--allow-docker/--report`) |
+| `scenarios/phase2.py` `phase3.py` `phase5.py` `phase6.py` | 시나리오 본체(6 = 단말 설정 S-23 + 5차 개정) |
 | `scenarios/framework.py` `services.py` `common.py` | 등록·판정·보고서 / DB·REST·MQTT·docker 핸들 / 단말 생성·metrics 도우미 |
 | `tests/` | pytest |
 

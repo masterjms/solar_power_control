@@ -13,6 +13,7 @@
 
 단말은 펌웨어 2026-09-27-3 모델(`tools/sim/device.py`): `all/cmd` 상시 구독, ACTIVE + grp 일 때만 `group/<grp>/cmd`.
 모든 COMMAND 에 COMMAND_ACK(OK/LOCAL/EXPIRED/BAD/STATE)를 `device/<u>/result` 로 보낸다.
+현장 우선 개정(2026-09-27-5 이후): LOCAL 은 버림, 현장 시작 = 원격 취소, 원격 OK·만료·현장 취소 뒤 2초에 추가 Telemetry.
 """
 
 from __future__ import annotations
@@ -799,17 +800,27 @@ async def _is(aw, value: Any) -> bool:
 
 # ── S5-07 LOCAL ─────────────────────────────────────────────────────────
 
-@scenario("S5-07", "현장 조작 중 — LOCAL 응답(종결), 현장 종료 뒤 아직 유효하면 적용", phase=5, requires="group_cmd",
-          timeout=150)
+@scenario("S5-07", "현장 조작 중 — LOCAL 응답(종결)·버림, 현장 시작 = 원격 취소, 끝나면 스케줄(개정 2026-09-27)", phase=5,
+          requires="group_cmd", timeout=150)
 async def s5_07(ctx: Ctx) -> None:
-    """단말 `local_mode`(DIP/엔코더/OLED) → TM md 1 → 개별 on 명령 → `LOCAL`(적용 안 함) → 서버 target LOCAL·명령 종료
-    (LOCAL 은 종결, ADR-005)·counts LOCAL 1·result PARTIAL(전부 OK 가 아님) → 종료된 명령 `POST /retry` 409 `COMMAND_FINISHED`
-    → `end_local()` → 보류 명령 적용 → TM md 2·pw1 기준. (서버 override 는 OK 때만 기록하므로 remote_active 는 참고값.)"""
+    """§3.10.8 개정(현장 우선): 개별 off dur 600 → OK·md 2 → 단말 `start_local()`(DIP/엔코더/OLED) → 원격 슬롯 전부 취소 →
+    TM md 1 → 서버 override 해제(remote_active false) → 현장 중 개별 on → `LOCAL`(버림, 적용 안 함) → 서버 target LOCAL·명령 종료
+    (LOCAL 은 종결, ADR-005)·counts LOCAL 1·result PARTIAL(B7) → 종료된 명령 `POST /retry` 409 `COMMAND_FINISHED` →
+    `end_local()` → **아무것도 적용하지 않고 스케줄**(md 0, 예전 원격·LOCAL 명령 되살리지 않음) → 새 명령(새 seq) on → OK·md 2."""
     tree = await make_tree(ctx, [1])
     (d,) = await devices_in(ctx, 1, tree.leaves[0], offset=0)
-    d.local_mode = True
+    b0 = await send(ctx, target("device", d.uuid), "off", dur=600)
+    await wait_acks(ctx, [d], b0["seq"], "OK")
+    ctx.check_eq(d.md, 2, "원격 적용")
+    ctx.check_eq(d.start_local(), 1, "현장 시작 → 원격 슬롯 취소")
     tm = await tm_now(ctx, d)
     ctx.check_eq(tm["md"], 1, "현장 조작 중 TM md")
+
+    async def remote_off() -> bool:
+        dv = await rest_device(ctx, d.uuid)
+        return dv.get("remote_active") is False and dv.get("override_until") is None
+    await ctx.wait_until(remote_off, timeout=SERVER_WAIT, what="md 1 → 서버 override 해제")
+
     b = await send(ctx, target("device", d.uuid), "on", dur=300)
     await wait_acks(ctx, [d], b["seq"], "LOCAL")
     ctx.check(d.slot_dump() == {} and d.effective_act == "local", "LOCAL 은 적용하지 않음")
@@ -818,12 +829,15 @@ async def s5_07(ctx: Ctx) -> None:
     r = await ctx.s.rest.retry_command(b["seq"], None, _admin(ctx))
     ctx.check(r.status_code == 409 and error_code(r) == "COMMAND_FINISHED", f"종료된 명령 재시도 → 409: {_describe(r)}")
 
-    ctx.check_eq(d.end_local(), [b["seq"]], "현장 종료 → 보류 명령 적용")
-    ctx.check_eq(d.effective_act, "on", "적용 뒤")
+    d.end_local()
+    ctx.check(d.slot_dump() == {} and d.md == 0 and d.effective_act == "schedule",
+              "현장 종료 → 스케줄(LOCAL 명령·예전 원격 되살리지 않음)")
     tm = await tm_now(ctx, d)
-    ctx.check(tm["md"] == 2 and tm["pw"][0] == d.model.pwm[0], f"TM md 2·pw1 기준: {tm['md']} {tm['pw']}")
-    dev = await rest_device(ctx, d.uuid)
-    ctx.log(f"(참고) LOCAL 뒤 적용된 단말: remote_active={dev.get('remote_active')} override_act={dev.get('override_act')}")
+    ctx.check_eq(tm["md"], 0, "TM md 0")
+    b2 = await send(ctx, target("device", d.uuid), "on", dur=300)
+    await wait_acks(ctx, [d], b2["seq"], "OK")
+    tm = await tm_now(ctx, d)
+    ctx.check(tm["md"] == 2 and tm["pw"][0] == d.model.pwm[0], f"새 명령 → TM md 2·pw1 기준: {tm['md']} {tm['pw']}")
 
 
 # ── S5-08 BAD ───────────────────────────────────────────────────────────

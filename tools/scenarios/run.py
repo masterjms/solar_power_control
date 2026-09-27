@@ -7,6 +7,7 @@
     python -m tools.scenarios.run --all --phase-only 3 --allow-docker   # 3차(승인 게이트)만, docker 시나리오 포함
     python -m tools.scenarios.run --all --phase 5                       # 5차(트리·COMMAND·재시도·권한)까지 연다
     python -m tools.scenarios.run --all --phase-only 5 --phase 5        # 5차만
+    python -m tools.scenarios.run --all --phase-only 6                  # 단말 설정(S-23)·5차 개정만(settings+group_cmd)
 
 `--list` 는 서비스 없이 동작한다. 서비스가 내려가 있으면 시나리오는 SKIP(이유 표시)로 끝나고
 러너는 종료 코드 1 을 돌려준다(FAIL/ERROR 가 있어도 1).
@@ -21,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # 시나리오 모듈을 import 해야 REGISTRY 가 채워진다.
-from tools.scenarios import phase2, phase3, phase5  # noqa: F401
+from tools.scenarios import phase2, phase3, phase5, phase6  # noqa: F401
 from tools.scenarios.framework import REGISTRY, Result, Scenario, paint, run_one, write_report
 from tools.scenarios.services import Services, selector_loop_policy
 from tools.sim.env import ENV
@@ -110,8 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--only", help="쉼표로 구분한 ID 목록, 예: S2-01,S2-03")
     g.add_argument("--list", action="store_true", help="목록만")
     p.add_argument("--phase", type=int, action="append", default=[],
-                   help="이 단계 기능을 연다(5 → group_cmd). 2·3차는 항상 열려 있다. 여러 번 가능. "
-                        "--phase-only 5 만 주면 5 도 연다")
+                   help="이 단계 기능을 연다(5 → group_cmd, 6 → settings+group_cmd). 2·3차는 항상 열려 있다. "
+                        "여러 번 가능. --phase-only N 만 주면 N 도 연다")
     p.add_argument("--phase-only", type=int, default=None, help="--all 에서 이 단계 시나리오만")
     p.add_argument("--allow-docker", action="store_true", help="docker compose 를 조작하는 시나리오 허용")
     p.add_argument("--sim-mode", choices=["auto", "1cha", "2cha"], default="auto",
@@ -137,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
     for ph in args.phase:
         if ph >= 5:
             flags.add("group_cmd")
+        if ph >= 6:
+            flags.add("settings")   # 단말 설정 S-23(ADR-007) — S6-xx
     if args.allow_docker:
         flags.add("docker")
     opt = Options(flags=flags, sim_mode=args.sim_mode, quiet=args.quiet, keep_rows=args.keep_rows,

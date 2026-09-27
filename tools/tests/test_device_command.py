@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -160,26 +161,42 @@ def test_expired_and_bad_are_decided_before_state():
     assert d.handle_command(cmd(seq=2, dur=0))["result"] == "BAD"
 
 
-def test_local_mode_acks_local_and_end_local_applies_still_valid_ones():
+def test_local_mode_acks_local_and_discards_even_after_end_local():
+    """§3.10.8 개정(2026-09-27): 현장 중 명령은 LOCAL 로 버린다. 현장이 끝나도 되살리지 않는다 → 스케줄."""
     d = make(local_mode=True)
-    t0 = 1000.0
+    t0 = time.monotonic()
     assert d.handle_command(cmd(seq=1, act="off", dur=5), now=t0)["result"] == "LOCAL"
     assert d.handle_command(cmd(seq=2, act="on", dur=600), level="group", now=t0)["result"] == "LOCAL"
-    assert d.md == 1 and d.effective_act == "local"
-    assert d.handle_command(cmd(seq=1, act="on"), now=t0)["result"] == "LOCAL"  # 중복 → 첫 결과
-    applied = d.end_local(now=t0 + 10)                     # seq 1 은 dur 5 가 지나 무효
-    assert applied == [2] and d.stats.local_applied == 1
-    slots = d.active_slots(now=t0 + 10)
-    assert set(slots) == {"group"} and slots["group"].expires_at == t0 + 600  # 만료 = 받은 시각 + dur
-    assert d.current_override(now=t0 + 10).act == "on" and not d.local_mode
+    assert d.md == 1 and d.effective_act == "local" and d.slot_dump() == {}
+    assert d.handle_command(cmd(seq=1, act="on"), now=t0)["result"] == "LOCAL"  # 중복 → 첫 결과(LOCAL)
+    assert d.end_local() is None
+    assert not d.local_mode and d.slot_dump() == {} and d.md == 0 and d.effective_act == "schedule"
+    # 같은 seq 로 다시 보내면 중복 — 처음 결과 LOCAL 만(§3.10.8 "같은 seq 로 다시 보내면 중복")
+    assert d.handle_command(cmd(seq=2, act="on", dur=600))["result"] == "LOCAL" and d.md == 0
+    # 새 seq 는 적용
+    assert d.handle_command(cmd(seq=3, act="on", dur=600))["result"] == "OK" and d.md == 2
 
 
-def test_local_pending_auto_clears_on_end_local():
+def test_start_local_cancels_all_remote_slots_and_they_do_not_come_back():
     d = make()
-    d.handle_command(cmd(seq=1, act="off", dur=600), now=0.0)
-    d.local_mode = True
-    assert d.handle_command(cmd(seq=2, act="auto", dur=...), now=1.0)["result"] == "LOCAL"
-    assert d.end_local(now=2.0) == [2] and d.current_override(now=2.0) is None
+    d.handle_command(cmd(seq=1, act="off", dur=600), level="all")
+    d.handle_command(cmd(seq=2, act="on", dur=600), level="group")
+    d.handle_command(cmd(seq=3, act="pwm", ch=[1], pwm=[30], dur=600))
+    assert set(d.slot_dump()) == {"all", "group", "device"} and d.md == 2
+    assert d.start_local() == 3
+    assert d.slot_dump() == {} and d.md == 1 and d.stats.local_cancelled_slots == 3
+    assert d.start_local() == 0            # 이미 현장
+    d.end_local()
+    assert d.slot_dump() == {} and d.md == 0
+
+
+def test_local_mode_assignment_follows_revised_rules():
+    d = make()
+    d.handle_command(cmd(seq=1, act="off", dur=600))
+    d.local_mode = True                    # 대입 = start_local()
+    assert d.slot_dump() == {} and d.stats.local_started == 1
+    d.local_mode = False                   # 대입 = end_local()
+    assert d.md == 0
 
 
 # ── 중복 seq (최근 8개) ──────────────────────────────────────────────────
@@ -279,7 +296,7 @@ async def test_reboot_clears_slots_seq_memory_pending_and_grp():
     d.local_mode = True
     d.handle_command(cmd(seq=3, act="off"))
     await d.reboot()
-    assert d.slot_dump() == {} and not d._seq_memory and not d._pending_local and d.grp is None
+    assert d.slot_dump() == {} and not d._seq_memory and not d._timer_tasks and d.grp is None
     assert d.md == 1  # 현장 조작(DIP)은 물리 스위치라 재부팅으로 안 바뀐다
 
 
