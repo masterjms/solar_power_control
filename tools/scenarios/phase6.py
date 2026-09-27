@@ -310,9 +310,10 @@ async def s6_03(ctx: Ctx) -> None:
     s = await settings_of(ctx, d.uuid)
     ctx.check_eq(s.get("sync"), "synced", "자기 쓰기 뒤 Telemetry ss 로 local_saved 가 되지 않음")
     ctx.check_eq(s.get("ss_telemetry"), d.ss, "ss_telemetry")
-    rows = [h for h in await history(ctx, d.uuid) if h.get("by") == "server_write"]
+    # by = 쓴 관리자 이름(X-Remote-User, 개발 PC 는 "local") 또는 "server_write" — 명세 8.7 은 둘 다 허용.
+    rows = [h for h in await history(ctx, d.uuid) if h.get("by") not in ("device_read", None)]
     ctx.check([(h.get("key"), h.get("old"), h.get("new")) for h in rows] == [("fade", 10, 5)],
-              f"이력 server_write: {rows}")
+              f"쓰기 이력(by={[h.get('by') for h in rows]}): {rows}")
 
 
 # ── S6-04 서버 검사 ─────────────────────────────────────────────────────
