@@ -1,0 +1,66 @@
+# 4차 — MQTTS 8883 + 운영/시험 브로커 분리 오버라이드 (사양서 §1.2.2, S-21, ADR-006).
+#
+# 켜기: 인증서 발급(infra/scripts/cert-issue.sh) 뒤 .env 에
+#         COMPOSE_FILE=docker-compose.yml:docker-compose.tls.yml
+#       를 넣고 `docker compose up -d`. 이후 모든 `docker compose ...` 명령이 이 파일을 포함한다.
+# 끄기(롤백): 그 줄을 지우고 `docker compose up -d --remove-orphans`.
+# 로컬(Windows) 시험: COMPOSE_FILE 구분자가 ';' 이다 —
+#         docker-compose.yml;docker-compose.dev.yml;docker-compose.tls.yml
+#
+# 달라지는 것 (서버 코드는 그대로 — backend 는 여전히 컨테이너망 mosquitto:1883 평문):
+#   mosquitto       운영 브로커. 호스트에는 8883(TLS)만 연다. 1883 리스너는 컨테이너 안에 남아
+#                   backend 만 쓴다(호스트 비공개). 운영 단말(HMAC)·server 계정은 여기에만 있다.
+#   mosquitto-test  시험 브로커(새 컨테이너). 호스트 1883. 계정은 solarlte-test 하나뿐 —
+#                   운영 단말 계정이 없으므로 "1883 은 운영 계정 거부"(§1.2.4 #1)가 구조로 성립한다.
+#                   backend 는 여기 붙지 않는다(PC 시험 도구·레거시 시험용).
+#   web             ./infra/certs 를 물려 443(HTTPS)을 켜고 80 은 https 리다이렉트
+#                   (frontend/nginx/40-tls.sh). acme-challenge 는 80 에 그대로 남는다.
+#
+# 인증서 위치를 바꿔 시험할 때만 TLS_CERTS_DIR 를 준다(기본 ./infra/certs).
+
+# 기본 파일의 x-logging 앵커는 파일 경계를 넘지 않아 같은 값을 다시 적는다.
+x-logging: &default-logging-tls
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  mosquitto:
+    ports: !override
+      - "8883:8883"
+    volumes:
+      # 기본 파일의 같은 대상(/mosquitto/certs)을 교체한다(compose 는 target 기준으로 병합).
+      - ${TLS_CERTS_DIR:-./infra/certs}:/mosquitto/certs:ro
+
+  mosquitto-test:
+    # 시험 브로커는 인증 플러그인이 필요 없다(단말 HMAC 계정을 두지 않는 게 요점) — 순정 이미지.
+    image: eclipse-mosquitto:2
+    container_name: iotlight-mosquitto-test
+    restart: unless-stopped
+    logging: *default-logging-tls
+    ports:
+      - "1883:1883"
+    entrypoint: ["/bin/sh", "/mosquitto-test/entrypoint.sh"]
+    environment:
+      # 비우면 사양서 §1.1.2.1 공개 시험 비밀번호(solarlte-test-2026).
+      MQTT_TEST_BROKER_PASSWORD: ${MQTT_TEST_BROKER_PASSWORD:-}
+    volumes:
+      - ./infra/mosquitto-test:/mosquitto-test:ro
+      - mosquitto-test-data:/mosquitto/data
+    healthcheck:
+      # allow_anonymous false → 익명 구독은 "not authorised" 로 거부된다 = 살아서 듣고 있다.
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 1883 -t '$$SYS/#' -C 1 -W 2 -i healthcheck 2>&1 | grep -qi 'not authori'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    ports:
+      # 기본 파일(80:80, 로컬 dev 는 8088:80)에 더해진다.
+      - "443:443"
+    volumes:
+      - ${TLS_CERTS_DIR:-./infra/certs}:/etc/nginx/certs:ro
+
+volumes:
+  mosquitto-test-data:

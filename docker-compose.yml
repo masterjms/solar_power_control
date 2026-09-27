@@ -34,6 +34,8 @@ services:
       #            4차부터는 운영 계정을 거부하고(§1.2.4) 결국 호스트 공개를 닫는다.
       # 8883 TLS  — 4차. infra/certs/server.crt 가 없으면 리스너 자체가 생성되지
       #            않는다(entrypoint.sh 가 효력 conf 를 조립한다). 포트만 열어 둔다.
+      # 4차 전환은 docker-compose.tls.yml 을 겹친다(ADR-006): 이 브로커는 8883 만 호스트에 열고
+      # 1883 은 컨테이너망 안 backend 전용이 되며, 호스트 1883 은 별도 시험 브로커(mosquitto-test)가 받는다.
       - "1883:1883"
       - "8883:8883"
     # 감시 루프를 얹은 래퍼. 공유 볼륨의 passwd.generated / aclfile.generated 가
@@ -101,9 +103,12 @@ services:
       start_period: 20s
 
   # 관리 화면: Vite 빌드 결과를 nginx 가 서빙하고 /api, /health 를 backend 로 프록시한다.
-  # /api 에 아직 로그인이 없어서 전 경로에 HTTP Basic auth 를 건다(.env ADMIN_USER/ADMIN_PASSWORD).
+  # /api 에 아직 로그인이 없어서 전 경로에 HTTP Basic auth 를 건다(.env ADMIN_USER/ADMIN_PASSWORD,
+  # 선택 OPERATOR_USER/OPERATOR_PASSWORD). 인증된 사용자명은 X-Remote-User 로 backend 에 간다
+  # (클라이언트가 보낸 같은 헤더는 덮어쓴다 — ADR-005 권한).
   # 견본 비밀번호(change-me-admin)면 컨테이너가 기동을 거부한다. backend 8000 은 여전히
-  # 호스트에 열지 않는다 — 밖에서 백엔드에 닿는 길은 이 nginx 뿐이다. HTTPS 는 4차 certbot 과 함께.
+  # 호스트에 열지 않는다 — 밖에서 백엔드에 닿는 길은 이 nginx 뿐이다. HTTPS(443)는
+  # docker-compose.tls.yml 이 인증서를 물리면 켜진다(frontend/nginx/40-tls.sh, ADR-006).
   web:
     build: ./frontend
     container_name: iotlight-web
@@ -115,6 +120,13 @@ services:
     environment:
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # 선택 — 두 번째(최고관리자가 아닌) 계정. 둘 다 비면 admin 하나만. (ADR-005 권한)
+      OPERATOR_USER: ${OPERATOR_USER:-}
+      OPERATOR_PASSWORD: ${OPERATOR_PASSWORD:-}
+    volumes:
+      # certbot --webroot 토큰 자리(/.well-known/acme-challenge/). 인증서 발급은 4차 전에도
+      # 할 수 있게 기본 파일에 둔다. 인증서 자체(/etc/nginx/certs)는 docker-compose.tls.yml 이 물린다.
+      - certbot-www:/var/www/certbot:ro
     depends_on:
       backend:
         condition: service_started
@@ -125,6 +137,22 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # Let's Encrypt 발급·갱신 전용 1회성 컨테이너 (4차, ADR-006). 평소엔 안 뜬다(profile).
+  #   발급: bash infra/scripts/cert-issue.sh <도메인> <이메일>
+  #   갱신: bash infra/scripts/cert-renew.sh   (cron 하루 2번)
+  # HTTP-01 은 web(nginx) 의 /.well-known/acme-challenge/ 로 받는다(--webroot) — 80 을 잠시
+  # 비울 필요가 없다. /etc/letsencrypt 는 호스트 ./infra/letsencrypt (커밋 안 함, .gitignore).
+  # /iotlight-certs 는 갱신 스크립트가 fullchain/privkey 를 server.crt/key 로 복사하는 곳.
+  certbot:
+    image: certbot/certbot:latest
+    container_name: iotlight-certbot
+    profiles: ["certbot"]
+    logging: *default-logging
+    volumes:
+      - ./infra/letsencrypt:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+      - ./infra/certs:/iotlight-certs
 
   # 개발 DB. 운영은 RDS 이므로 프로파일로 감싼다.
   #   docker compose --profile local-db up -d   또는 .env 의 COMPOSE_PROFILES=local-db
@@ -164,3 +192,5 @@ volumes:
   mosquitto-data:
   # backend → mosquitto: passwd/aclfile(generated). mosquitto → backend: mosquitto.log.
   mqtt-dynamic:
+  # certbot --webroot 토큰 (certbot 쓰기 → web 읽기)
+  certbot-www:

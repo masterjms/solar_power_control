@@ -1,0 +1,3 @@
+# 시험 브로커 ACL (mosquitto-test, ADR-006). 계정은 solarlte-test 하나뿐.
+user solarlte-test
+topic readwrite iotlight/#

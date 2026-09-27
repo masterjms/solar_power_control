@@ -69,6 +69,13 @@ fi
 # ── 컨테이너 ────────────────────────────────────────────────────────
 # postgres 는 local-db 프로파일. RDS 전환 후엔 목록에서 뺀다.
 EXPECTED=(iotlight-mosquitto iotlight-backend iotlight-postgres iotlight-web)
+# 4차(docker-compose.tls.yml): 시험 브로커 컨테이너가 하나 더 있다. 오버라이드가 켜져 있는지는
+# compose 가 아는 서비스 목록으로 판단한다(.env COMPOSE_FILE).
+TLS_MODE=0
+if docker compose config --services 2>/dev/null | grep -qx mosquitto-test; then
+    TLS_MODE=1
+    EXPECTED+=(iotlight-mosquitto-test)
+fi
 DOWN=()
 for name in "${EXPECTED[@]}"; do
     state="$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null | tr -d '[:space:]')"
@@ -88,7 +95,12 @@ fi
 
 # ── mosquitto 리스너 ────────────────────────────────────────────────
 listening() { ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"; }
-if listening 1883; then add_ok "mosquitto 1883 listening"; else add_bad "1883 을 듣는 프로세스가 없다"; fi
+if [ "$TLS_MODE" = 1 ]; then
+    # 호스트 1883 = 시험 브로커(solarlte-test 만). 운영 브로커 1883 은 컨테이너망 안 backend 전용.
+    if listening 1883; then add_ok "시험 브로커 1883 listening (운영 계정 없음)"; else add_bad "시험 브로커(mosquitto-test) 1883 을 안 듣는다"; fi
+else
+    if listening 1883; then add_ok "mosquitto 1883 listening"; else add_bad "1883 을 듣는 프로세스가 없다"; fi
+fi
 if [ -f infra/certs/server.crt ]; then
     if listening 8883; then add_ok "mosquitto 8883 listening (TLS)"; else add_bad "인증서는 있는데 8883 을 안 듣는다 — mosquitto 재시작 필요(리스너는 HUP 로 안 생긴다)"; fi
 else
@@ -132,6 +144,12 @@ else
     else
         add_bad "web /health ${WEB_CODE} (401 이면 .env ADMIN_* 와 컨테이너 환경 불일치 → docker compose up -d web)"
     fi
+fi
+
+# 4차: 443 이 인증서로 응답하는지(이름 검증은 생략 -k — 밖에서 보는 이름 검증은 런북의 openssl 명령)
+if [ "$TLS_MODE" = 1 ] && [ -n "$ADMIN_PASSWORD" ]; then
+    TLS_CODE="$(curl -sk -o /dev/null -w '%{http_code}' -u "${ADMIN_USER:-admin}:$ADMIN_PASSWORD" "https://localhost/health" 2>/dev/null || echo '000')"
+    if [ "$TLS_CODE" = "200" ]; then add_ok "web https /health 200"; else add_bad "web https /health ${TLS_CODE} — docker compose logs web | grep 모드"; fi
 fi
 
 # ── passwd/aclfile 적용 상태 (2차) ──────────────────────────────────

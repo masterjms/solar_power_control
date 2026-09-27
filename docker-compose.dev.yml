@@ -24,6 +24,9 @@ services:
       # 시뮬레이터 시험용 — CONFIG ti/ka 하한을 사양(60)보다 낮춘다. 운영 compose 에는 없다.
       CONFIG_TI_MIN_SEC: "1"
       CONFIG_KA_MIN_SEC: "1"
+      # 5차(ADR-005): 운영은 승인에 법정동 말단 배정이 필요하다(true). 3차 시나리오는 지역 없이
+      # 승인하므로 개발 스택에서는 끈다.
+      APPROVE_REQUIRES_NODE: "false"
 
   postgres:
     ports:

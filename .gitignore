@@ -19,6 +19,7 @@ tools/scenarios/out/
 
 # 인증서·비밀번호 파일 — 서버에서 생성
 infra/certs/
+infra/letsencrypt/
 infra/mosquitto/config/passwd
 infra/mosquitto/dynamic/
 
