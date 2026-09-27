@@ -1,0 +1,57 @@
+{
+ "version": "2026-09-26 / F/W 1.4.0 / 도구 1.3",
+ "note": "범위(min/max)는 참고값이다. 실제 범위는 연결 후 'cfg get' 응답의 min=/max= 를 쓴다. value = 단말 저장값(정수), 화면값 = value / scale. selftest.py 가 FW/App/cli.c 와 대조한다.",
+ "groups": [
+  {"id": "schedule", "title": "스케줄", "items": [
+   {"key": "start_ofst", "label": "시작 Offset", "unit": "분", "scale": 1, "min": -60, "max": 60, "default": 0, "widget": "spin", "help": "일몰 기준 점등 시각을 당기거나(-) 늦춘다(+). 표의 점등 보정과 별개로 운전 중에 더한다"},
+   {"key": "stop_ofst", "label": "종료 Offset", "unit": "분", "scale": 1, "min": -60, "max": 60, "default": 0, "widget": "spin", "help": "일출 기준 소등 시각을 당기거나(-) 늦춘다(+)"},
+   {"key": "start_pwm", "label": "시작 밝기", "unit": "%", "scale": 1, "min": 0, "max": 100, "default": 100, "widget": "slider", "help": "PWM1~3 기준 밝기에 곱하는 비율"}
+  ]},
+  {"id": "brightness", "title": "밝기", "items": [
+   {"key": "manual_40w", "label": "PWM1 40W", "unit": "%", "scale": 1, "min": 10, "max": 99, "default": 90, "widget": "slider", "help": "설치 장소 기준 밝기"},
+   {"key": "manual_5w1", "label": "PWM2 5W-1", "unit": "%", "scale": 1, "min": 10, "max": 99, "default": 90, "widget": "slider", "help": "설치 장소 기준 밝기"},
+   {"key": "manual_5w2", "label": "PWM3 5W-2", "unit": "%", "scale": 1, "min": 10, "max": 99, "default": 90, "widget": "slider", "help": "설치 장소 기준 밝기"},
+   {"key": "fade", "label": "Fade 시간", "unit": "x100ms", "scale": 1, "min": 1, "max": 20, "default": 10, "widget": "spin", "help": "0~100% 이동 시간. 10 이면 1.0초"}
+  ]},
+  {"id": "stage", "title": "다단계 밝기", "items": [
+   {"key": "stage1_h", "label": "1단계 시", "unit": "시", "scale": 1, "min": 0, "max": 23, "default": 20, "widget": "time_h", "help": ""},
+   {"key": "stage1_m", "label": "1단계 분", "unit": "분", "scale": 1, "min": 0, "max": 59, "default": 0, "widget": "time_m", "help": ""},
+   {"key": "stage1_pwm", "label": "1단계 밝기", "unit": "%", "scale": 1, "min": 0, "max": 100, "default": 70, "widget": "slider", "help": ""},
+   {"key": "stage2_h", "label": "2단계 시", "unit": "시", "scale": 1, "min": 0, "max": 23, "default": 0, "widget": "time_h", "help": ""},
+   {"key": "stage2_m", "label": "2단계 분", "unit": "분", "scale": 1, "min": 0, "max": 59, "default": 0, "widget": "time_m", "help": ""},
+   {"key": "stage2_pwm", "label": "2단계 밝기", "unit": "%", "scale": 1, "min": 0, "max": 100, "default": 40, "widget": "slider", "help": ""},
+   {"key": "stage3_h", "label": "3단계 시", "unit": "시", "scale": 1, "min": 0, "max": 23, "default": 2, "widget": "time_h", "help": ""},
+   {"key": "stage3_m", "label": "3단계 분", "unit": "분", "scale": 1, "min": 0, "max": 59, "default": 0, "widget": "time_m", "help": ""},
+   {"key": "stage3_pwm", "label": "3단계 밝기", "unit": "%", "scale": 1, "min": 0, "max": 100, "default": 30, "widget": "slider", "help": ""},
+   {"key": "stage4_h", "label": "4단계 시", "unit": "시", "scale": 1, "min": 0, "max": 23, "default": 4, "widget": "time_h", "help": ""},
+   {"key": "stage4_m", "label": "4단계 분", "unit": "분", "scale": 1, "min": 0, "max": 59, "default": 0, "widget": "time_m", "help": ""},
+   {"key": "stage4_pwm", "label": "4단계 밝기", "unit": "%", "scale": 1, "min": 0, "max": 100, "default": 60, "widget": "slider", "help": ""}
+  ]},
+  {"id": "battery", "title": "배터리 보호", "items": [
+   {"key": "cut12", "label": "12V 차단 전압", "unit": "V", "scale": 100, "min": 1100, "max": 1500, "default": 1275, "widget": "decimal2", "help": "이 전압 아래로 차단 유지 시간 동안 있으면 소등"},
+   {"key": "rtn12", "label": "12V 복귀 전압", "unit": "V", "scale": 100, "min": 1100, "max": 1500, "default": 1315, "widget": "decimal2", "help": "차단 전압보다 커야 한다"},
+   {"key": "cut24", "label": "24V 차단 전압", "unit": "V", "scale": 100, "min": 2200, "max": 3000, "default": 2550, "widget": "decimal2", "help": "이 전압 아래로 차단 유지 시간 동안 있으면 소등"},
+   {"key": "rtn24", "label": "24V 복귀 전압", "unit": "V", "scale": 100, "min": 2200, "max": 3000, "default": 2630, "widget": "decimal2", "help": "차단 전압보다 커야 한다"},
+   {"key": "cut_time", "label": "차단 유지 시간", "unit": "분", "scale": 1, "min": 1, "max": 60, "default": 10, "widget": "spin", "help": "이 시간 동안 차단 전압 아래면 소등"},
+   {"key": "rtn_time", "label": "복귀 유지 시간", "unit": "분", "scale": 1, "min": 1, "max": 60, "default": 30, "widget": "spin", "help": "이 시간 동안 복귀 전압 위면 재점등"}
+  ]}
+ ],
+ "rules": [
+  {"id": "batt12_order", "text": "cut12 < rtn12", "why": "어기면 단말이 Flash 저장 때 두 값을 기본값(12.75 / 13.15V)으로 조용히 바꾼다"},
+  {"id": "batt24_order", "text": "cut24 < rtn24", "why": "어기면 단말이 Flash 저장 때 두 값을 기본값(25.50 / 26.30V)으로 조용히 바꾼다"},
+  {"id": "stage_order", "text": "1→2→3→4단계 시각이 저녁부터 밤 순서로 이어지고(자정 넘김 허용), 점등부터 4단계까지 24시간 미만", "why": "어기면 Flash 저장이 'CFG ERR schedule flash write fail' 로 거부된다"}
+ ],
+ "calc": {"id": "effective_pwm", "text": "실제 출력 = round(기준 밝기 x 시작 밝기 / 100). 99 초과면 99, 0 초과 10 미만이면 10", "keys": ["manual_40w", "manual_5w1", "manual_5w2", "start_pwm"]},
+ "year_table": {
+  "inputs": [
+   {"key": "region", "label": "지역", "type": "text", "max_bytes_utf8": 47, "help": "목록(시/군 36곳)에서 고르거나 직접 입력(한글 15자). 단말에 저장된다"},
+   {"key": "lat", "label": "위도", "type": "decimal", "min": -90, "max": 90, "help": "단말에는 도 x 1,000,000 정수로 저장. '37.5665, 126.9780' 이나 지도 주소를 붙여도 된다"},
+   {"key": "lon", "label": "경도", "type": "decimal", "min": -180, "max": 180, "help": ""},
+   {"key": "on_corr", "label": "점등 보정", "type": "int", "unit": "분", "min": -180, "max": 180, "default": 0, "help": "일몰 기준. 표에 들어간다"},
+   {"key": "off_corr", "label": "소등 보정", "type": "int", "unit": "분", "min": -180, "max": 180, "default": 0, "help": "일출 기준. 표에 들어간다"}
+  ],
+  "preview": "월별 1일/15일 24행 : 날짜, 점등, 소등, 점등 시간",
+  "origin_display": "지역 · 위도 경도 · 보정 +a / +b분 · 만든 쪽(펌웨어 기본 표 / PC 도구 / 서버)",
+  "calc": "suntable.build_table(lat_e6, lon_e6, on_corr, off_corr) — 단말·서버와 같은 정수 계산"
+ }
+}

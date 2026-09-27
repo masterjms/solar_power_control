@@ -240,3 +240,47 @@ PATCH → 목록 항목 모양, DELETE → `{"id","deleted":true}`. 없는 id 40
 
 ### 에러 코드 추가
 `FORBIDDEN` 403 · `GEO_UNAVAILABLE` 503 · `REGION_IN_USE` 409 · `NODE_NOT_LEAF` 422 · `NODE_REQUIRED` 409 · `REGION_NOT_FOUND` 404 · `COMMAND_NOT_FOUND` 404 · `COMMAND_FINISHED` 409 · `NO_TARGETS` 409(대상 ACTIVE 단말 0)
+
+---
+
+# 단말 설정 API (S-23, 2026-09-27, ADR-007)
+
+### `GET /api/settings/schema`
+`ui_items.json` 그대로(groups/items/rules/calc/year_table). 화면은 이것으로 폼을 그린다.
+
+### `GET /api/devices/{uuid}/settings`
+```json
+{"uuid":"…","sync":"unknown|synced|writing|local_saved|device_changed","read_at":null,
+ "values":{"start_ofst":0,…25개…}|null, "sh_db":"38AF0DBD"|null, "sh_device":"…"|null,
+ "tbl":{"region":"서울","lat_e6":37566500,"lon_e6":126978000,"on":0,"off":0,"src":1,"ss":31,"crc":"69C1DF86","crc_expected":"69C1DF86","matches":true}|null,
+ "dev":{"dip":8,"bat":24}|null, "ss_known":31, "ss_telemetry":31,
+ "report":{…device_changed 일 때 단말 값 25개…}|null, "diff":[{"key","db","device"}],
+ "pending":{"kind":"SETTINGS_GET|SETTINGS_SET","seq":501,"sent_at":"…","attempts":1}|null,
+ "last_result":"OK","last_result_at":"…"}
+```
+`tbl.matches` = 단말 `crc` 가 같은 조건으로 서버가 계산한 CRC 와 같은가(다르면 "현장에서 손댄 표").
+
+### `POST /api/devices/{uuid}/settings/read` → 202 `{"seq","sent_at"}`
+`SETTINGS_GET`. state 가 PENDING·ACTIVE 가 아니면 409 `INVALID_STATE`. 이미 대기 중이면 409 `SETTINGS_PENDING`.
+
+### `PUT /api/devices/{uuid}/settings` (ACTIVE 만)
+```json
+{"values":{…25개 전부…}, "tbl":{"region":"서울","lat":37.5665,"lon":126.978,"on":0,"off":0} | null}
+```
+- 25개 중 하나라도 없으면 422 `SETTINGS_INCOMPLETE`. 범위 밖 422 `SETTINGS_RANGE`(detail.key). 규칙 위반 422 `SETTINGS_RULE`(detail.rule).
+- `tbl` 은 표를 바꿀 때만. `lat/lon` 은 실수 → `round(x*1e6)`. `region` UTF-8 47바이트 이하, `"` `\` 제어문자 불가. `on/off` -180~180.
+- 한 번도 읽지 않은 단말(`sync=unknown`)은 409 `SETTINGS_NOT_READ`(읽고 나서 쓴다 — 8.5). `force=true` 쿼리로만 허용.
+→ 202 `{"seq","sent_at","sh_expected","payload_bytes"}`. 결과는 GET 으로(`writing` → `synced` 등).
+
+### `POST /api/devices/{uuid}/settings/accept` — `device_changed` 일 때 DB ← 단말 보고값. 이력 `by` = 사용자.
+### `POST /api/devices/{uuid}/settings/revert` — `device_changed`/`local_saved` 일 때 DB 값으로 SETTINGS_SET(= PUT 과 같은 경로).
+### `GET /api/devices/{uuid}/settings/history?limit=100` → `[{"changed_at","by","key","old","new","note"}]`
+
+### `GET /api/schedule/preview?lat=&lon=&on=0&off=0`
+suntable 로 표 계산 → `{"crc":"69C1DF86","lat_e6","lon_e6","rows":[{"month","day","on":"18:02","off":"06:31","hours":12.5}]}` — 매달 1일·15일 24행.
+
+### DeviceOut 추가
+`settings_sync`(device_settings.sync, 없으면 `unknown`).
+
+### 에러 코드 추가
+`INVALID_STATE` 409 · `SETTINGS_PENDING` 409 · `SETTINGS_NOT_READ` 409 · `SETTINGS_INCOMPLETE` 422 · `SETTINGS_RANGE` 422 · `SETTINGS_RULE` 422 · `SETTINGS_NOT_CHANGED`(accept/revert 할 게 없음) 409
