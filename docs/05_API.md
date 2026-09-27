@@ -142,3 +142,83 @@ RETIRED  → PENDING(같은 보드 재설치. 빈 retain 상태에서 REGISTER �
 
 ## 다음(4차 전)
 `POST /api/auth/login`, 모든 `/api/*` 인증. 주소 검색(법정동코드 자동) API 연동.
+
+---
+
+# 5차 API (2026-09-27, ADR-005)
+
+모든 `/api/*` 요청의 사용자 = 헤더 `X-Remote-User`(nginx Basic auth). 역할은 `SUPER_ADMIN_USERS` 로 판정.
+최고관리자 전용 API 는 관리자에게 403 `FORBIDDEN`.
+
+### `GET /api/me` → `{"user":"admin","role":"super_admin"|"admin"}`
+
+## 법정동 트리
+
+### `GET /api/regions`
+평면 목록(화면이 트리로 조립). `device_count` = 그 노드 아래(자신 포함) 단말 수, `active_count` = 그중 ACTIVE.
+```json
+[{"id":1,"parent_id":null,"level":"sido","name":"경기도","bjd_code":null,"grp":null,"lat":null,"lon":null,"device_count":4296,"active_count":4200},
+ {"id":3,"parent_id":2,"level":"dong","name":"안양동","bjd_code":"4117110100","grp":"411711010000","lat":37.40,"lon":126.92,"device_count":12,"active_count":12}]
+```
+
+### `GET /api/geo/search?query=경기도 군포시 금산로 91`
+카카오 로컬 주소 검색 프록시(`KAKAO_REST_API_KEY`). 키가 없으면 503 `GEO_UNAVAILABLE`.
+```json
+[{"address_name":"경기 군포시 금정동 ...","bjd_code":"4141010400","sido":"경기도","sigungu":"군포시","dong":"금정동","lat":37.36,"lon":126.93}]
+```
+
+### `POST /api/regions/from-address` (최고관리자) `{"query":"..."}` 또는 `{"pick":{GeoResult}}`
+검색 첫 결과(또는 고른 결과)로 시도·시군구·법정동을 find-or-create. 말단 반환(201, 이미 있으면 200).
+개발 환경(`APP_ENV=dev`)에서는 `{"sido","sigungu","dong","bjd_code","lat"?,"lon"?}` 직접 입력도 허용(카카오 키 없이 시험).
+
+### `PATCH /api/regions/{id}` (최고관리자) `{"name"}` · `DELETE /api/regions/{id}` (최고관리자)
+자식 또는 배정된 단말이 있으면 409 `REGION_IN_USE`.
+
+## 단말 배정
+
+- `PATCH /api/devices/{uuid}/config` 에 `node_id` 추가(말단만, 아니면 422 `NODE_NOT_LEAF`). `null` 이면 배정 해제.
+  바뀌면 `grp`·`bjd_code` 갱신 → REGISTER_ACK retain 재발행(`register_ack_republished`).
+- `PATCH /api/devices/{uuid}/state` 에 `node_id` 추가. ACTIVE 로 갈 때 단말에 말단이 없고 `APPROVE_REQUIRES_NODE=true` 면 409 `NODE_REQUIRED`.
+- REGISTER_ACK: `{"type":"REGISTER_ACK","uuid","state"[,"site"][,"grp"][,"reason"]}` — `grp` 는 배정돼 있으면 항상 싣는다.
+- `DeviceOut` 추가: `node_id`, `node_name`, `node_path`(예 "경기도 > 안양시 만안구 > 안양동"), `override_act`, `override_level`, `override_seq`, `override_until`,
+  `remote_active`(= `last_telemetry.md == 2 AND override_until > now`), `remote_remaining_sec`.
+- 목록 필터 추가: `node_id`(그 노드 아래 전체), `remote=true`.
+
+## 명령
+
+공통 요청 본문:
+```json
+{"target":{"kind":"device"|"node"|"all","id":"<uuid>"|"<node id>"|null},
+ "act":"on"|"off"|"pwm"|"auto", "ch":[1,2], "pwm":[70,40],
+ "dur":3600 | null, "dur_preset":"30m"|"1h"|"3h"|"tonight"|null, "exp":30}
+```
+- `ch` 기본 `[1,2]`, 값 1~3 중복 없음. `pwm` 은 `act=pwm` 일 때만, `ch` 와 같은 길이, 0~100.
+- `act != auto` 면 `dur`(1~86400) 또는 `dur_preset` 중 하나 필수. `tonight` = 대상 좌표 기준 오늘 소등 시각까지 남은 초(suntable).
+- `kind=all` 은 최고관리자만.
+
+### `POST /api/commands/preview` → 보내기 전 확인
+```json
+{"expected":120,"online":112,"offline":8,"low_battery":3,"not_active":5,
+ "topics":["iotlight/group/411711010000/cmd"],"dur":3600,"payload":{...seq 제외...}}
+```
+`low_battery` = 대상 중 `last_telemetry.er & 1`(BATT_LOW) — 점등 명령이어도 안 켜질 수. `not_active` = 대상 범위 안이지만 ACTIVE 가 아니라 제외된 수.
+
+### `POST /api/commands` → 201
+```json
+{"seq":57,"target":{"kind":"node","id":"3","label":"경기도 > 안양시 만안구"},"topics":[...],
+ "payload":{"type":"COMMAND","seq":57,"ts":"260927T013512","exp":30,"act":"off","ch":[1,2],"dur":3600},
+ "expected":120,"sent_at":"...","created_by":"admin"}
+```
+브로커 끊김이면 503 `MQTT_UNAVAILABLE`(명령 행 롤백).
+
+### `GET /api/commands?limit=50&uuid=&node_id=`
+이력(최신순): `{"seq","created_by","target_kind","target_id","target_label","act","ch","pwm","dur","sent_at","finished_at","result",
+"expected_count","counts":{"OK":n,"LOCAL":n,"EXPIRED":n,"BAD":n,"STATE":n,"pending":n}}`.
+
+### `GET /api/commands/{seq}` → 위 + `targets:[{"uuid","site","node_name","status","attempts","last_sent_at","acked_at","is_online"}]`
+
+### `POST /api/commands/{seq}/retry` `{"uuids":[...]|null}`
+무응답(pending)·EXPIRED 대상만 **개별 topic** 으로 같은 seq·새 ts 재발송. → `{"resent":n}`. 종료된 명령이면 409 `COMMAND_FINISHED`.
+
+### 에러 코드 추가
+`FORBIDDEN` 403 · `GEO_UNAVAILABLE` 503 · `REGION_IN_USE` 409 · `NODE_NOT_LEAF` 422 · `NODE_REQUIRED` 409 · `REGION_NOT_FOUND` 404 · `COMMAND_NOT_FOUND` 404 · `COMMAND_FINISHED` 409 · `NO_TARGETS` 409(대상 ACTIVE 단말 0)
