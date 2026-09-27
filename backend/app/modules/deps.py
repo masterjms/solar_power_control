@@ -13,6 +13,7 @@ from app.mqtt.command_retry import CommandRetrier
 from app.mqtt.config_sync import ConfigSyncQueue
 from app.mqtt.connection import MqttConnection
 from app.mqtt.publisher import MqttPublisher
+from app.mqtt.settings_sync import SettingsSync
 from app.mqtt.telemetry_buffer import TelemetryBuffer
 from app.tasks.broker_log import BrokerLogTail
 
@@ -39,3 +40,7 @@ def get_broker_log(request: Request) -> BrokerLogTail:
 
 def get_retrier(request: Request) -> CommandRetrier:
     return request.app.state.command_retrier
+
+
+def get_settings_sync(request: Request) -> SettingsSync:
+    return request.app.state.settings_sync

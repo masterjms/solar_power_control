@@ -66,6 +66,8 @@ class DeviceOut(BaseModel):
     override_level: str | None = None
     override_seq: int | None = None
     override_until: dt.datetime | None = None
+    #: S-23 단말 설정 동기 상태(device_settings.sync). 행이 없으면 unknown(ADR-007).
+    settings_sync: str = "unknown"
     #: last_telemetry.md == 2 AND override_until > now.
     remote_active: bool = False
     #: override_until 까지 남은 초(미래일 때만. md 와 무관 — OK 직후 TM 전에도 보인다).

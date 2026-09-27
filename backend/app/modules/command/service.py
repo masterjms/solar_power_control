@@ -164,7 +164,7 @@ async def _stats(db: AsyncSession, scope: Any, now: dt.datetime) -> dict[str, in
 def _build_payload(spec: CommandSpec, *, seq: int, now: dt.datetime, dur: int | None):
     payload = command_payload(seq=seq, ts=kst_ts(now), exp=spec.exp, act=spec.act, ch=spec.ch,
                               pwm=spec.pwm, dur=dur)
-    check_size("cmd", encode(payload))  # 384B 초과면 PayloadTooLarge(서버 버그)
+    check_size("cmd", encode(payload))  # 900B 초과면 PayloadTooLarge(서버 버그)
     return payload
 
 

@@ -128,7 +128,7 @@ DB 상태 그대로 REGISTER_ACK retain 을 다시 발행(재조정용). RETIRED
 | `PROFILE_IN_USE` | 409 | 단말이 쓰는 프로필 삭제 |
 | `INVALID_STATE_TRANSITION` | 409 | 예: RETIRED → ACTIVE 는 PENDING 을 거쳐야 함 |
 | `MQTT_UNAVAILABLE` | 503 | 브로커 미연결 (ping 만. state/config 는 DB 커밋 + published=false) |
-| `MQTT_PAYLOAD_TOO_LARGE` | 500 | 384B 초과 — 서버 버그 |
+| `MQTT_PAYLOAD_TOO_LARGE` | 500 | 900B 초과(단말 수신 한계, ADR-007. 2026-09-27 전 384B) — 서버 버그 |
 
 ## 상태 전이
 
@@ -275,9 +275,13 @@ PATCH → 목록 항목 모양, DELETE → `{"id","deleted":true}`. 없는 id 40
 ### `POST /api/devices/{uuid}/settings/accept` — `device_changed` 일 때 DB ← 단말 보고값. 이력 `by` = 사용자.
 ### `POST /api/devices/{uuid}/settings/revert` — `device_changed`/`local_saved` 일 때 DB 값으로 SETTINGS_SET(= PUT 과 같은 경로).
 ### `GET /api/devices/{uuid}/settings/history?limit=100` → `[{"changed_at","by","key","old","new","note"}]`
+최신순, `limit` 1~1000. 읽기·쓰기·받아들이기·되돌리기는 대기 중인 요청이 있으면 409 `SETTINGS_PENDING`.
+`tbl.ss` = `ss_known`. `report`/`diff` 는 `device_changed` 이고 마지막 SETTINGS 원본이 있을 때만(쓰기 OK 인데 `sh` 가 다르면 원본이
+없어 비어 있다 — 다시 읽기). revert 는 DB 에 표 조건이 있으면 `tbl` 도 싣는다.
 
 ### `GET /api/schedule/preview?lat=&lon=&on=0&off=0`
-suntable 로 표 계산 → `{"crc":"69C1DF86","lat_e6","lon_e6","rows":[{"month","day","on":"18:02","off":"06:31","hours":12.5}]}` — 매달 1일·15일 24행.
+suntable 로 표 계산 → `{"crc":"69C1DF86","lat_e6","lon_e6","on","off","rows":[{"month","day","on":"18:02","off":"06:31","hours":12.5}]}` — 매달 1일·15일 24행.
+`hours` = 점등 → 다음 날 소등까지(소수 1자리). 범위 밖 lat/lon/on/off 는 422 `VALIDATION_FAILED`.
 
 ### DeviceOut 추가
 `settings_sync`(device_settings.sync, 없으면 `unknown`).

@@ -40,10 +40,13 @@ QoS0 으로 온다. 네 패턴을 하나(`iotlight/device/+/#`)로 합치지 않
 | `iotlight/device/<uuid>/cmd` | `PING` | 1 | 0 | REST 로만 |
 | `iotlight/device/<uuid>/cmd` | `COMMAND` (6·7차 `SCH` `OTA`) | 1 | 0 | 개별 명령(즉시) · 개별 재시도(응답 큐) |
 | `iotlight/group/<grp>/cmd` · `iotlight/all/cmd` | `COMMAND` | 1 | 0 | 노드·전체 명령(즉시). 재시도는 그룹으로 안 한다 |
+| `iotlight/device/<uuid>/cmd` | `SETTINGS_GET` `SETTINGS_SET` (S-23) | 1 | 0 | 관리자 읽기·쓰기(즉시) · 새 seq 재발송(응답 큐), §17 |
 
 발행 규칙(publisher `_send`):
-- compact JSON(구분자 뒤 공백 없음, `ensure_ascii=False`).
-- **384B 초과면 발행하지 않고 `PayloadTooLarge`**(AT 버퍼, 사양서 §1.1.6). 300B 초과는 경고.
+- compact **한 줄** JSON(구분자 뒤 공백 없음, `ensure_ascii=False`). 결과에 줄바꿈 바이트가 있으면 발행 전에 막는다
+  (모뎀은 payload 안의 줄바꿈을 여러 줄로 넘겨 단말이 한 메시지로 못 읽는다, UI_항목_명세 8.4).
+- **900B 초과면 발행하지 않고 `PayloadTooLarge`**(단말 수신 줄 1,024B 한계·실측 950B 정상, ADR-007). 800B 초과는 경고.
+  (2026-09-27 전에는 384B 였다 — 그것은 단말 → 서버 AT 발행 버퍼 이야기였다. SETTINGS_SET 최대 약 560B.)
 - `cmd` 는 절대 retain 하지 않는다. 재접속 단말에 옛 명령이 되살아난다(5차 소등이면 사고).
 - `REGISTER_ACK` = `{"type":"REGISTER_ACK","uuid","state"}` + `site`(있을 때) + `reason`(**REJECTED 일 때만**).
   `cv`/`ti`/`ka` 는 절대 싣지 않는다(§3.3). 5차: `grp`(말단 배정돼 있으면 상태와 무관하게 항상) —
@@ -111,6 +114,8 @@ DB 를 만지지 않는다. `TelemetryBuffer.offer()` 로 끝. §8 참고. type 
 | `PONG` | `PONG` | `uuid:PONG:<seq>:sha1` | `command` 조회 → target 이 이 uuid 인지 확인(§1.1.5) → `command_ack` 1행(PK 충돌 무시) → `acked_count+1`, 다 모이면 `finished_at`, `result=OK`. seq 를 모르거나 단말이 다르면 `pong_mismatch` |
 | `CONFIG_ACK` | `CONFIG_ACK` | `uuid:CONFIG_ACK:<cv>:sha1` | 아래 표 |
 | `COMMAND_ACK` (`CMD_ACK`) | `COMMAND_ACK` | `uuid:COMMAND_ACK:<seq>:sha1` | §16.4 |
+| `SETTINGS` | `SETTINGS` | `uuid:SETTINGS:<seq>:sha1` | §17.3 |
+| `SETTINGS_ACK` | `SETTINGS_ACK` | `uuid:SETTINGS_ACK:<seq>:sha1` | §17.4 |
 
 CONFIG_ACK `result` 별:
 
@@ -306,6 +311,7 @@ render_acl()     = user server / topic readwrite iotlight/#  (+ 시험 계정)  
 | `config_ack_ok` `config_ack_range` `config_ack_state` `config_ack_flash` | CONFIG_ACK result 별 |
 | `pong_mismatch` | seq 모름 또는 단말 불일치 응답 |
 | `command_published` `command_retry_sent` `command_ack` `command_ack_mismatch` | 5차 COMMAND 발행(topic 단위) / 개별 재시도 / ACK / 모르는 seq·스냅숏 밖 단말 |
+| `settings_sent` `settings_resent` `settings_timeout` `settings_report` `settings_ack` `settings_mismatch` `settings_local_saved` | S-23 설정 첫 발송 / 새 seq 재발송 / 3회 무응답 / SETTINGS·SETTINGS_ACK 수신 / 모르는 seq / ss 변화로 local_saved (§17) |
 | `mqtt_connected` `mqtt_reconnects` `mqtt_publish_failures` | 연결 |
 | `mqtt_auth_ok` `mqtt_auth_fail` `mqtt_acl_deny` | 브로커 인증 API |
 | `broker_log_tail` `broker_log_lines` `broker_log_online` `broker_log_offline` `broker_log_not_authorised` `broker_log_errors` | 로그 tail |
@@ -405,9 +411,10 @@ DB       ─ command(type=COMMAND, target_kind, target_id, created_by, topics, e
 ### 16.4 COMMAND_ACK (result: OK / LOCAL / EXPIRED / BAD / STATE)
 1. device_event(COMMAND_ACK), dedup `uuid:COMMAND_ACK:<seq>:sha1(payload)` — QoS1 재전송은 여기서 끝.
 2. seq 가 COMMAND 가 아니거나(모름·PING) 이 단말이 스냅숏에 없으면 경고 + `command_ack_mismatch`.
-3. `command_target.status = result`(단, **OK 는 내려가지 않는다** — 늦은 EXPIRED 가 덮지 않게. LOCAL→OK 는 허용),
+3. `command_target.status = result`(단, **OK·LOCAL 은 바뀌지 않는다** — 늦은 EXPIRED 가 OK 를 덮지 않게.
+   LOCAL 은 "현장 조작 중이라 버림"이고 현장이 끝나도 단말이 적용하지 않는다(§3.10.8·§3.10.11 2026-09-27 개정) — 종결),
    `acked_at`, `ack`(원본). 첫 응답(pending 에서)이면 `command.acked_count + 1`. 모르는 result 값은 원본만 남긴다.
-4. **OK** → `device.override_*` (§16.6).
+4. **OK**(그리고 target 이 OK) → `device.override_*` (§16.6). LOCAL 은 override 를 남기지 않는다.
 5. 대상이 다 응답했으면 종료 판정을 그 seq 하나에 바로 돌린다(개별 명령이 30초 동안 "진행 중"으로 보이지 않게).
 
 ### 16.5 종료 (30초 타이머, `tasks/command_finisher`)
@@ -422,6 +429,11 @@ DB       ─ command(type=COMMAND, target_kind, target_id, created_by, topics, e
   기록된 것이 **더 높은 계층이고 아직 유효**하면 덮지 않는다(단말은 여전히 그 계층 값을 쓴다).
 - OK(auto): 개별 auto 는 전부 NULL. 그룹/전체 auto 는 기록된 계층이 같을 때만 NULL.
 - 재부팅(TM flush 의 sq 감소 판정, REBOOT 이벤트)이면 그 단말 override 필드 NULL — 단말이 잃는다.
+- **Telemetry `md == 1`(현장 조작)** 이 오면 override 필드 NULL — 현장 조작이 시작되면 단말이 원격을 전부 취소한다
+  (§3.10.8 2026-09-27 개정). 둘 다 그 TM 을 받은 **뒤에** 보낸 명령의 override 는 남긴다(flush 1초 지연 경합, B11).
+  대기 중인 command_target 은 건드리지 않는다(단말이 LOCAL 로 답하거나 무응답으로 끝난다).
+- 원격 OK·유지시간 끝·현장 시작 뒤 2초에 오는 추가 Telemetry 는 주기 TM 과 같다(`sq` 이어짐) — 유실·재부팅이 아니고,
+  주기보다 이르다고 따로 판정하는 곳도 없다.
 - 화면: `remote_active = last_telemetry.md == 2 AND override_until > now`, `remote_remaining_sec` = until 까지
   남은 초(미래일 때만. md 와 무관 — OK 직후 md 를 실은 TM 전에도 보인다). 목록 `?remote=true` 는 SQL 판.
 
@@ -435,3 +447,44 @@ DB       ─ command(type=COMMAND, target_kind, target_id, created_by, topics, e
 `KAKAO_REST_API_KEY`(""), `SUPER_ADMIN_USERS`(admin), `APPROVE_REQUIRES_NODE`(미설정 = prod true / dev false),
 `COMMAND_EXP_SEC`(30), `COMMAND_TIMEOUT_SEC`(900), `COMMAND_MAX_ATTEMPTS`(3), `COMMAND_RETRY_MIN_SEC`(20),
 `DEFAULT_LAT`/`DEFAULT_LON`(37.5665/126.9780).
+
+## 17. S-23 단말 운전 설정 (ADR-007, `UI_항목_명세.md` 8장)
+
+### 17.1 항목 · 지문 · 표 CRC (`core/settings_rules.py`, 순수)
+- 항목 정의 = `app/vendor/ui_items.json`(docs/spec/settings 사본, 고치지 않는다). 키·**순서**·범위·기본·배율.
+- `sh` = 25개를 ui_items 순서대로 `<i` 로 이어 CRC-32, 대문자 8자리. 기본값 = `38AF0DBD`(단위 시험 고정).
+- 표 CRC = `suntable.table_crc32(build_table(lat_e6, lon_e6, on, off))`. 서울 = `69C1DF86`.
+- 검사: 25개 전부(없으면 INCOMPLETE, 모르는 키도 거부) → 범위(ui_items min/max) → 규칙
+  `cut12<rtn12`, `cut24<rtn24`, **다단계 순서** — 1→4단계 시각(분)을 1단계부터 펼쳐 앞 단계보다 같거나 이르면 +1440,
+  펼친 값이 엄격히 증가하고 1단계→4단계 간격 < 1440분. 일몰(점등) 시각은 보지 않는다(1단계가 저녁 첫 단계).
+  단말도 `RULE` 로 거부하므로 서버 검사는 미리 막기다.
+- `region`: UTF-8 47바이트 이하, 비어 있지 않음, `"` `\` 제어문자(C0·DEL·C1) 불가. 좌표 ±90/±180(→ `round(x*1e6)`), 보정 -180~180.
+
+### 17.2 발행 (`SETTINGS_GET` / `SETTINGS_SET`, 개별 cmd topic, QoS1, retain 없음)
+- `{"type":"SETTINGS_GET","seq"}`, `{"type":"SETTINGS_SET","seq","v":{25개 ui_items 순서},"tbl"?:{"region","lat_e6","lon_e6","on","off","crc"}}`.
+- seq 는 `cmd_seq`(COMMAND 와 공유). 발송마다 `command` 행(type SETTINGS_GET|SET, target device, created_by). 요청 상태는
+  `device_settings.pending_*`(단말당 하나). SET 이면 `sync=writing`. **커밋 뒤 발행**, 실패하면 pending 해제·원래 sync·command FAILED·503.
+- 재발송(`mqtt/settings_sync.py`): 30초 무응답 → **새 seq**·새 command 행(옛 행 result `RESENT`), 최대 3회, 소진하면
+  `last_result=TIMEOUT`·pending 해제·writing 이면 원래 sync. 단말이 REGISTER/TELEMETRY 를 보낸 직후(§1.1.10)는 마지막 발송에서
+  5초 이상 지났으면 바로 재발송. 메모리 후보 집합(`SettingsSync._pending`)에 없는 uuid 는 쿼리 없음, 5초 타이머가 판정,
+  1분마다 DB 로 재조정. 재발송은 응답 큐(§7 토큰 버킷)의 `SettingsJob`.
+- device_event(SETTINGS_SENT) = `{"topic","payload","attempt","by"}`(by = 관리자 / timer / register / telemetry).
+
+### 17.3 SETTINGS (읽기 응답)
+1. device_event(SETTINGS) dedup. 2. 대기 중인 GET 과 맞는가(첫 seq ≤ seq ≤ pending_seq). 안 맞아도 새 보고로 받되(로그),
+   SET 대기 중(writing)이면 `last_report` 에만 두고, 그 뒤 **다른** 요청이 이미 나갔으면 옛 보고로 보고 버린다.
+3. `v` 25개가 정수가 아니면 반영 안 함. 4. DB 에 25개가 없으면 **첫 읽기** → 값·tbl 저장, 이력 `device_read`(키마다) → `synced`.
+   있으면 `fingerprint(DB 값) == sh` → `synced`(tbl 갱신, 바뀌었으면 이력 `tbl`), 다르면 **`device_changed`**(DB 는 그대로).
+5. 공통: `dip`/`bat`, `sh_device`, `ss_known = tbl.ss`, `read_at`, `last_report = 원본`. 맞는 요청이면 pending 해제·`last_result=OK`.
+
+### 17.4 SETTINGS_ACK (쓰기 응답, 읽기의 STATE 거부 포함)
+1. device_event(SETTINGS_ACK) dedup. seq 가 SETTINGS 명령이 아니거나 다른 단말이면 `settings_mismatch`. command 행 result = ACK result.
+2. 다른 요청이 대기 중이면 반영 안 함. 끝난 요청의 늦은 응답은 그 뒤 다른 요청이 없을 때만 반영.
+3. `OK` + `sh == fingerprint(보낸 v)` → DB ← 보낸 값(+tbl 이면 `tbl_src=2`), 이력 by = 요청한 관리자(없으면 `server_write`), `synced`.
+   `OK` + sh 다름 → `device_changed`(last_report 비움 — 다시 읽기). 그 밖(RANGE/RULE/CRC/BAD/STATE/FLASH) → DB 그대로,
+   writing 이면 보내기 전 sync 로. OK 면 `sh_device`·`ss_known = ack.ss`. `last_result(_at)`, pending 해제.
+
+### 17.5 현장 저장 감지 (TM flush, §8)
+flush 의 device upsert 뒤 한 문장: `device_settings ⋈ device` 에서 이 묶음 uuid 중 `sync='synced'`, `ss_known` 있음,
+`device.ss_device <> ss_known`, **`device.last_telemetry_at > device_settings.updated_at`**(ACK·SETTINGS 가 기준을 바꾼 뒤 받은 TM 만)
+→ `local_saved`. 자동으로 다시 읽지 않는다(표시만). 카운터 `settings_local_saved`.

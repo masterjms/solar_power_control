@@ -44,6 +44,7 @@ from app.models.device import Device
 from app.models.event import DeviceEvent
 from app.models.profile import ConfigProfile
 from app.models.region import Region
+from app.models.settings import DeviceSettings
 from app.models.system import MqttAccountExport
 from app.models.telemetry import Telemetry
 from app.modules.device.schemas import (
@@ -80,9 +81,12 @@ def _now() -> dt.datetime:
 
 # ── 출력 변환 ────────────────────────────────────────────────────────────
 def _to_out(
-    device: Device, profile: ConfigProfile | None, now: dt.datetime, tree: Tree | None = None
+    device: Device, profile: ConfigProfile | None, now: dt.datetime, tree: Tree | None = None,
+    settings_sync: str | None = None,
 ) -> DeviceOut:
     data: dict[str, Any] = {c.name: getattr(device, c.name) for c in Device.__table__.columns}
+    # S-23 device_settings.sync — 행이 없으면(한 번도 안 읽음) unknown.
+    data["settings_sync"] = settings_sync or "unknown"
     node = tree.get(device.node_id) if tree is not None else None
     data["node_name"] = node.name if node else None
     data["node_path"] = tree.path_name(device.node_id) if tree is not None else None
@@ -112,9 +116,9 @@ def _filtered(
     state: str | None, online: bool | None, q: str | None, now: dt.datetime, *,
     node_ids: list[int] | None = None, remote: bool | None = None,
 ) -> Select:
-    stmt = select(Device, ConfigProfile).join(
+    stmt = select(Device, ConfigProfile, DeviceSettings.sync).join(
         ConfigProfile, ConfigProfile.id == Device.profile_id, isouter=True
-    )
+    ).join(DeviceSettings, DeviceSettings.uuid == Device.uuid, isouter=True)
     if node_ids is not None:
         # 그 노드 아래 전체(자신 포함). 트리는 메모리에서 펼쳤다 — 말단 수천 개여도 IN 이면 된다.
         stmt = stmt.where(Device.node_id.in_(node_ids or [-1]))
@@ -169,7 +173,8 @@ async def list_devices(
         )
     ).all()
     return DevicePage(
-        items=[_to_out(d, p, now, tree) for d, p in rows], total=int(total), page=page, size=size,
+        items=[_to_out(d, p, now, tree, sync) for d, p, sync in rows], total=int(total),
+        page=page, size=size,
         counts=await _counts(db, now),
     )
 
@@ -189,7 +194,8 @@ async def _get_with_profile(db: AsyncSession, uuid: str) -> tuple[Device, Config
 
 async def get_device(db: AsyncSession, uuid: str) -> DeviceOut:
     device, profile = await _get_with_profile(db, uuid)
-    return _to_out(device, profile, _now(), await load_tree(db))
+    sync = await db.scalar(select(DeviceSettings.sync).where(DeviceSettings.uuid == uuid))
+    return _to_out(device, profile, _now(), await load_tree(db), sync)
 
 
 async def list_telemetry(

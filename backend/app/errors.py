@@ -156,11 +156,52 @@ class NoTargets(Conflict):
 
 
 class PayloadTooLarge(ApiError):
-    """MQTT payload 가 단말 AT 버퍼(384B)를 넘었을 때. 보내봐야 못 받으므로 발행 전에 막는다."""
+    """MQTT payload 가 단말 수신 한계(900B, ADR-007)를 넘었을 때. 보내봐야 못 받으므로
+    발행 전에 막는다."""
 
     status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
     code = "MQTT_PAYLOAD_TOO_LARGE"
     message = "payload 가 단말 수신 한계를 초과했습니다."
+
+
+# ── S-23 단말 설정 (docs/05 "단말 설정 API", ADR-007) ──────────────────────
+class InvalidState(Conflict):
+    """승인 상태가 요청을 허용하지 않음 — 읽기는 PENDING·ACTIVE, 쓰기는 ACTIVE 만(명세 8.1)."""
+
+    code = "INVALID_STATE"
+    message = "지금 승인 상태에서는 할 수 없습니다."
+
+
+class SettingsPending(Conflict):
+    code = "SETTINGS_PENDING"
+    message = "이 단말에 응답을 기다리는 설정 요청이 있습니다."
+
+
+class SettingsNotRead(Conflict):
+    """한 번도 읽지 않은 단말에 쓰기 — 현장 설정을 덮어쓴다(명세 8.5 "읽고 나서 쓴다")."""
+
+    code = "SETTINGS_NOT_READ"
+    message = "단말 설정을 먼저 읽어야 합니다."
+
+
+class SettingsNotChanged(Conflict):
+    code = "SETTINGS_NOT_CHANGED"
+    message = "받아들이거나 되돌릴 차이가 없습니다."
+
+
+class SettingsIncomplete(ValidationFailed):
+    code = "SETTINGS_INCOMPLETE"
+    message = "25개 항목이 모두 있어야 합니다."
+
+
+class SettingsRange(ValidationFailed):
+    code = "SETTINGS_RANGE"
+    message = "범위를 벗어난 항목이 있습니다."
+
+
+class SettingsRule(ValidationFailed):
+    code = "SETTINGS_RULE"
+    message = "설정 규칙을 어겼습니다."
 
 
 def register_exception_handlers(app: FastAPI) -> None:

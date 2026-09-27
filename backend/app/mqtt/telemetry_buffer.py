@@ -19,8 +19,17 @@
        (사양서 §1.1.10 "단말 송신 직후", ADR-002, 60초 쿨다운)
     5. ACTIVE 가 아닌 단말의 TM 은 저장은 하되 `telemetry_not_active` 로 센다 — 사양서 §3.8
        상 보내면 안 되는 상태다(승인 전 펌웨어 1.1.x 이거나 retain 이 어긋난 것)
-    6. (5차) 재부팅 감지 단말은 override 표시 필드를 지운다(단말이 override 를 잃는다, §3.10.7).
-       커밋 뒤 이 묶음의 uuid 로 COMMAND 자동 재시도를 부른다(mqtt/command_retry, ADR-005)
+    6. (5차) 재부팅 감지 단말, 그리고 **md == 1(현장 조작) TM 을 보낸 단말**은 override 표시 필드를
+       지운다 — 재부팅은 슬롯을 잃고, 현장 조작 시작은 원격을 전부 취소한다
+       (§3.10.8 2026-09-27 개정).
+       대기 중인 command_target 은 건드리지 않는다(단말이 LOCAL 로 답하거나 무응답으로 끝난다).
+       커밋 뒤 이 묶음의 uuid 로 COMMAND 자동 재시도·S-23 설정 재발송을 부른다(§1.1.10)
+    7. (S-23) Telemetry `ss` 가 device_settings.ss_known 과 다르고 sync 가 synced 이면 local_saved
+       (현장에서 저장함, UI_항목_명세 8.5). device 조인 UPDATE 한 문장 — 이 묶음 uuid 만 본다.
+       ACK/SETTINGS 가 기준을 갱신한 **뒤에** 받은 TM 만 비교한다(그 전 TM 은 옛 ss 가 정상).
+
+원격 OK·유지시간 끝·현장 시작 뒤 2초에 오는 추가 TM(§3.10.8)은 주기 TM 과 같다 — sq 가 이어지므로
+유실·재부팅으로 보지 않고, 주기보다 이르다고 따로 판정하는 곳도 없다.
 
 안전장치:
     · flush 실패 → 그 묶음은 **버린다**. 다시 큐에 넣지 않는다. DB 가 아픈 동안 대기열이
@@ -41,17 +50,19 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.constants import DeviceState, EventKind
 from app.core.metrics import metrics
+from app.core.settings_rules import SYNC_LOCAL_SAVED, SYNC_SYNCED
 from app.db import session_scope
 from app.models.command import CommandTarget
 from app.models.device import Device
 from app.models.event import DeviceEvent
+from app.models.settings import DeviceSettings
 from app.models.telemetry import Telemetry
 from app.mqtt import sq as sq_rules
 from app.mqtt.config_decide import (
@@ -64,6 +75,7 @@ from app.mqtt.config_sync import ConfigSyncQueue
 
 if TYPE_CHECKING:
     from app.mqtt.command_retry import CommandRetrier
+    from app.mqtt.settings_sync import SettingsSync
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +134,24 @@ def telemetry_row(uuid: str, payload: dict[str, Any], received_at: dt.datetime) 
     }
 
 
+def override_clear_times(
+    batch: list[tuple[str, dict[str, Any], dt.datetime]], events: list[dict[str, Any]]
+) -> dict[str, dt.datetime]:
+    """override 표시를 지울 단말 → 기준 시각(그 단말의 마지막 REBOOT 또는 md == 1 TM 수신 시각).
+
+    md == 1(현장 조작): 단말이 살아 있던 원격을 전부 취소했다(§3.10.8 2026-09-27 개정). md 가 2 로
+    돌아온 TM 이 같은 묶음 뒤쪽에 있어도 기준 시각 이후에 보낸 명령의 override 는 호출부가
+    남긴다."""
+    out: dict[str, dt.datetime] = {}
+    for e in events:
+        if e["kind"] == EventKind.REBOOT.value:
+            out[e["uuid"]] = max(out.get(e["uuid"], e["received_at"]), e["received_at"])
+    for uuid, payload, at in batch:
+        if _int(payload.get("md")) == 1:
+            out[uuid] = max(out.get(uuid, at), at)
+    return out
+
+
 class TelemetryBuffer:
     def __init__(
         self,
@@ -130,12 +160,15 @@ class TelemetryBuffer:
         max_pending: int | None = None,
         config_sync: ConfigSyncQueue | None = None,
         retrier: CommandRetrier | None = None,
+        settings_sync: SettingsSync | None = None,
     ) -> None:
         self._interval = interval_sec if interval_sec is not None else settings.flush_interval
         self._max_pending = max_pending or settings.telemetry_flush_max_pending
         self._config_sync = config_sync
         #: 5차 COMMAND 자동 재시도(단말 송신 직후). flush 커밋 뒤 이 묶음의 uuid 로 부른다.
         self._retrier = retrier
+        #: S-23 설정 요청 재발송(단말 송신 직후). flush 커밋 뒤 부른다.
+        self._settings_sync = settings_sync
         #: 이력 후보. (uuid, payload, received_at) 도착 순서대로.
         self._rows: list[tuple[str, dict[str, Any], dt.datetime]] = []
         #: uuid → 마지막 last_sq. 기동 시 warm() 으로 채운다.
@@ -268,6 +301,7 @@ class TelemetryBuffer:
         ]
 
         not_active = 0
+        local_saved = 0
         try:
             async with session_scope() as db:
                 for i in range(0, len(history), _CHUNK):
@@ -305,31 +339,45 @@ class TelemetryBuffer:
                     )
                 if events:
                     await db.execute(pg_insert(DeviceEvent).values(events))
-                    # 5차: 재부팅한 단말은 override 슬롯을 전부 잃고 스케줄로 시작한다(§3.10.7) —
-                    # 화면의 "원격 n분 남음"도 같이 지운다.
-                    # 단, 재부팅 TM 을 받은 **뒤에** 보낸 명령으로 기록된 override 는 지우지 않는다.
-                    # flush 는 최대 1초 늦게 돌아서, 그 사이 새 명령의 ACK 가 먼저 기록될 수 있다
-                    # (시나리오 B11 에서 실제로 지워졌다). 재부팅은 드물어 단말별로 본다.
-                    reboot_at: dict[str, dt.datetime] = {}
-                    for e in events:
-                        if e["kind"] == EventKind.REBOOT.value:
-                            reboot_at[e["uuid"]] = max(
-                                reboot_at.get(e["uuid"], e["received_at"]), e["received_at"])
-                    for uuid, at in sorted(reboot_at.items()):
-                        sent_at = (
-                            select(CommandTarget.last_sent_at)
-                            .where(CommandTarget.seq == Device.override_seq,
-                                   CommandTarget.uuid == Device.uuid)
-                            .correlate(Device)
-                            .scalar_subquery()
+                # 5차: 재부팅한 단말은 override 슬롯을 전부 잃고 스케줄로 시작한다(§3.10.7), 현장
+                # 조작(md == 1)이 시작되면 단말이 원격을 전부 취소한다(§3.10.8 개정) — 화면의
+                # "원격 n분 남음"도 같이 지운다.
+                # 단, 그 TM 을 받은 **뒤에** 보낸 명령으로 기록된 override 는 지우지 않는다.
+                # flush 는 최대 1초 늦게 돌아서, 그 사이 새 명령의 ACK 가 먼저 기록될 수 있다
+                # (시나리오 B11 에서 실제로 지워졌다). 드물어서 단말별로 본다.
+                for uuid, at in sorted(override_clear_times(batch, events).items()):
+                    sent_at = (
+                        select(CommandTarget.last_sent_at)
+                        .where(CommandTarget.seq == Device.override_seq,
+                               CommandTarget.uuid == Device.uuid)
+                        .correlate(Device)
+                        .scalar_subquery()
+                    )
+                    await db.execute(
+                        update(Device)
+                        .where(Device.uuid == uuid,
+                               Device.override_seq.is_not(None),
+                               func.coalesce(sent_at, at) <= at)
+                        .values(**OVERRIDE_CLEAR)
+                    )
+                # S-23: 현장 저장 감지(ss ≠ ss_known). 방금 upsert 한 device.ss_device 와 조인.
+                ss_uuids = [u for u, e in latest.items()
+                            if _int(e["payload"].get("ss")) is not None]
+                for i in range(0, len(ss_uuids), _CHUNK):
+                    res = await db.execute(
+                        update(DeviceSettings)
+                        .where(
+                            DeviceSettings.uuid == Device.uuid,
+                            Device.uuid.in_(ss_uuids[i:i + _CHUNK]),
+                            DeviceSettings.sync == SYNC_SYNCED,
+                            DeviceSettings.ss_known.is_not(None),
+                            Device.ss_device != DeviceSettings.ss_known,
+                            Device.last_telemetry_at > DeviceSettings.updated_at,
                         )
-                        await db.execute(
-                            update(Device)
-                            .where(Device.uuid == uuid,
-                                   or_(Device.override_seq.is_(None),
-                                       func.coalesce(sent_at, at) <= at))
-                            .values(**OVERRIDE_CLEAR)
-                        )
+                        .values(sync=SYNC_LOCAL_SAVED, updated_at=func.now())
+                        .execution_options(synchronize_session=False)
+                    )
+                    local_saved += res.rowcount or 0
         except Exception:  # noqa: BLE001
             metrics.telemetry_dropped += len(history)
             metrics.flush_failures += 1
@@ -338,9 +386,14 @@ class TelemetryBuffer:
 
         metrics.telemetry_flushed += len(history)
         metrics.record_flush((time.perf_counter() - started) * 1000.0)
+        if local_saved:
+            metrics.settings_local_saved += local_saved
+            log.info("Telemetry ss 변화 — 현장 저장(local_saved) %d대", local_saved)
         if self._retrier is not None:
             # 커밋 뒤. 후보 집합에 없는 uuid 는 쿼리 없이 걸러진다(평소 비용 0).
             await self._retrier.on_device_messages(latest.keys(), reason="telemetry")
+        if self._settings_sync is not None:
+            await self._settings_sync.on_device_messages(latest.keys(), reason="telemetry")
         if not_active:
             metrics.telemetry_not_active += not_active
             log.debug("ACTIVE 아닌 단말의 TELEMETRY %d대 (저장은 함)", not_active)

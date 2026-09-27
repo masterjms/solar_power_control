@@ -4,8 +4,10 @@
   connection.raw_publish() 를 직접 부르지 않는다.
 
 여기에 몰아둔 것:
-  1. payload 직렬화 (compact JSON — AT 버퍼 384B 라 공백 한 칸도 아깝다)
-  2. 크기 검사 (384B 초과 = 발행 전에 실패, 300B 초과 = 경고)
+  1. payload 직렬화 (compact **한 줄** JSON, ensure_ascii=False — 모뎀은 payload 안의
+     줄바꿈을 여러 줄로 넘겨 단말이 한 메시지로 못 읽는다(UI_항목_명세 8.4). 줄바꿈이 섞이면
+     발행 전에 막는다)
+  2. 크기 검사 (900B 초과 = 발행 전에 실패, 800B 초과 = 경고. 단말 수신 줄 1,024B 한계, ADR-007)
   3. QoS / retain 정책 — cmd 는 절대 retain 하지 않고, retain 은 REGISTER_ACK 하나뿐(ADR-002)
 
 5차 COMMAND(command_payload) · 6차 SCH · 7차 OTA 빌더가 여기 있다/추가된다. 그때도 규칙은 같다 —
@@ -33,12 +35,16 @@ _QOS_CONFIG = 1
 
 
 def encode(payload: Mapping[str, Any]) -> bytes:
-    """구분자에서 공백을 뺀 UTF-8 JSON."""
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    """구분자에서 공백을 뺀 UTF-8 한 줄 JSON. json.dumps 는 문자열 안의 줄바꿈을 이스케이프하므로
+    결과에 실제 줄바꿈 바이트가 있을 수 없다 — 그래도 단말 쪽 사고가 커서 확인한다."""
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if b"\n" in raw or b"\r" in raw:
+        raise ValueError("MQTT payload 에 줄바꿈이 있다 — 단말이 한 메시지로 읽지 못한다")
+    return raw
 
 
 def check_size(topic: str, raw: bytes) -> None:
-    """384B 초과면 PayloadTooLarge. 300B 초과면 경고만."""
+    """900B 초과면 PayloadTooLarge. 800B 초과면 경고만."""
     if len(raw) > MQTT_MAX_PAYLOAD_BYTES:
         raise PayloadTooLarge(
             detail={"topic": topic, "size_bytes": len(raw), "limit_bytes": MQTT_MAX_PAYLOAD_BYTES}
@@ -188,6 +194,23 @@ class MqttPublisher:
         """개별 cmd. retain=False 고정 — cmd 에 retain 을 걸면 재접속 단말에 옛 명령이
         되살아난다(5차 소등 명령이면 사고다)."""
         await self._send(topics.device_cmd(uuid), payload, qos=_QOS_CMD, retain=False)
+
+    async def publish_settings_get(self, *, uuid: str, payload: Mapping[str, Any]) -> int:
+        """S-23 SETTINGS_GET — 개별 cmd topic 만(그룹·전체면 단말이 무시한다). 보낸 바이트 수."""
+        return await self._publish_settings(uuid, payload, "SETTINGS_GET")
+
+    async def publish_settings_set(self, *, uuid: str, payload: Mapping[str, Any]) -> int:
+        """S-23 SETTINGS_SET(25개 전부 + 선택 tbl). 최대 약 560B. 보낸 바이트 수."""
+        return await self._publish_settings(uuid, payload, "SETTINGS_SET")
+
+    async def _publish_settings(
+        self, uuid: str, payload: Mapping[str, Any], kind: str
+    ) -> int:
+        if payload.get("type") != kind:
+            raise ValueError(f"{kind} 가 아닌 payload: {payload.get('type')}")
+        raw = encode(payload)
+        await self._send(topics.device_cmd(uuid), payload, qos=_QOS_CMD, retain=False)
+        return len(raw)
 
     async def publish_command(self, *, topic: str, payload: Mapping[str, Any]) -> None:
         """5차 COMMAND — 개별·그룹·전체 cmd topic 공용. QoS1, **retain=False 고정**.

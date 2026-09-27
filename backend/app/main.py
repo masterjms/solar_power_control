@@ -9,10 +9,11 @@
   · TelemetryBuffer   1초 배치 flush
   · ConfigSyncQueue   REGISTER_ACK · CONFIG_SET · COMMAND 재시도 발행(토큰 버킷)
   · CommandRetrier    5차 COMMAND 자동 재시도 후보(단말 송신 직후, ADR-005)
+  · SettingsSync      S-23 단말 설정 요청 재발송(30초·단말 송신 직후, 새 seq)·TIMEOUT (ADR-007)
   · BrokerLogTail     Mosquitto 로그 → online/offline (ADR-004)
   · /internal/mqtt/*  브로커 인증 플러그인(go-auth)이 부르는 HMAC 인증·ACL (ADR-003)
   · 스케줄러          파티션 점검(매일), 일 집계(00:30 KST), 계정 파일 재조정(5분),
-                      COMMAND 종료 판정(30초)
+                      COMMAND 종료 판정(30초), 설정 요청 재발송 판정(5초)
 
 기동 순서가 중요하다: HMAC 키 검사 → 파티션 확인 → 계정 내보내기 → 버퍼 warm → MQTT 연결.
 키가 틀리면 전 단말이 못 붙으므로 기동 때 죽는 편이 낫고, 파티션이 없으면 첫 flush 가
@@ -41,12 +42,14 @@ from app.modules.mqtt_auth.router import router as mqtt_auth_router
 from app.modules.profile.router import router as profile_router
 from app.modules.region.router import geo_router
 from app.modules.region.router import router as region_router
+from app.modules.settings.router import router as settings_router
 from app.modules.system.router import router as system_router
 from app.mqtt.command_retry import CommandRetrier
 from app.mqtt.config_sync import ConfigSyncQueue
 from app.mqtt.connection import MqttConnection
 from app.mqtt.handlers import Dispatcher
 from app.mqtt.publisher import MqttPublisher
+from app.mqtt.settings_sync import SettingsSync
 from app.mqtt.telemetry_buffer import TelemetryBuffer
 from app.tasks import command_finisher, daily_rollup, partitions
 from app.tasks.broker_log import BrokerLogTail
@@ -112,14 +115,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     publisher = MqttPublisher(connection)
     config_sync = ConfigSyncQueue(publisher)
     retrier = CommandRetrier(config_sync)
-    telemetry_buffer = TelemetryBuffer(config_sync=config_sync, retrier=retrier)
-    dispatcher = Dispatcher(buffer=telemetry_buffer, config_sync=config_sync, retrier=retrier)
+    settings_sync = SettingsSync(config_sync)
+    telemetry_buffer = TelemetryBuffer(config_sync=config_sync, retrier=retrier,
+                                       settings_sync=settings_sync)
+    dispatcher = Dispatcher(buffer=telemetry_buffer, config_sync=config_sync, retrier=retrier,
+                            settings_sync=settings_sync)
     broker_log = BrokerLogTail()
 
     app.state.mqtt = connection
     app.state.publisher = publisher
     app.state.config_sync = config_sync
     app.state.command_retrier = retrier
+    app.state.settings_sync = settings_sync
     app.state.telemetry_buffer = telemetry_buffer
     app.state.broker_log = broker_log
 
@@ -145,6 +152,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("COMMAND 재시도 후보: %d대", pending)
     except Exception:  # noqa: BLE001
         log.exception("COMMAND 재시도 후보 적재 실패 — 30초 뒤 종료 판정 타이머가 다시 채운다")
+
+    try:
+        async with SessionFactory() as db:
+            waiting = await settings_sync.rebuild(db)
+        log.info("SETTINGS 응답 대기: %d대", waiting)
+    except Exception:  # noqa: BLE001
+        log.exception("SETTINGS 대기 목록 적재 실패 — 1분 안에 재발송 타이머가 다시 채운다")
 
     await config_sync.start()
     await telemetry_buffer.start()
@@ -174,6 +188,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scheduler.add_job(
         command_finisher.run, "interval", seconds=30, id="command-finisher",
         kwargs={"retrier": retrier}, coalesce=True, max_instances=1,
+    )
+    # S-23 설정 요청: 30초 무응답이면 새 seq 로 재발송, 3회면 TIMEOUT. 대기가 없으면 DB 를 안 본다.
+    scheduler.add_job(
+        settings_sync.tick, "interval", seconds=5, id="settings-resend",
+        coalesce=True, max_instances=1,
     )
     scheduler.start()
     app.state.scheduler = scheduler
@@ -238,3 +257,4 @@ app.include_router(device_router)
 app.include_router(region_router)
 app.include_router(geo_router)
 app.include_router(command_router)
+app.include_router(settings_router)

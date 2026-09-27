@@ -49,6 +49,17 @@ class Metrics:
         self.command_ack = 0
         #: 모르는 seq / 대상 스냅숏에 없는 단말의 COMMAND_ACK.
         self.command_ack_mismatch = 0
+        # ── S-23 단말 설정 (ADR-007) ──
+        #: SETTINGS_GET/SET 첫 발송(관리자) / 재발송(새 seq) / 3회 무응답 TIMEOUT.
+        self.settings_sent = 0
+        self.settings_resent = 0
+        self.settings_timeout = 0
+        #: SETTINGS · SETTINGS_ACK 수신(중복 제외). mismatch = 모르는 seq·다른 단말.
+        self.settings_report = 0
+        self.settings_ack = 0
+        self.settings_mismatch = 0
+        #: Telemetry ss 변화로 local_saved 로 바꾼 단말 수.
+        self.settings_local_saved = 0
         self.mqtt_reconnects = 0
         self.mqtt_publish_failures = 0
         #: 1차 펌웨어(`t` 키)로 보고 있는 단말 수.
@@ -97,6 +108,13 @@ class Metrics:
             "command_retry_sent": self.command_retry_sent,
             "command_ack": self.command_ack,
             "command_ack_mismatch": self.command_ack_mismatch,
+            "settings_sent": self.settings_sent,
+            "settings_resent": self.settings_resent,
+            "settings_timeout": self.settings_timeout,
+            "settings_report": self.settings_report,
+            "settings_ack": self.settings_ack,
+            "settings_mismatch": self.settings_mismatch,
+            "settings_local_saved": self.settings_local_saved,
             "legacy_t_devices": self.legacy_t_devices,
             "mqtt_auth_ok": self.mqtt_auth_ok,
             "mqtt_auth_fail": self.mqtt_auth_fail,

@@ -8,6 +8,7 @@ from app.models.device import Device
 from app.models.event import DeviceEvent
 from app.models.profile import ConfigProfile
 from app.models.region import Region
+from app.models.settings import DeviceSettings, DeviceSettingsHistory
 from app.models.system import AdminUser, MqttAccountExport
 from app.models.telemetry import Telemetry, TelemetryDaily
 
@@ -20,6 +21,8 @@ __all__ = [
     "ConfigProfile",
     "Device",
     "DeviceEvent",
+    "DeviceSettings",
+    "DeviceSettingsHistory",
     "MqttAccountExport",
     "Region",
     "Telemetry",

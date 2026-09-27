@@ -56,4 +56,4 @@ def test_check_size_limits():
     check_size("t", b"x" * MQTT_MAX_PAYLOAD_BYTES)  # 경계 통과
     with pytest.raises(PayloadTooLarge) as exc:
         check_size("t", b"x" * (MQTT_MAX_PAYLOAD_BYTES + 1))
-    assert exc.value.detail["limit_bytes"] == 384
+    assert exc.value.detail["limit_bytes"] == 900

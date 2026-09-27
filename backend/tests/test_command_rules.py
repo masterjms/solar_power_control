@@ -229,8 +229,14 @@ def test_finish_result():
 def test_next_target_status_never_downgrades_ok():
     assert next_target_status("pending", "EXPIRED") == "EXPIRED"
     assert next_target_status("EXPIRED", "OK") == "OK"
-    assert next_target_status("LOCAL", "OK") == "OK"
     assert next_target_status("OK", "EXPIRED") == "OK"
+
+
+def test_local_is_terminal_never_applied_later():
+    """2026-09-27 개정(§3.10.8·§3.10.11): LOCAL 은 버림 — 현장 조작이 끝나도 적용되지 않는다."""
+    assert next_target_status("pending", "LOCAL") == "LOCAL"
+    assert next_target_status("LOCAL", "OK") == "LOCAL"
+    assert next_target_status("LOCAL", "EXPIRED") == "LOCAL"
 
 
 # ── override ─────────────────────────────────────────────────────────────

@@ -9,10 +9,11 @@ from enum import Enum
 UUID_LENGTH = 24
 UUID_RE = re.compile(r"^[0-9A-F]{24}$")
 
-#: WD-N522S AT 버퍼 한계(사양서 §1.1.6 payload 규약). 넘으면 단말이 못 받는다.
-MQTT_MAX_PAYLOAD_BYTES = 384
-#: 이 크기를 넘으면 경고만 — 6차 SCHEDULE chunk 설계 때 여유를 확인할 근거가 된다.
-MQTT_WARN_PAYLOAD_BYTES = 300
+#: 서버 → 단말 발행 상한(ADR-007). 단말 수신 줄 1,024B 가 한계이고 실측 950B 까지 정상
+#: (UI_항목_명세 8.4). 예전 384B 는 단말 → 서버 AT 발행 버퍼 이야기였다. 넘으면 발행 전에 막는다.
+MQTT_MAX_PAYLOAD_BYTES = 900
+#: 이 크기를 넘으면 경고만(SETTINGS_SET 최대 약 560B).
+MQTT_WARN_PAYLOAD_BYTES = 800
 
 #: CONFIG_SET.ti 허용 범위(초). 사양서 §1.1.6 주기.
 TI_MIN_SEC = 60
@@ -50,6 +51,11 @@ class MsgType(str, Enum):
     CMD = "CMD"
     #: 5차 원격 제어(사양서 §3.10.7). "CMD" 로 줄이지 않는다.
     COMMAND = "COMMAND"
+    #: S-23 단말 설정(UI_항목_명세 8.4, ADR-007). 서버 → 단말 GET/SET, 단말 → 서버 SETTINGS/ACK.
+    SETTINGS_GET = "SETTINGS_GET"
+    SETTINGS_SET = "SETTINGS_SET"
+    SETTINGS = "SETTINGS"
+    SETTINGS_ACK = "SETTINGS_ACK"
 
 
 class EventKind(str, Enum):
@@ -75,6 +81,11 @@ class EventKind(str, Enum):
     COMMAND_SENT = "COMMAND_SENT"
     COMMAND_ACK = "COMMAND_ACK"
     PONG = "PONG"
+    #: S-23 SETTINGS_GET/SET 발송(첫 발송·재발송, payload 그대로 + attempt·by).
+    SETTINGS_SENT = "SETTINGS_SENT"
+    #: S-23 단말 보고(SETTINGS)·응답(SETTINGS_ACK) 원본.
+    SETTINGS = "SETTINGS"
+    SETTINGS_ACK = "SETTINGS_ACK"
 
 
 class DeviceState(str, Enum):

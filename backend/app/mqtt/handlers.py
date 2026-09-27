@@ -12,6 +12,11 @@
                           REGISTER_ACK 재발행. FLASH → 쿨다운 해제(다음 송신 때 재전송)
               COMMAND_ACK 5차(옛 이름 CMD_ACK 도 받음). device_event(COMMAND_ACK) + command_target
                           상태·acked_count. OK 면 device.override_* 기록(§3.10.8 S-19)
+              SETTINGS    S-23 읽기 응답. device_event(SETTINGS) → device_settings
+                          (settings_sync.apply_report: 첫 읽기 저장 / sh 같으면 synced /
+                          다르면 device_changed)
+              SETTINGS_ACK S-23 쓰기 응답(읽기의 STATE 거부 포함). device_event(SETTINGS_ACK) →
+                          apply_ack(OK·sh 일치면 DB 반영, 아니면 결과만)
     event     LWT         online=false (presence.apply_presence — 브로커 로그 경로와 같은 함수).
                           last_seen_at 은 건드리지 않는다 — 브로커가 대신 보내는 사망 통지를
                           "방금 통신함"으로 적으면 죽은 단말이 온라인으로 잡힌다
@@ -52,11 +57,14 @@ from app.db import session_scope
 from app.models.command import Command, CommandAck, CommandTarget
 from app.models.device import Device
 from app.models.event import DeviceEvent
+from app.models.settings import DeviceSettings
+from app.mqtt import settings_sync as settings_sync_mod
 from app.mqtt import topics
 from app.mqtt.command_retry import CommandRetrier
 from app.mqtt.config_decide import CONFIG_COLUMNS, DeviceConfigRow, decide_and_enqueue
 from app.mqtt.config_sync import ConfigSyncQueue, register_ack_job_for
 from app.mqtt.publisher import parse_kst_ts
+from app.mqtt.settings_sync import SettingsSync
 from app.mqtt.telemetry_buffer import TelemetryBuffer
 from app.tasks.command_finisher import finish_due
 
@@ -68,11 +76,16 @@ TELEMETRY_TYPES = frozenset({MsgType.TELEMETRY.value, MsgType.TM.value})
 COMMAND_ACK_TYPES = frozenset({MsgType.COMMAND_ACK.value, MsgType.CMD_ACK.value})
 
 
+#: 한 번 받으면 바뀌지 않는 target 상태. OK 는 적용됨, LOCAL 은 현장 조작 중이라 **버림**(종결 —
+#: 현장 조작이 끝나도 단말은 적용하지 않는다, §3.10.8 · §3.10.11 2026-09-27 개정).
+STICKY_STATUSES = frozenset({TargetStatus.OK.value, TargetStatus.LOCAL.value})
+
+
 def next_target_status(current: str, result: str) -> str:
-    """COMMAND_ACK.result → command_target.status. 한 번 OK 면 내려가지 않는다 — 같은 seq 재발송에
-    단말은 처음 결과로 답하지만(최근 8개 기억), 순서가 뒤바뀐 늦은 EXPIRED 가 OK 를 덮으면 안 된다.
-    LOCAL → OK 는 허용(현장 조작이 끝나 적용했다는 뜻, §3.10.11)."""
-    if current == TargetStatus.OK.value and result != TargetStatus.OK.value:
+    """COMMAND_ACK.result → command_target.status. OK·LOCAL 은 내려가지도 바뀌지도 않는다 — 같은 seq
+    재발송에 단말은 처음 결과로 답하고(최근 8개 기억), 순서가 뒤바뀐 늦은 EXPIRED 가 OK 를 덮으면
+    안 된다. LOCAL 뒤의 OK 는 있을 수 없다(단말이 LOCAL 명령을 되살리지 않는다) — 와도 무시한다."""
+    if current in STICKY_STATUSES and result != current:
         return current
     return result
 
@@ -169,11 +182,12 @@ class Dispatcher:
 
     def __init__(
         self, *, buffer: TelemetryBuffer | None, config_sync: ConfigSyncQueue | None,
-        retrier: CommandRetrier | None = None,
+        retrier: CommandRetrier | None = None, settings_sync: SettingsSync | None = None,
     ) -> None:
         self._buffer = buffer
         self._config_sync = config_sync
         self._retrier = retrier
+        self._settings_sync = settings_sync
         #: `t` 키로 보고하는 단말. 로그는 uuid 당 한 번.
         self._legacy_t: set[str] = set()
 
@@ -225,9 +239,12 @@ class Dispatcher:
 
         # 5차 자동 재시도: REGISTER 트랜잭션이 커밋된 **뒤**(선점 쿼리가 방금 쓴 행을 보도록).
         # 큐는 FIFO 라 방금 넣은 REGISTER_ACK 다음에 나간다.
-        if (kind is TopicKind.REGISTER and self._retrier is not None
-                and msg_type == MsgType.REGISTER.value):
-            await self._retrier.on_device_messages([uuid], reason="register")
+        if kind is TopicKind.REGISTER and msg_type == MsgType.REGISTER.value:
+            if self._retrier is not None:
+                await self._retrier.on_device_messages([uuid], reason="register")
+            # S-23 설정 요청도 같은 원리로 바로 재발송(5초 이상 지났으면, 새 seq).
+            if self._settings_sync is not None:
+                await self._settings_sync.on_device_messages([uuid], reason="register")
 
     # ── REGISTER ────────────────────────────────────────────────────────
     async def handle_register(
@@ -316,6 +333,10 @@ class Dispatcher:
             await self._handle_command_ack(db, uuid, data, now)
             return
 
+        if msg_type in (MsgType.SETTINGS.value, MsgType.SETTINGS_ACK.value):
+            await self._handle_settings(db, uuid, msg_type, data, now)
+            return
+
         metrics.unknown_type += 1
         log.warning("result 토픽에 알 수 없는 type=%r (%s)", msg_type, uuid)
 
@@ -377,6 +398,35 @@ class Dispatcher:
             return
         log.warning("CONFIG_ACK 알 수 없는 result=%r %s cv=%s", result, uuid, cv)
 
+    async def _handle_settings(
+        self, db: AsyncSession, uuid: str, msg_type: str, data: dict[str, Any], now: dt.datetime
+    ) -> None:
+        """S-23 SETTINGS / SETTINGS_ACK (UI_항목_명세 8.4, ADR-007). dedup 키로 QoS1 재전송을
+        거른다.
+        요청이 끝났으면(pending 해제) 재발송 후보 집합에서 뺀다."""
+        seq = _int(data.get("seq"))
+        is_report = msg_type == MsgType.SETTINGS.value
+        inserted = await _insert_event(
+            db, uuid=uuid,
+            kind=EventKind.SETTINGS if is_report else EventKind.SETTINGS_ACK,
+            payload=data, key=dedup_key(uuid, msg_type, seq, data), received_at=now,
+        )
+        if not inserted:
+            return
+        if is_report:
+            metrics.settings_report += 1
+            decision = await settings_sync_mod.apply_report(db, uuid, data, now)
+        else:
+            metrics.settings_ack += 1
+            decision = await settings_sync_mod.apply_ack(db, uuid, data, now)
+        log.info("%s %s seq=%s result=%s → %s", msg_type, uuid, seq, data.get("result"), decision)
+        if self._settings_sync is not None:
+            pending = await db.scalar(
+                select(DeviceSettings.pending_seq).where(DeviceSettings.uuid == uuid)
+            )
+            if pending is None:
+                self._settings_sync.unmark(uuid)
+
     async def _handle_command_ack(
         self, db: AsyncSession, uuid: str, data: dict[str, Any], now: dt.datetime
     ) -> None:
@@ -434,7 +484,8 @@ class Dispatcher:
                 .values(acked_count=Command.acked_count + 1)
             )
 
-        if result == TargetStatus.OK.value:
+        # 적용된 OK 만 override 로 적는다. LOCAL 은 버려진 명령이라 기록하지 않는다(종결).
+        if result == TargetStatus.OK.value and target.status == TargetStatus.OK.value:
             await self._apply_override(db, uuid, seq, cmd[1], cmd[2] or {}, target, now)
 
         if first and (cmd[5] or 0) + 1 >= (cmd[4] or 0):

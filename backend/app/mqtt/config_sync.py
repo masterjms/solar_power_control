@@ -94,7 +94,18 @@ class CommandRetryJob:
     reason: str  # "register" | "telemetry" | "manual"
 
 
-Job = ConfigJob | RegisterAckJob | CommandRetryJob
+@dataclass(frozen=True)
+class SettingsJob:
+    """S-23 SETTINGS_GET/SET 재발송(**새 seq** — 명세 8.4). seq·command 행·pending 은 넣기 전에
+    DB 에서 확정했다(mqtt/settings_sync.claim). 여기서는 발행 + 이력만."""
+
+    uuid: str
+    payload: dict[str, Any]
+    attempt: int
+    reason: str  # "timer" | "register" | "telemetry"
+
+
+Job = ConfigJob | RegisterAckJob | CommandRetryJob | SettingsJob
 
 
 class ConfigSyncQueue:
@@ -161,6 +172,10 @@ class ConfigSyncQueue:
         """COMMAND 재발송. 중복은 넣는 쪽의 DB 선점(attempts/last_sent_at)이 이미 막았다."""
         self._push(job)
 
+    def offer_settings(self, job: SettingsJob) -> None:
+        """SETTINGS 재발송. 중복은 넣는 쪽의 DB 선점(pending_sent_at/attempts)이 이미 막았다."""
+        self._push(job)
+
     @property
     def pending_count(self) -> int:
         return len(self._queue)
@@ -195,6 +210,9 @@ class ConfigSyncQueue:
                 continue
             if isinstance(job, CommandRetryJob):
                 await self._publish_command_retry(job)
+                continue
+            if isinstance(job, SettingsJob):
+                await self._publish_settings(job)
                 continue
             self._queued.discard(job.uuid)
             if not self.cooled_down(job.uuid):
@@ -244,7 +262,39 @@ class ConfigSyncQueue:
         await record_command_sent(job.uuid, topic, payload, attempt=job.attempt, by=job.reason)
 
 
+    async def _publish_settings(self, job: SettingsJob) -> None:
+        kind = str(job.payload.get("type"))
+        try:
+            if kind == "SETTINGS_SET":
+                await self._publisher.publish_settings_set(uuid=job.uuid, payload=job.payload)
+            else:
+                await self._publisher.publish_settings_get(uuid=job.uuid, payload=job.payload)
+        except Exception:  # noqa: BLE001 - 시도는 이미 셌다. 30초 뒤 다시(또는 TIMEOUT).
+            log.exception("%s 재발송 실패 %s seq=%s", kind, job.uuid, job.payload.get("seq"))
+            return
+        metrics.settings_resent += 1
+        log.info("%s 재발송 → %s seq=%s attempt=%d (%s)",
+                 kind, job.uuid, job.payload.get("seq"), job.attempt, job.reason)
+        await record_settings_sent(job.uuid, job.payload, attempt=job.attempt, by=job.reason)
+
+
 # ── DB 기록 (즉시 발행 경로와 공유) ──────────────────────────────────────
+async def record_settings_sent(
+    uuid: str, payload: dict[str, Any], *, attempt: int, by: str
+) -> None:
+    """device_event(SETTINGS_SENT) — 첫 발송·재발송. 기록 실패는 발행에 영향 없음."""
+    try:
+        async with session_scope() as db:
+            await db.execute(pg_insert(DeviceEvent).values(
+                uuid=uuid, kind=EventKind.SETTINGS_SENT.value,
+                payload={"topic": topics.device_cmd(uuid), "payload": payload,
+                         "attempt": attempt, "by": by},
+                received_at=dt.datetime.now(dt.timezone.utc),
+            ))
+    except Exception:  # noqa: BLE001
+        log.exception("SETTINGS_SENT 기록 실패 %s", uuid)
+
+
 async def record_command_sent(
     uuid: str, topic: str, payload: dict[str, Any], *, attempt: int, by: str
 ) -> None:
