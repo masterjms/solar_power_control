@@ -3,7 +3,7 @@ import {
   api, ConfigPatchBody, ConfigPatchRes, Device, DeviceEvent, DeviceState, Profile, Telemetry, errorText,
 } from "./api";
 import { div100, erLabel, eventSummary, hex, localTime, mdLabel, pct, relTime, str } from "./format";
-import { Battery, Lamp, Met, OnlineMark, SiteHint, StateBadge } from "./ui";
+import { Battery, Lamp, Met, OnlineMark, SiteHint, StateBadge, SyncBadge } from "./ui";
 import { CommandForm, CommandHistory, CommandResult, durText } from "./Command";
 import { RemoteBadge } from "./DeviceList";
 import { RegionTree, isLeaf, pathOf, useRegions } from "./Tree";
@@ -483,6 +483,22 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
               <div>단말이 받음: <b className={recv.done ? "c-ok" : "c-warn"}>{recv.text}</b>{watchExpired && " (10분 지나 폴링 중단)"}</div>
             </div>
           )}
+        </div>
+
+        {/* ---------- 운전 설정 (S-23) — 값은 단말 설정 화면에서 ---------- */}
+        <div className="sec">
+          <h4>운전 설정 <span>밝기·다단계·배터리 보호·1년 스케줄 조건</span></h4>
+          <div className="bar2">
+            <SyncBadge sync={dev.settings_sync} />
+            <span className="cap">
+              {(dev.settings_sync ?? "unknown") === "unknown" ? "서버가 아직 이 단말 값을 모른다 — 단말 설정에서 먼저 읽는다"
+                : dev.settings_sync === "local_saved" ? "현장에서 저장함 — 다시 읽어 확인"
+                : dev.settings_sync === "device_changed" ? "단말 값이 DB 와 다름 — 받아들이기/되돌리기"
+                : dev.settings_sync === "writing" ? "쓰는 중 — 단말 응답 대기" : "DB 값 = 단말 값"}
+            </span>
+            <span className="sp" />
+            <a className="btn" href={`#config/${uuid}`} onClick={onClose} style={{ display: "inline-flex", alignItems: "center", textDecoration: "none" }}>단말 설정 열기</a>
+          </div>
         </div>
 
         {/* ---------- 원격 제어 (5차 개별 COMMAND) ---------- */}

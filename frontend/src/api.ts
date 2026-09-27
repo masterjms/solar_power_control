@@ -96,6 +96,8 @@ export interface Device {
   override_until: string | null;
   remote_active: boolean; // last_telemetry.md == 2 AND override_until > now
   remote_remaining_sec: number | null;
+  // S-23 (docs/05 "단말 설정 API"): device_settings.sync, 없으면 "unknown"
+  settings_sync?: SettingsSync;
 }
 
 export interface DeviceCounts {
@@ -304,6 +306,138 @@ export interface CommandDetail extends CommandSummary {
   targets: CommandTargetRow[];
 }
 
+// ---------------- S-23: 단말 운전 설정 (docs/05 "단말 설정 API", ADR-007) ----------------
+
+export type SettingsSync = "unknown" | "synced" | "writing" | "local_saved" | "device_changed";
+
+/** ui_items.json 의 항목 한 개. value = 단말 정수, 화면값 = value / scale. */
+export interface SettingsItem {
+  key: string;
+  label: string;
+  unit: string;
+  scale: number;
+  min: number;
+  max: number;
+  default: number;
+  widget: string; // spin | slider | time_h | time_m | decimal2 … (모르는 것은 spin 으로)
+  help: string;
+}
+export interface SettingsGroup {
+  id: string;
+  title: string;
+  items: SettingsItem[];
+}
+export interface SettingsRule {
+  id: string;
+  text: string;
+  why: string;
+}
+export interface YearTableInput {
+  key: string;
+  label: string;
+  type: string;
+  unit?: string;
+  min?: number;
+  max?: number;
+  default?: number;
+  max_bytes_utf8?: number;
+  help: string;
+}
+/** GET /api/settings/schema = docs/spec/settings/ui_items.json 그대로. */
+export interface SettingsSchema {
+  version: string;
+  note?: string;
+  groups: SettingsGroup[];
+  rules: SettingsRule[];
+  calc: { id: string; text: string; keys: string[] };
+  year_table: { inputs: YearTableInput[]; preview?: string; origin_display?: string; calc?: string };
+}
+
+/** 단말 표 조건(SETTINGS tbl) + 서버가 같은 조건으로 계산한 CRC. */
+export interface SettingsTbl {
+  region: string;
+  lat_e6: number;
+  lon_e6: number;
+  on: number;
+  off: number;
+  src: number; // 0 펌웨어 기본 표 / 1 PC 도구 / 2 서버
+  ss: number;
+  crc: string;
+  crc_expected: string | null;
+  matches: boolean | null;
+}
+
+export interface SettingsPending {
+  kind: "SETTINGS_GET" | "SETTINGS_SET";
+  seq: number;
+  sent_at: string;
+  attempts: number;
+}
+
+export interface SettingsDiff {
+  key: string;
+  db: number | null;
+  device: number | null;
+}
+
+export interface DeviceSettings {
+  uuid: string;
+  sync: SettingsSync;
+  read_at: string | null;
+  values: Record<string, number> | null;
+  sh_db: string | null;
+  sh_device: string | null;
+  tbl: SettingsTbl | null;
+  dev: { dip: number; bat: number } | null;
+  ss_known: number | null;
+  ss_telemetry: number | null;
+  report: Record<string, number> | null;
+  diff: SettingsDiff[];
+  pending: SettingsPending | null;
+  last_result: string | null;
+  last_result_at: string | null;
+}
+
+/** PUT 본문. tbl 은 표를 바꿀 때만(lat/lon 은 실수, 서버가 round(x*1e6)). */
+export interface SettingsTblIn {
+  region: string;
+  lat: number;
+  lon: number;
+  on: number;
+  off: number;
+}
+export interface SettingsPutBody {
+  values: Record<string, number>;
+  tbl: SettingsTblIn | null;
+}
+export interface SettingsSent {
+  seq: number;
+  sent_at: string;
+  sh_expected?: string;
+  payload_bytes?: number;
+}
+export interface SettingsHistoryRow {
+  changed_at: string;
+  by: string;
+  key: string;
+  old: number | string | null;
+  new: number | string | null;
+  note: string | null;
+}
+export interface SchedulePreviewRow {
+  month: number;
+  day: number;
+  on: string;
+  off: string;
+  hours: number;
+}
+export interface SchedulePreview {
+  crc: string;
+  lat_e6: number;
+  lon_e6: number;
+  rows: SchedulePreviewRow[];
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const text = await res.text();
@@ -402,6 +536,21 @@ export const api = {
   getCommand: (seq: number) => request<CommandDetail>(`/api/commands/${seq}`),
   retryCommand: (seq: number, uuids: string[] | null = null) =>
     request<{ resent: number }>(`/api/commands/${seq}/retry`, json("POST", { uuids })),
+
+  // S-23: 단말 운전 설정
+  settingsSchema: () => request<SettingsSchema>("/api/settings/schema"),
+  getSettings: (uuid: string) => request<DeviceSettings>(`/api/devices/${uuid}/settings`),
+  readSettings: (uuid: string) => request<SettingsSent>(`/api/devices/${uuid}/settings/read`, json("POST")),
+  putSettings: (uuid: string, body: SettingsPutBody) =>
+    request<SettingsSent>(`/api/devices/${uuid}/settings`, json("PUT", body)),
+  acceptSettings: (uuid: string) => request<unknown>(`/api/devices/${uuid}/settings/accept`, json("POST")),
+  revertSettings: (uuid: string) => request<SettingsSent>(`/api/devices/${uuid}/settings/revert`, json("POST")),
+  settingsHistory: (uuid: string, limit = 100) =>
+    request<SettingsHistoryRow[]>(`/api/devices/${uuid}/settings/history?limit=${limit}`),
+  schedulePreview: (p: { lat: number; lon: number; on: number; off: number }) =>
+    request<SchedulePreview>(`/api/schedule/preview?${new URLSearchParams({
+      lat: String(p.lat), lon: String(p.lon), on: String(p.on), off: String(p.off),
+    })}`),
 };
 
 /** 5차 에러 코드 → 화면에 먼저 보일 한 줄(docs/05 "에러 코드 추가"). */
@@ -416,6 +565,13 @@ const ERROR_HINT: Record<string, string> = {
   COMMAND_FINISHED: "이미 끝난 명령이라 재시도할 수 없습니다",
   NO_TARGETS: "대상 범위에 운영(ACTIVE) 단말이 없습니다",
   MQTT_UNAVAILABLE: "브로커에 연결되어 있지 않아 보내지 못했습니다",
+  INVALID_STATE: "이 승인 상태에서는 할 수 없습니다(읽기는 PENDING·ACTIVE, 쓰기는 ACTIVE 만)",
+  SETTINGS_PENDING: "이미 단말 응답을 기다리는 요청이 있습니다",
+  SETTINGS_NOT_READ: "아직 단말에서 읽지 않았습니다 — 먼저 '단말에서 읽기'",
+  SETTINGS_INCOMPLETE: "25개 값이 다 있어야 보낼 수 있습니다",
+  SETTINGS_RANGE: "범위를 벗어난 값이 있습니다",
+  SETTINGS_RULE: "설정 규칙(차단<복귀, 다단계 순서)에 어긋납니다",
+  SETTINGS_NOT_CHANGED: "받아들이거나 되돌릴 차이가 없습니다",
 };
 
 export function errorText(e: unknown): string {

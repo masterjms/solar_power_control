@@ -35,7 +35,8 @@ const LATER: { ico: string; label: string; stage: string }[] = [
 ];
 
 function pageFromHash(): Page {
-  const h = location.hash.replace(/^#/, "");
+  // "#config/<UUID>" 처럼 뒤에 붙은 인자는 페이지가 직접 읽는다.
+  const h = location.hash.replace(/^#/, "").split("/")[0];
   return (PAGES.find((p) => p.id === h)?.id ?? "dash") as Page;
 }
 
@@ -184,7 +185,7 @@ export default function App() {
         {page === "pending" && <Pending tick={tick} onChanged={refresh} onSelect={setSelected} />}
         {page === "group" && <GroupControl role={me?.role ?? null} counts={counts} tick={tick} onSelect={setSelected} />}
         {page === "regions" && <Regions role={me?.role ?? null} health={health} tick={tick} onSelect={setSelected} />}
-        {page === "config" && <DeviceConfig />}
+        {page === "config" && <DeviceConfig tick={tick} onSelect={setSelected} />}
         {page === "profiles" && (
           <div className="content">
             <Profiles onChanged={refresh} />

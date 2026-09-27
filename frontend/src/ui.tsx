@@ -1,6 +1,6 @@
 // 목업(docs/spec/ui/solar_light_dashboard_v15.html)의 공통 조각. 카드·배지·자리표시.
 import { ReactNode } from "react";
-import { DeviceState } from "./api";
+import { DeviceState, SettingsSync } from "./api";
 
 /** section.card — 목업의 카드 틀. h500 등 크기 클래스는 className 으로. */
 export function Card({
@@ -106,4 +106,23 @@ export function SiteHint({ value }: { value: string }) {
       {n}/{SITE_HINT}자 권장 (단말 OLED 한글 {SITE_HINT}자, 최대 {SITE_MAX})
     </small>
   );
+}
+
+const SYNC_LABEL: Record<SettingsSync, [string, string, string]> = {
+  unknown: ["읽지 않음", "b-off", "서버가 아직 단말 운전 설정을 모른다 — 단말에서 읽기"],
+  synced: ["동기", "b-ok", "DB 값 = 단말 값(sh 일치)"],
+  writing: ["쓰는 중", "b-blue", "SETTINGS_SET 보냄, SETTINGS_ACK 대기"],
+  local_saved: ["현장에서 저장함", "b-warn", "Telemetry ss 가 바뀜 — 현장 PC 도구·OLED 로 저장했다. 다시 읽어 확인"],
+  device_changed: ["단말 값이 바뀜", "b-alarm", "읽어 보니 단말 sh 가 DB 와 다름 — 받아들이기 또는 되돌리기"],
+};
+
+export function syncLabel(s: SettingsSync | null | undefined): string {
+  return SYNC_LABEL[s ?? "unknown"]?.[0] ?? String(s);
+}
+
+/** 운전 설정 동기 배지(S-23, device_settings.sync). */
+export function SyncBadge({ sync }: { sync: SettingsSync | null | undefined }) {
+  const s = sync ?? "unknown";
+  const [label, cls, why] = SYNC_LABEL[s] ?? [s, "b-off", ""];
+  return <span className={`badge ${cls}`} title={`${s} — ${why}`}>{label}</span>;
 }

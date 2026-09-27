@@ -264,3 +264,39 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .picklist li:last-child{border-bottom:0}
 .pill.role{border-color:var(--blue); color:var(--blue); background:var(--blue-soft)}
 @media (max-width:1280px){ .explorer{grid-template-columns:1fr} .tree.tall{max-height:420px} }
+
+/* ===== S-23: 단말 설정(#config) — 목업 v15 의 .fld/.num/.mk/.out/.form5 ===== */
+.cfgx{grid-template-columns:minmax(260px,1fr) minmax(0,2.6fr)}
+.cfgx > .col{position:sticky; top:80px}
+.cfgr{display:grid; gap:var(--s4); grid-template-columns:minmax(0,1fr) minmax(0,1.6fr); align-content:start; min-width:0}
+.grp2{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--s4)}
+.grid4{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--s2)}
+.grid5{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:var(--s2)}
+.fld{display:grid; grid-template-columns:120px minmax(0,1fr) 48px; gap:var(--s1) var(--s3); align-items:center; min-height:40px}
+.fld > label{font-size:var(--f2); display:flex; align-items:center; gap:6px; min-width:0}
+.fld .in{display:flex; gap:var(--s2); align-items:center; min-width:0}
+.fld .unit{font-size:var(--f1); color:var(--muted)}
+.fld input[type=range]{flex:1; min-width:0; accent-color:var(--blue)}
+.fld .help{grid-column:2 / -1; font-size:var(--f1); color:var(--muted2)}
+.fld .help.c-alarm{color:var(--alarm)}
+.num,.inp{height:32px; border:1px solid var(--line); border-radius:var(--r1); background:var(--soft); padding:0 var(--s2); font-size:var(--f2)}
+.num{width:80px; text-align:right}
+.fld.bad .num{border-color:var(--alarm)}
+/* 읽지 않음: 기본값을 흐리게 참고로만(명세 §8.5) */
+.fld.ref,.out.ref{opacity:.45}
+.fld.ref .num{font-style:italic}
+.mk{width:8px; height:8px; border-radius:50%; display:inline-block; flex:none}
+.mk.edit{background:var(--warn)} .mk.ram{background:var(--blue)}
+.out{display:flex; gap:var(--s2); flex-wrap:wrap}
+.out span{height:28px; padding:0 var(--s3); display:inline-flex; align-items:center; gap:6px; border-radius:999px; background:var(--soft); border:1px solid var(--line2); font-size:var(--f1)}
+.out b{font-weight:600}
+.form5{display:grid; grid-template-columns:2fr 1fr 1fr 1fr 1fr; gap:var(--s3)}
+.form5 label{display:grid; gap:var(--s1); font-size:var(--f1); color:var(--muted); min-width:0; align-content:start}
+.form5 label span{display:flex; align-items:center; gap:6px; white-space:nowrap}
+.form5 .inp{width:100%}
+.dips{display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:var(--s1)}
+.dips span{display:flex; flex-direction:column; align-items:center; gap:2px; padding:var(--s2) 0; border:1px solid var(--line2); border-radius:var(--r1); background:var(--soft); font-size:var(--f1); color:var(--muted2)}
+.dips span b{font-weight:600; color:var(--muted)}
+.dips span.on{border-color:var(--ok); background:var(--bg-ok); color:var(--ok)}
+.dips span.on b{color:var(--ok)}
+@media (max-width:1280px){ .cfgx{grid-template-columns:1fr} .cfgx > .col{position:static} .cfgr,.grp2{grid-template-columns:1fr} .grid4,.grid5{grid-template-columns:1fr 1fr} .form5{grid-template-columns:1fr 1fr} }

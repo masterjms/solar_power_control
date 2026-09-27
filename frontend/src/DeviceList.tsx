@@ -155,7 +155,9 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
             {rows.map((d) => (
               <tr key={d.uuid} data-click className={d.uuid === selected ? "sel" : ""} onClick={() => onSelect(d.uuid)}>
                 <td><StateBadge state={d.state} /></td>
-                <td>{str(d.site)}{d.config_mismatch && <span className="md c-warn" title="config_mismatch">불일치</span>}{d.config_pending && <span className="md c-warn" title="config_pending">CONFIG 대기</span>}</td>
+                <td>{str(d.site)}{d.config_mismatch && <span className="md c-warn" title="config_mismatch">불일치</span>}{d.config_pending && <span className="md c-warn" title="config_pending">CONFIG 대기</span>}
+                  {d.settings_sync === "local_saved" && <span className="md c-warn" title="운전 설정: Telemetry ss 바뀜 — 현장에서 저장함, 다시 읽기">현장 저장</span>}
+                  {d.settings_sync === "device_changed" && <span className="md c-alarm" title="운전 설정: 단말 값이 DB 와 다름">설정 다름</span>}</td>
                 <td title={d.node_path ?? "지역 미배정"}>{d.node_id ? shortPath(d) : <span className="muted">미배정</span>}</td>
                 <td className="mono">{d.uuid}</td>
                 <td title={`is_online=${d.is_online} (브로커 online=${d.online}, 수신 보조 규칙 AND)\nlast_seen_at ${d.last_seen_at ?? "-"}`}>
