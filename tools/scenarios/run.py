@@ -5,7 +5,8 @@
     python -m tools.scenarios.run --only S2-01,S2-03 --report tools/scenarios/out/report.md
     python -m tools.scenarios.run --all --phase-only 2                  # 2차만
     python -m tools.scenarios.run --all --phase-only 3 --allow-docker   # 3차(승인 게이트)만, docker 시나리오 포함
-    python -m tools.scenarios.run --all --phase 5                       # 5차 그룹 CMD 까지 연다
+    python -m tools.scenarios.run --all --phase 5                       # 5차(트리·COMMAND·재시도·권한)까지 연다
+    python -m tools.scenarios.run --all --phase-only 5 --phase 5        # 5차만
 
 `--list` 는 서비스 없이 동작한다. 서비스가 내려가 있으면 시나리오는 SKIP(이유 표시)로 끝나고
 러너는 종료 코드 1 을 돌려준다(FAIL/ERROR 가 있어도 1).
@@ -34,6 +35,8 @@ class Options:
     keep_rows: bool = False
     storm_count: int = 1000
     cmd_retry_timeout: float = 90.0
+    cmd_finish_timeout: float = 30.0
+    storm5_count: int = 200
 
 
 def select(args: argparse.Namespace) -> list[Scenario]:
@@ -107,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--only", help="쉼표로 구분한 ID 목록, 예: S2-01,S2-03")
     g.add_argument("--list", action="store_true", help="목록만")
     p.add_argument("--phase", type=int, action="append", default=[],
-                   help="이 단계 기능을 연다(5 → group_cmd). 2·3차는 항상 열려 있다. 여러 번 가능")
+                   help="이 단계 기능을 연다(5 → group_cmd). 2·3차는 항상 열려 있다. 여러 번 가능. "
+                        "--phase-only 5 만 주면 5 도 연다")
     p.add_argument("--phase-only", type=int, default=None, help="--all 에서 이 단계 시나리오만")
     p.add_argument("--allow-docker", action="store_true", help="docker compose 를 조작하는 시나리오 허용")
     p.add_argument("--sim-mode", choices=["auto", "1cha", "2cha"], default="auto",
@@ -115,7 +119,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--report", type=Path, default=None, help="마크다운 보고서 경로")
     p.add_argument("--keep-rows", action="store_true", help="시험 뒤 DB 행을 지우지 않는다(디버깅)")
     p.add_argument("--storm-count", type=int, default=1000, help="S2-10 단말 수")
-    p.add_argument("--cmd-retry-timeout", type=float, default=90.0, help="S5-01 개별 재시도 대기 상한(초)")
+    p.add_argument("--cmd-retry-timeout", type=float, default=90.0,
+                   help="5차 자동 재시도(단말 TM 직후 개별 재발송) 대기 상한(초). COMMAND_RETRY_MIN_SEC 보다 커야 한다")
+    p.add_argument("--cmd-finish-timeout", type=float, default=30.0,
+                   help="S5-11 PARTIAL 종료 대기(초). 서버 COMMAND_TIMEOUT_SEC 가 이보다 길면 참고로만 기록")
+    p.add_argument("--storm5-count", type=int, default=200, help="S5-12 단말 수(말단 5개로 나눈다)")
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
 
@@ -124,13 +132,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     flags: set[str] = set()
+    if args.phase_only and args.phase_only >= 5:
+        args.phase.append(args.phase_only)  # --phase-only 5 는 5차를 연다는 뜻이기도 하다
     for ph in args.phase:
         if ph >= 5:
             flags.add("group_cmd")
     if args.allow_docker:
         flags.add("docker")
     opt = Options(flags=flags, sim_mode=args.sim_mode, quiet=args.quiet, keep_rows=args.keep_rows,
-                  storm_count=args.storm_count, cmd_retry_timeout=args.cmd_retry_timeout)
+                  storm_count=args.storm_count, cmd_retry_timeout=args.cmd_retry_timeout,
+                  cmd_finish_timeout=args.cmd_finish_timeout, storm5_count=args.storm5_count)
     scenarios = select(args)
     selector_loop_policy()
     try:

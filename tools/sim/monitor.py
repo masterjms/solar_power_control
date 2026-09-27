@@ -26,8 +26,8 @@ import aiomqtt
 
 from tools.sim.env import ENV
 
-DEVICE_TYPES = {"REGISTER", "TELEMETRY", "TM", "PONG", "CONFIG_ACK", "CMD_ACK", "LWT", "EV"}
-SERVER_TYPES = {"PING", "CMD", "CONFIG_SET", "REGISTER_ACK", "SCH", "OTA", "STATUS_GET"}
+DEVICE_TYPES = {"REGISTER", "TELEMETRY", "TM", "PONG", "CONFIG_ACK", "COMMAND_ACK", "LWT", "EV"}
+SERVER_TYPES = {"PING", "COMMAND", "CONFIG_SET", "REGISTER_ACK", "SCH", "OTA", "STATUS_GET"}
 _UUID_RE = re.compile(r"^[0-9A-F]{24}$")
 _TS_RE = re.compile(r"^\d{6}T\d{4}$")
 
@@ -96,7 +96,7 @@ class Monitor:
                 self.flag(uuid, f"REGISTER 필드 누락 {sorted(missing)}")
             if not {"cv", "ss", "ti"} <= set(data):
                 print("      " + paint("REGISTER 에 cv/ss/ti 없음 (1차 펌웨어)", "yellow", enabled=self.color))
-        elif kind in {"PONG", "CONFIG_ACK", "CMD_ACK"} and leaf != "result":
+        elif kind in {"PONG", "CONFIG_ACK", "COMMAND_ACK"} and leaf != "result":
             self.flag(uuid, f"{kind} 가 {leaf} 로 왔다(result 여야 함)")
         elif kind == "LWT" and leaf != "event":
             self.flag(uuid, "LWT 가 event 가 아닌 topic 으로 왔다")

@@ -169,7 +169,7 @@ def test_registry_has_all_required_scenarios():
     ids = set(framework.REGISTRY)
     assert {f"S2-{i:02d}" for i in range(1, 15)} <= ids
     assert {f"S3-{i:02d}" for i in range(1, 12)} <= ids
-    assert "S5-01" in ids
+    assert {f"S5-{i:02d}" for i in range(1, 13)} <= ids
     for s in framework.REGISTRY.values():
         assert s.doc, f"{s.id} 에 docstring(목적·합격 기준) 이 없다"
         if s.phase >= 5:
@@ -183,4 +183,42 @@ def test_run_list_does_not_need_services(capsys):
     from tools.scenarios.run import main
     assert main(["--list"]) == 0
     out = capsys.readouterr().out
-    assert "S2-01" in out and "S3-11" in out and "S5-01" in out
+    assert "S2-01" in out and "S3-11" in out and "S5-01" in out and "S5-12" in out
+
+
+def test_phase5_fake_bjd_codes_are_unique_10_digit_and_not_real_sido():
+    from tools.scenarios.phase5 import fake_bjd_code
+    codes = {fake_bjd_code(f"S5-{n:02d}", j, k) for n in range(1, 13) for j in range(1, 4) for k in range(1, 6)}
+    assert len(codes) == 12 * 3 * 5
+    assert all(len(c) == 10 and c.isdigit() and c.startswith("99") for c in codes)
+    assert fake_bjd_code("S5-02", 1, 1) == "9905020101"
+
+
+def test_sniffer_find_filters():
+    from tools.scenarios.services import Sniffer
+    sn = Sniffer(None, "iotlight/#", "x")  # type: ignore[arg-type]
+    sn.messages = [
+        (1.0, "iotlight/group/414101040000/cmd", {"type": "COMMAND", "seq": 5}, False),
+        (2.0, "iotlight/device/AB/cmd", {"type": "COMMAND", "seq": 5}, False),
+        (3.0, "iotlight/device/AB/config", {"type": "REGISTER_ACK"}, True),
+        (4.0, "iotlight/device/AB/cmd", {"type": "COMMAND", "seq": 6}, False),
+    ]
+    assert len(sn.find(type_="COMMAND", seq=5)) == 2
+    assert [m[1] for m in sn.find(type_="COMMAND", seq=5, topic_prefix="iotlight/group/")] == ["iotlight/group/414101040000/cmd"]
+    assert len(sn.find(type_="COMMAND", since=2.5)) == 1
+    assert sn.find(type_="REGISTER_ACK") == [] and len(sn.find(type_="REGISTER_ACK", retained=None)) == 1
+
+
+def test_phase_only_5_opens_group_cmd(monkeypatch):
+    from tools.scenarios import run
+    seen = {}
+
+    async def fake_run_all(scenarios, opt, report):
+        seen["ids"] = [s.id for s in scenarios]
+        seen["flags"] = opt.flags
+        seen["opt"] = opt
+        return 0
+    monkeypatch.setattr(run, "run_all", fake_run_all)
+    assert run.main(["--all", "--phase-only", "5", "--storm5-count", "50", "--cmd-finish-timeout", "5"]) == 0
+    assert "group_cmd" in seen["flags"] and all(i.startswith("S5-") for i in seen["ids"]) and len(seen["ids"]) == 12
+    assert seen["opt"].storm5_count == 50 and seen["opt"].cmd_finish_timeout == 5

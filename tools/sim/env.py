@@ -42,6 +42,11 @@ class Env:
     backend_url: str
     #: docker compose 를 부를 때 쓸 파일. 비우면 저장소 루트의 기본 파일.
     compose_file: str
+    #: 5차 — REST 를 부르는 사용자(`X-Remote-User`, ADR-005). 최고관리자 / 일반 관리자.
+    admin_user: str = "admin"
+    operator_user: str = "operator"
+    #: 5차 — 백엔드 토큰 버킷 상한(초당 발행). S5-12 판정용. 백엔드 `REGISTER_REPLY_RATE_PER_SEC` 와 같게.
+    publish_rate_per_sec: float = 200.0
 
     @classmethod
     def load(cls) -> "Env":
@@ -63,6 +68,9 @@ class Env:
             ).replace("postgresql+asyncpg://", "postgresql://", 1),
             backend_url=os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/"),
             compose_file=os.environ.get("COMPOSE_FILE", ""),
+            admin_user=os.environ.get("SCENARIO_ADMIN_USER", "admin"),
+            operator_user=os.environ.get("SCENARIO_OPERATOR_USER", "operator"),
+            publish_rate_per_sec=float(os.environ.get("REGISTER_REPLY_RATE_PER_SEC") or 200),
         )
 
 

@@ -15,7 +15,7 @@ tools/.venv/Scripts/python -m tools.sim.monitor                        # iotligh
 
 | 경로 | 내용 |
 |---|---|
-| `sim/device.py` | 단말 한 대 모델 `SimDevice`(펌웨어 1.4.0) — HMAC 계정, REGISTER(ka)/TELEMETRY/PONG/CONFIG_ACK(OK·RANGE·STATE·FLASH)/CMD_ACK, 승인 게이트, 재접속 표, 고장 주입 |
+| `sim/device.py` | 단말 한 대 모델 `SimDevice`(펌웨어 1.4.0 + 5차 2026-09-27-3) — HMAC 계정, REGISTER(ka)/TELEMETRY/PONG/CONFIG_ACK(OK·RANGE·STATE·FLASH)/COMMAND_ACK(OK·LOCAL·EXPIRED·BAD·STATE), 계층별 override 슬롯, REGISTER_ACK grp → 그룹 구독(6개 한도), 승인 게이트, 재접속 표, 고장 주입 |
 | `sim/fleet.py` | N 대 일괄 실행 CLI(`--ka`, `--hmac-key`, `--time-scale`), `gen-passwords`, 폭주 재접속(`--cut-after`) |
 | `sim/monitor.py` | 브로커 감시·사양 위반 검출 |
 | `sim/env.py` | 환경 변수(`MQTT_HOST`, `MQTT_HMAC_KEY`, `DATABASE_URL`, `BACKEND_URL` …) |

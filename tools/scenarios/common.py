@@ -78,8 +78,10 @@ async def _override_config(ctx: Ctx, uuid: str, ti: int, ka: int) -> None:
 
 
 async def approve(ctx: Ctx, devices: list[SimDevice], *, site: str | None = None, timeout: float = 30.0,
-                  concurrency: int = 20, override: bool = True) -> None:
+                  concurrency: int = 20, override: bool = True, node_id: int | None = None) -> None:
     """2cha 단말을 ACTIVE 로 승인한다 — `PATCH /api/devices/{uuid}/state {"state":"ACTIVE"}` (docs/05).
+
+    `node_id`(5차)를 주면 같은 요청에 `node_id` 를 실어 말단 법정동에 배정한다 → REGISTER_ACK retain 에 `grp`.
 
     REGISTER 로 행이 생긴 뒤에만 승인할 수 있다(PATCH 는 없는 uuid 에 404). `override=True`(기본)면 그 전에
     `PATCH /config {ti_override: d.ti, ka_override: d.ka}` 로 시험값을 걸어 승인 뒤 CONFIG_SET 이 시뮬레이터 주기를
@@ -96,11 +98,14 @@ async def approve(ctx: Ctx, devices: list[SimDevice], *, site: str | None = None
         async with sem:
             if override:
                 await _override_config(ctx, d.uuid, d.ti, d.ka)
-            r = await ctx.s.rest.patch_state(d.uuid, "ACTIVE", site=site)
-            if r.status_code == 409:
+            extra = {} if node_id is None else {"node_id": node_id}
+            r = await ctx.s.rest.patch_state(d.uuid, "ACTIVE", site=site, **extra)
+            if r.status_code == 409 and error_code(r) != "NODE_REQUIRED":
                 # 이전 실행의 잔여 행이 이미 ACTIVE 면 같은 상태 전이라 409 — 그대로 진행한다.
                 cur = await ctx.s.db.device(d.uuid)
                 if cur and cur.get("state") == "ACTIVE":
+                    if node_id is not None:
+                        await ctx.s.rest.patch_config(d.uuid, node_id=node_id)
                     await ctx.s.rest.republish_register_ack(d.uuid)
                     return
             if r.status_code >= 400:
@@ -110,7 +115,7 @@ async def approve(ctx: Ctx, devices: list[SimDevice], *, site: str | None = None
     if not_active:
         raise Fail(f"승인 뒤 ACTIVE 를 못 받은 단말 {len(not_active)}/{len(gated)}: "
                    f"{[(d.uuid[-4:], d.state) for d in not_active[:5]]}")
-    ctx.log(f"승인(ACTIVE) {len(gated)}대" + (f" site={site}" if site else ""))
+    ctx.log(f"승인(ACTIVE) {len(gated)}대" + (f" site={site}" if site else "") + (f" node={node_id}" if node_id else ""))
 
 
 async def approve_uuids(ctx: Ctx, uuids: list[str], *, site: str | None = None, timeout: float = 120.0,

@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,11 @@ class Db:
     async def command_acks(self, seq: int) -> list[dict[str, Any]]:
         return [dict(r) for r in await self.fetch("SELECT * FROM command_ack WHERE seq = $1 ORDER BY uuid", seq)]
 
+    async def command_targets(self, seq: int) -> dict[str, dict[str, Any]]:
+        """5차 `command_target` (docs/03 5차 추가) → {uuid: row}."""
+        rows = await self.fetch("SELECT * FROM command_target WHERE seq = $1", seq)
+        return {r["uuid"]: dict(r) for r in rows}
+
     async def now(self) -> datetime:
         """서버(DB) 시각. received_at 비교는 이 시각 기준으로 한다(PC 시계와 어긋날 수 있다)."""
         return await self.fetchval("SELECT now()")
@@ -107,9 +113,13 @@ class Db:
     async def delete_device_rows(self, uuid: str) -> None:
         """REST DELETE 가 없거나 실패했을 때의 정리. telemetry/event 도 지운다."""
         for sql in ("DELETE FROM telemetry WHERE uuid = $1", "DELETE FROM device_event WHERE uuid = $1",
-                    "DELETE FROM command_ack WHERE uuid = $1", "DELETE FROM device WHERE uuid = $1"):
+                    "DELETE FROM command_ack WHERE uuid = $1", "DELETE FROM command_target WHERE uuid = $1",
+                    "DELETE FROM device WHERE uuid = $1"):
             with contextlib.suppress(Exception):
                 await self.execute(sql, uuid)
+
+
+_UNSET: Any = object()
 
 
 class _RetryClient(httpx.AsyncClient):
@@ -208,13 +218,16 @@ class Rest:
         return r.json()
 
     async def patch_state(self, uuid: str, state: str, *, site: str | None = None,
-                          reason: str | None = None) -> httpx.Response:
-        """`PATCH /api/devices/{uuid}/state {state, site?, reason?}` — 승인·거부·중지·해제·폐기(§3.9.2)."""
+                          reason: str | None = None, node_id: Any = _UNSET) -> httpx.Response:
+        """`PATCH /api/devices/{uuid}/state {state, site?, reason?, node_id?}` — 승인·거부·중지·해제·폐기(§3.9.2).
+        `node_id`(5차)는 넘겼을 때만 싣는다(None 도 그대로 = 배정 해제)."""
         body: dict[str, Any] = {"state": state}
         if site is not None:
             body["site"] = site
         if reason is not None:
             body["reason"] = reason
+        if node_id is not _UNSET:
+            body["node_id"] = node_id
         return await self.client.patch(f"/api/devices/{uuid}/state", json=body)
 
     async def republish_register_ack(self, uuid: str) -> httpx.Response:
@@ -248,9 +261,40 @@ class Rest:
     async def delete_profile(self, profile_id: int) -> httpx.Response:
         return await self.client.delete(f"/api/profiles/{profile_id}")
 
-    # ── 5차 (가정) ─────────────────────────────────────────────────────
-    async def post_command(self, body: dict[str, Any]) -> httpx.Response:
-        return await self.client.post("/api/commands", json=body)
+    # ── 5차 (docs/05 "5차 API") ─────────────────────────────────────────
+    #: 5차 호출은 `X-Remote-User` 를 싣는다(nginx Basic auth 사용자명, ADR-005). user=None 이면 헤더 없음.
+    @staticmethod
+    def _h(user: str | None) -> dict[str, str]:
+        return {"X-Remote-User": user} if user else {}
+
+    async def me(self, user: str | None) -> httpx.Response:
+        return await self.client.get("/api/me", headers=self._h(user))
+
+    async def regions(self, user: str | None = None) -> httpx.Response:
+        return await self.client.get("/api/regions", headers=self._h(user))
+
+    async def region_from_address(self, body: dict[str, Any], user: str | None) -> httpx.Response:
+        """`POST /api/regions/from-address` — 개발 환경 직접 입력 `{sido,sigungu,dong,bjd_code,lat?,lon?}`."""
+        return await self.client.post("/api/regions/from-address", json=body, headers=self._h(user))
+
+    async def delete_region(self, region_id: int, user: str | None) -> httpx.Response:
+        return await self.client.delete(f"/api/regions/{region_id}", headers=self._h(user))
+
+    async def command_preview(self, body: dict[str, Any], user: str | None) -> httpx.Response:
+        return await self.client.post("/api/commands/preview", json=body, headers=self._h(user))
+
+    async def post_command(self, body: dict[str, Any], user: str | None = None) -> httpx.Response:
+        return await self.client.post("/api/commands", json=body, headers=self._h(user))
+
+    async def commands(self, user: str | None = None, **params: Any) -> httpx.Response:
+        return await self.client.get("/api/commands", params={k: v for k, v in params.items() if v is not None},
+                                     headers=self._h(user))
+
+    async def command(self, seq: int, user: str | None = None) -> httpx.Response:
+        return await self.client.get(f"/api/commands/{seq}", headers=self._h(user))
+
+    async def retry_command(self, seq: int, uuids: list[str] | None, user: str | None = None) -> httpx.Response:
+        return await self.client.post(f"/api/commands/{seq}/retry", json={"uuids": uuids}, headers=self._h(user))
 
 
 def error_code(response: httpx.Response) -> str:
@@ -329,6 +373,12 @@ class Broker:
                 await asyncio.wait_for(loop(), seconds)
         return got
 
+    async def sniffer(self, topic_filter: str | None = None, *, name: str = "sniff") -> Sniffer:
+        """백그라운드 구독을 시작해 돌려준다. 호출자가 `stop()` 한다(ctx.defer)."""
+        sn = Sniffer(self, topic_filter or f"{self.env.topic_root}/#", f"runner-{name}-{os.getpid()}")
+        await sn.start()
+        return sn
+
     async def collect(self, topic: str, *, seconds: float, identifier: str = "runner-collect") -> list[tuple[str, bytes, bool]]:
         """seconds 동안 topic 에 흐르는 메시지를 모은다 (topic, payload, retained)."""
         got: list[tuple[str, bytes, bool]] = []
@@ -342,6 +392,74 @@ class Broker:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(loop(), seconds)
         return got
+
+
+class Sniffer:
+    """서버 계정으로 topic 필터(기본 `iotlight/#`)를 백그라운드 구독해 흐르는 메시지를 전부 모은다.
+
+    "그룹 topic 에 정확히 1회 발행", "개별 재시도만 나감" 같은 발행 횟수 판정용. `start()` 는 SUBACK 까지 기다린다.
+    """
+
+    def __init__(self, broker: "Broker", topic_filter: str, identifier: str) -> None:
+        self.broker, self.filter, self.identifier = broker, topic_filter, identifier
+        #: (monotonic, topic, payload dict|bytes|None, retained)
+        self.messages: list[tuple[float, str, Any, bool]] = []
+        self._task: asyncio.Task | None = None
+        self._ready = asyncio.Event()
+        self.error: str = ""
+
+    async def start(self, timeout: float = 15.0) -> None:
+        self._task = asyncio.create_task(self._run())
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._ready.wait(), timeout)
+        if not self._ready.is_set():
+            await self.stop()
+            raise RuntimeError(f"sniffer 구독 실패 {self.filter}: {self.error or 'timeout'}")
+
+    async def _run(self) -> None:
+        try:
+            async with self.broker.client(identifier=self.identifier) as c:
+                await c.subscribe(self.filter, qos=1)
+                self._ready.set()
+                async for m in c.messages:
+                    raw = bytes(m.payload or b"")
+                    try:
+                        data: Any = json.loads(raw) if raw else None
+                    except (ValueError, UnicodeDecodeError):
+                        data = raw
+                    self.messages.append((time.monotonic(), str(m.topic), data, bool(m.retain)))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self.error = f"{type(exc).__name__}: {exc}"
+
+    async def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._task
+            self._task = None
+
+    def find(self, *, type_: str | None = None, seq: int | None = None, topic: str | None = None,
+             topic_prefix: str | None = None, since: float | None = None,
+             retained: bool | None = False) -> list[tuple[float, str, Any, bool]]:
+        """조건에 맞는 메시지. retained 기본 False(구독 순간 받은 보관 메시지 제외)."""
+        out = []
+        for (t, tp, data, ret) in self.messages:
+            if since is not None and t < since:
+                continue
+            if retained is not None and ret != retained:
+                continue
+            if topic is not None and tp != topic:
+                continue
+            if topic_prefix is not None and not tp.startswith(topic_prefix):
+                continue
+            if type_ is not None and not (isinstance(data, dict) and data.get("type") == type_):
+                continue
+            if seq is not None and not (isinstance(data, dict) and data.get("seq") == seq):
+                continue
+            out.append((t, tp, data, ret))
+        return out
 
 
 class Docker:

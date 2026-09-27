@@ -190,14 +190,17 @@ async def test_reboot_resets_sq_and_volatile_state_but_keeps_flash():
     for _ in range(5):
         d.build_tm()
     d.handle_config_set({"type": "CONFIG_SET", "cv": 9, "ti": 300, "ka": 900, "lat": 37.1, "lon": 127.1})
-    d.handle_cmd({"type": "CMD", "seq": 1, "exp": 30, "act": "off", "dur": 100})
+    assert d.handle_command({"type": "COMMAND", "seq": 1, "exp": 30, "act": "off", "dur": 100})["result"] == "OK"
+    d.grp = "414101040000"
     d.gate.on_ack("ACTIVE")
     await d.reboot()  # 접속 전이라 소켓 절단은 no-op
     assert d.sq == 0
     assert d.current_override() is None and d.build_tm()["md"] == 0
     assert d.gate.state is None
     assert d.cv == 9 and d.ti == 300 and d.ka == 900 and d.lat == 37.1  # Flash 저장값은 남는다
-    assert d.handle_cmd({"type": "CMD", "seq": 1, "exp": 30, "act": "off", "dur": 100}) is not None  # seq 기억도 소거
+    assert d.grp is None  # grp 는 저장하지 않는다(§3.10.9)
+    ack = d.handle_command({"type": "COMMAND", "seq": 1, "exp": 30, "act": "on", "dur": 100})
+    assert ack["act"] == "on" and d.stats.cmd_dup == 0  # seq 기억도 소거 → 새로 실행
 
 
 # ── 재접속 표 (README "단말 동작": 30초×5 → 5분×5 → 30분) ─────────────────
