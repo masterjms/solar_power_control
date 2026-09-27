@@ -1,13 +1,15 @@
 """라우터 의존성 — app.state 에 붙은 싱글턴을 꺼낸다.
 
-아직 관리자 인증이 없다. REST 는 APP_HOST=127.0.0.1 바인딩(또는 compose 의 포트 비노출)으로만
-보호된다(config.py 참고). 4차 전에 admin_user 기반 `require_admin` 의존성이 여기 추가된다.
+아직 로그인이 없다. REST 는 APP_HOST=127.0.0.1 바인딩(또는 compose 의 포트 비노출)과
+nginx Basic auth 로 보호된다. 5차부터 사용자·역할은 `X-Remote-User` 헤더로 판정한다
+(app/core/auth.py, ADR-005).
 """
 
 from __future__ import annotations
 
 from fastapi import Request
 
+from app.mqtt.command_retry import CommandRetrier
 from app.mqtt.config_sync import ConfigSyncQueue
 from app.mqtt.connection import MqttConnection
 from app.mqtt.publisher import MqttPublisher
@@ -33,3 +35,7 @@ def get_config_sync(request: Request) -> ConfigSyncQueue:
 
 def get_broker_log(request: Request) -> BrokerLogTail:
     return request.app.state.broker_log
+
+
+def get_retrier(request: Request) -> CommandRetrier:
+    return request.app.state.command_retrier

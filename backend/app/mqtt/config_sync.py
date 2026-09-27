@@ -24,6 +24,12 @@ mark_sent() 로 쿨다운을 건다. REGISTER_ACK 는 쿨다운이 없다 — RE
 발행 성공 시 DB 에 남긴다: CONFIG_SET → config_sent_at + device_event(CONFIG_SET, payload),
 REGISTER_ACK → register_ack_at + device_event(REGISTER_ACK). cv_server 는 여기서 바꾸지
 않는다 — 큐에 넣는 쪽이 next_cv_server() 로 확정해 DB 에 쓴 값을 그대로 싣는다.
+
+5차: COMMAND 개별 재시도(CommandRetryJob)도 같은 FIFO·토큰 버킷을 탄다(ADR-005). 재시도 역시
+"단말이 보낸 직후" 에 나가는 발행이고, 브로커 재시작 뒤 1만 대 REGISTER 폭주에 명령 재시도가
+겹쳐도 발행량 상한이 하나로 유지된다. REGISTER 직후면 FIFO 라 REGISTER_ACK 다음에 나간다.
+시도 수·last_sent_at 은 큐에 넣기 **전에** DB 에서 선점(claim)해 두었으므로 여기서는 발행 +
+이력만 쓴다. `ts` 는 발행 순간 시각으로 새로 찍는다 — 큐 대기 시간이 exp(30초)를 잡아먹지 않게.
 """
 
 from __future__ import annotations
@@ -46,7 +52,8 @@ from app.core.ratelimit import TokenBucket
 from app.db import session_scope
 from app.models.device import Device
 from app.models.event import DeviceEvent
-from app.mqtt.publisher import MqttPublisher
+from app.mqtt import topics
+from app.mqtt.publisher import MqttPublisher, kst_ts
 
 log = logging.getLogger(__name__)
 
@@ -71,9 +78,23 @@ class RegisterAckJob:
     reason: str | None
     #: RETIRED: retain 으로 보낸 뒤 빈 retain 으로 지운다(사양서 §3.3).
     clear_after: bool = False
+    #: 5차 그룹 12자리. 배정돼 있으면 항상 싣는다(§3.10.9).
+    grp: str | None = None
 
 
-Job = ConfigJob | RegisterAckJob
+@dataclass(frozen=True)
+class CommandRetryJob:
+    """COMMAND 개별 재발송(같은 seq, 새 ts). payload 는 command.payload 원본."""
+
+    seq: int
+    uuid: str
+    payload: dict[str, Any]
+    #: 선점 뒤 시도 수(이력 기록용).
+    attempt: int
+    reason: str  # "register" | "telemetry" | "manual"
+
+
+Job = ConfigJob | RegisterAckJob | CommandRetryJob
 
 
 class ConfigSyncQueue:
@@ -136,6 +157,10 @@ class ConfigSyncQueue:
         """REGISTER_ACK 는 쿨다운·중복 검사 없이 넣는다 — REGISTER 마다 반드시 답한다(§3.3)."""
         self._push(job)
 
+    def offer_command_retry(self, job: CommandRetryJob) -> None:
+        """COMMAND 재발송. 중복은 넣는 쪽의 DB 선점(attempts/last_sent_at)이 이미 막았다."""
+        self._push(job)
+
     @property
     def pending_count(self) -> int:
         return len(self._queue)
@@ -168,6 +193,9 @@ class ConfigSyncQueue:
             if isinstance(job, RegisterAckJob):
                 await self._publish_register_ack(job)
                 continue
+            if isinstance(job, CommandRetryJob):
+                await self._publish_command_retry(job)
+                continue
             self._queued.discard(job.uuid)
             if not self.cooled_down(job.uuid):
                 continue  # 줄 서는 사이 다른 경로가 보냈다
@@ -189,7 +217,7 @@ class ConfigSyncQueue:
     async def _publish_register_ack(self, job: RegisterAckJob) -> None:
         try:
             payload = await self._publisher.publish_register_ack(
-                uuid=job.uuid, state=job.state, site=job.site, reason=job.reason
+                uuid=job.uuid, state=job.state, site=job.site, reason=job.reason, grp=job.grp
             )
             if job.clear_after:
                 await self._publisher.clear_register_ack(uuid=job.uuid)
@@ -201,7 +229,42 @@ class ConfigSyncQueue:
         await record_register_ack(job.uuid, payload, cleared=job.clear_after)
 
 
+    async def _publish_command_retry(self, job: CommandRetryJob) -> None:
+        # 같은 seq, 새 ts. dict 의 키 순서는 원본 그대로 유지된다(ts 자리만 값이 바뀜).
+        payload = {**job.payload, "ts": kst_ts(dt.datetime.now(dt.timezone.utc))}
+        topic = topics.device_cmd(job.uuid)
+        try:
+            await self._publisher.publish_command(topic=topic, payload=payload)
+        except Exception:  # noqa: BLE001 - 시도는 이미 셌다. 다음 단말 송신 때 또 잡힌다.
+            log.exception("COMMAND 재시도 발행 실패 %s seq=%s", job.uuid, job.seq)
+            return
+        metrics.command_retry_sent += 1
+        log.info("COMMAND 재시도 → %s seq=%d attempt=%d (%s)",
+                 job.uuid, job.seq, job.attempt, job.reason)
+        await record_command_sent(job.uuid, topic, payload, attempt=job.attempt, by=job.reason)
+
+
 # ── DB 기록 (즉시 발행 경로와 공유) ──────────────────────────────────────
+async def record_command_sent(
+    uuid: str, topic: str, payload: dict[str, Any], *, attempt: int, by: str
+) -> None:
+    """device_event(COMMAND_SENT) — 개별 발송(첫 발송·재시도)만. 기록 실패는 발행에 영향 없음."""
+    try:
+        async with session_scope() as db:
+            await db.execute(pg_insert(DeviceEvent).values(
+                uuid=uuid, kind=EventKind.COMMAND_SENT.value,
+                payload=command_sent_event(topic, payload, attempt=attempt, by=by),
+                received_at=dt.datetime.now(dt.timezone.utc),
+            ))
+    except Exception:  # noqa: BLE001
+        log.exception("COMMAND_SENT 기록 실패 %s", uuid)
+
+
+def command_sent_event(
+    topic: str, payload: dict[str, Any], *, attempt: int, by: str
+) -> dict[str, Any]:
+    """COMMAND_SENT 이력 payload 모양 — 보낸 그대로 + 어디로·몇 번째·누가(admin/register/…)."""
+    return {"topic": topic, "payload": payload, "attempt": attempt, "by": by}
 async def record_config_sent(uuid: str, payload: dict[str, Any]) -> None:
     """config_sent_at + device_event(CONFIG_SET). 기록 실패는 발행에 영향 없음."""
     now = dt.datetime.now(dt.timezone.utc)
@@ -237,13 +300,16 @@ async def record_register_ack(uuid: str, payload: dict[str, Any], *, cleared: bo
 
 
 def register_ack_job_for(
-    *, uuid: str, state: str, site: str | None, reason: str | None
+    *, uuid: str, state: str, site: str | None, reason: str | None, grp: str | None = None
 ) -> RegisterAckJob:
     """DB 상태 → REGISTER_ACK 잡. RETIRED 는 발행 뒤 빈 retain 으로 지운다(사양서 §3.3, S-11).
-    reason 은 REJECTED 일 때만 싣는다(다른 상태의 state_reason 은 관리자 메모다)."""
+    reason 은 REJECTED 일 때만 싣는다(다른 상태의 state_reason 은 관리자 메모다).
+    grp 는 배정돼 있으면 상태와 무관하게 싣는다 — 단말은 ACTIVE 가 아니면 구독하지 않는다(§3.10.9).
+    관리자 즉시 발행 경로(device 서비스)도 이 함수로 인자를 정해 모양이 한 곳에서 나온다."""
     retired = state == DeviceState.RETIRED.value
     return RegisterAckJob(
         uuid=uuid, state=state, site=site,
         reason=reason if state == DeviceState.REJECTED.value else None,
         clear_after=retired,
+        grp=grp.strip() if grp and grp.strip() else None,
     )

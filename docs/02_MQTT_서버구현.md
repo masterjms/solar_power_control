@@ -1,6 +1,7 @@
-# 02. MQTT 서버 구현 (2·3차)
+# 02. MQTT 서버 구현 (2·3·5차)
 
-- 갱신: 2026-09-26 (사양서 2026-09-26 개정 — 승인 게이트, HMAC 인증, 브로커 로그 presence, CONFIG 전체값)
+- 갱신: 2026-09-27 (5차 — 법정동 트리·COMMAND 발행·응답·재시도·종료·override·권한, §16)
+- 2026-09-26 (사양서 2026-09-26 개정 — 승인 게이트, HMAC 인증, 브로커 로그 presence, CONFIG 전체값)
 - 코드: `backend/app/mqtt/`, `backend/app/core/`, `backend/app/tasks/broker_log.py`, `backend/app/modules/mqtt_auth/`
 - 기준: 사양서 §1.1.2.2, §1.1.4~§1.1.7, §1.1.10, §3, §4, §16.1, ADR-001~004. 프로토콜은 단말측 사양서가
   정본이고 여기서는 **서버가 그것을 어떻게 처리하는가**만 적는다.
@@ -22,7 +23,7 @@
 |---|---|---|---|
 | `iotlight/device/+/register` | 1 | `REGISTER` | device upsert(보강) + device_event → **REGISTER_ACK(항상)** → ACTIVE 면 cv 비교 |
 | `iotlight/device/+/status` | 1 | `TELEMETRY` (`TM`, 1.0.0 의 `t:TM` 도 허용) | TelemetryBuffer |
-| `iotlight/device/+/result` | 1 | `PONG` `CONFIG_ACK` `CMD_ACK`(5차) | device_event + command_ack |
+| `iotlight/device/+/result` | 1 | `PONG` `CONFIG_ACK` `COMMAND_ACK`(5차, 옛 이름 `CMD_ACK` 도 받음) | device_event + command_ack / command_target(§16) |
 | `iotlight/device/+/event` | 1 | `LWT` `EV` | offline 처리 / device_event |
 
 단말은 status 를 QoS0 으로 보낸다. 구독 QoS 는 상한일 뿐이라 1 로 걸어도 QoS0 메시지는
@@ -37,15 +38,17 @@ QoS0 으로 온다. 네 패턴을 하나(`iotlight/device/+/#`)로 합치지 않
 | `iotlight/device/<uuid>/config` | (빈 payload) | 1 | 1 | RETIRED 정리·단말 삭제 — retain 보관본 삭제 |
 | `iotlight/device/<uuid>/config` | `CONFIG_SET` | 1 | **0** | ACTIVE 단말의 REGISTER/TELEMETRY 직후 cv 다를 때(큐), PATCH config(즉시) |
 | `iotlight/device/<uuid>/cmd` | `PING` | 1 | 0 | REST 로만 |
-| `iotlight/device/<uuid>/cmd` | `CMD` `SCH` `OTA` | 1 | 0 | 5~7차 |
-| `iotlight/group/<grp>/cmd` · `iotlight/all/cmd` | `CMD` | 1 | 0 | 5차 |
+| `iotlight/device/<uuid>/cmd` | `COMMAND` (6·7차 `SCH` `OTA`) | 1 | 0 | 개별 명령(즉시) · 개별 재시도(응답 큐) |
+| `iotlight/group/<grp>/cmd` · `iotlight/all/cmd` | `COMMAND` | 1 | 0 | 노드·전체 명령(즉시). 재시도는 그룹으로 안 한다 |
 
 발행 규칙(publisher `_send`):
 - compact JSON(구분자 뒤 공백 없음, `ensure_ascii=False`).
 - **384B 초과면 발행하지 않고 `PayloadTooLarge`**(AT 버퍼, 사양서 §1.1.6). 300B 초과는 경고.
 - `cmd` 는 절대 retain 하지 않는다. 재접속 단말에 옛 명령이 되살아난다(5차 소등이면 사고).
 - `REGISTER_ACK` = `{"type":"REGISTER_ACK","uuid","state"}` + `site`(있을 때) + `reason`(**REJECTED 일 때만**).
-  `cv`/`ti`/`ka` 는 절대 싣지 않는다(§3.3). 5차에 `grp` 가 붙는다.
+  `cv`/`ti`/`ka` 는 절대 싣지 않는다(§3.3). 5차: `grp`(말단 배정돼 있으면 상태와 무관하게 항상) —
+  `{"type","uuid","state"[,"site"][,"reason"][,"grp"]}`. 모양은 `config_sync.register_ack_job_for()` 하나가 정하고
+  수신 경로(큐)와 관리자 즉시 경로가 같이 쓴다.
 - `CONFIG_SET` = `{"type":"CONFIG_SET","cv","ti","ka"}` + `lat`/`lon`(둘 다 있을 때). **항상 전체값**(S-13).
   `cv` 0 은 빌더가 `ValueError` 로 막는다.
 
@@ -107,7 +110,7 @@ DB 를 만지지 않는다. `TelemetryBuffer.offer()` 로 끝. §8 참고. type 
 |---|---|---|---|
 | `PONG` | `PONG` | `uuid:PONG:<seq>:sha1` | `command` 조회 → target 이 이 uuid 인지 확인(§1.1.5) → `command_ack` 1행(PK 충돌 무시) → `acked_count+1`, 다 모이면 `finished_at`, `result=OK`. seq 를 모르거나 단말이 다르면 `pong_mismatch` |
 | `CONFIG_ACK` | `CONFIG_ACK` | `uuid:CONFIG_ACK:<cv>:sha1` | 아래 표 |
-| `CMD_ACK` | `CMD_ACK` | `uuid:CMD_ACK:<seq>:sha1` | PONG 과 같은 command 집계 (5차) |
+| `COMMAND_ACK` (`CMD_ACK`) | `COMMAND_ACK` | `uuid:COMMAND_ACK:<seq>:sha1` | §16.4 |
 
 CONFIG_ACK `result` 별:
 
@@ -302,6 +305,7 @@ render_acl()     = user server / topic readwrite iotlight/#  (+ 시험 계정)  
 | `register_ack_sent` `config_set_sent` | 발행 수 |
 | `config_ack_ok` `config_ack_range` `config_ack_state` `config_ack_flash` | CONFIG_ACK result 별 |
 | `pong_mismatch` | seq 모름 또는 단말 불일치 응답 |
+| `command_published` `command_retry_sent` `command_ack` `command_ack_mismatch` | 5차 COMMAND 발행(topic 단위) / 개별 재시도 / ACK / 모르는 seq·스냅숏 밖 단말 |
 | `mqtt_connected` `mqtt_reconnects` `mqtt_publish_failures` | 연결 |
 | `mqtt_auth_ok` `mqtt_auth_fail` `mqtt_acl_deny` | 브로커 인증 API |
 | `broker_log_tail` `broker_log_lines` `broker_log_online` `broker_log_offline` `broker_log_not_authorised` `broker_log_errors` | 로그 tail |
@@ -320,10 +324,11 @@ DB 가 죽어도 HTTP 200(healthcheck 로 컨테이너를 재시작하면 버퍼
 | `tasks/daily_rollup.run` | 매일 00:30 (+`POST /api/admin/rollup`) | 전날(KST) `telemetry_daily` |
 | `_reconcile_accounts` | 5분 | server 계정 passwd/aclfile 재내보내기(내용 같으면 감시 루프가 무시) |
 | `tasks/broker_log.BrokerLogTail` | 상시(0.5초) | §9 |
+| `tasks/command_finisher.run` | 30초 | 5차 COMMAND 종료 판정 + 재시도 후보 집합 재조정(§16.5) |
 
 ## 14. 기동·종료 순서 (`main.py`)
 
-HMAC 키 파싱(틀리면 죽음) → DB 대기 → 파티션 → 계정 파일 내보내기 → last_sq warm → 응답 큐 → 버퍼 →
+HMAC 키 파싱(틀리면 죽음) → DB 대기 → 파티션 → 계정 파일 내보내기 → last_sq warm → 재시도 후보 warm(5차) → 응답 큐 → 버퍼 →
 MQTT 연결 → 브로커 로그 tail → 스케줄러. 종료는 역순(로그 tail → 연결 → 버퍼 flush → 큐).
 
 ## 15. 시나리오와 연결 (docs/06)
@@ -343,3 +348,90 @@ MQTT 연결 → 브로커 로그 tail → 스케줄러. 종료는 역순(로그 
   넘겨준다. 전제: 브로커 `persistence true`.
 - 재접속 백오프 1→2→4→**5초 상한**. 30초 상한이면 브로커 재시작 뒤 단말(7~30초)보다 늦게 돌아와
   REGISTER 를 놓쳤다(S2-11 실측: 1+2+4+8 = 15초 공백).
+
+
+## 16. 5차 — 원격 명령 (ADR-005, 사양서 §3.9.3 · §3.10 · §17)
+
+코드: `core/command_rules.py`(순수 규칙), `modules/command/`(REST), `mqtt/command_retry.py`(자동 재시도),
+`tasks/command_finisher.py`(종료), `mqtt/handlers.py`(COMMAND_ACK), `core/auth.py`(권한),
+`core/region_tree.py`·`modules/region/`·`core/kakao_geo.py`(법정동 트리).
+
+### 16.1 트리와 grp
+- `region`: 시도 > 시군구 > 법정동(말단). 말단만 `bjd_code`(카카오 `address.b_code` 앞 10자리). group_id =
+  `bjd_code + "00"` 은 저장하지 않고 계산한다.
+- 말단 추가는 카카오 주소 검색 → 시도(약칭 "경기" 는 정식 "경기도" 로)·시군구(세종은 시군구가 없어 시도 이름을
+  다시 쓴다)·법정동(`region_3depth_name`)·좌표(x→lon, y→lat)로 상위까지 find-or-create. 말단은 **코드로** 찾는다.
+  `APP_ENV=dev` 만 직접 입력 허용. 키는 헤더(`Authorization: KakaoAK …`)로만 나가고 로그·응답에 안 남는다. 시간 초과 5초.
+- 단말 배정(`PATCH /config`·`/state` 의 `node_id`) → `node_id`, `bjd_code`, `grp` 를 같이 쓰고 grp 가 바뀌면
+  REGISTER_ACK retain 재발행(RETIRED 제외). 승인(ACTIVE)은 말단이 필요하다 — `APPROVE_REQUIRES_NODE`,
+  **안 적으면 운영 true / `APP_ENV=dev` 는 false**(3차 시나리오 호환). 명시하면 그 값.
+
+### 16.2 발행 (`POST /api/commands`)
+```
+대상 해석 ─ device: device/<uuid>/cmd
+          ─ node  : 말단 = group/<grp>/cmd 1회, 상위 = 하위 말단마다 1회(bjd 순)   (seq 는 하나)
+          ─ all   : all/cmd 1회 — 최고관리자만(403 FORBIDDEN)
+검증     ─ ch 1~3 중복 없음(기본 [1,2]) · pwm 은 act=pwm 만·ch 와 같은 길이·0~100
+           · act≠auto: dur(1~86400) 또는 dur_preset(30m/1h/3h/tonight) 중 하나 · auto: 둘 다 없음 · exp 1~3600(기본 30)
+tonight  ─ suntable(app/vendor, 원본 그대로) 표의 **소등(아침, 일출 쪽)** 시각. 지금(KST)이 오늘 소등 전이면
+           오늘 것, 지났으면 내일 것까지 남은 초(올림, 1~86400). 좌표: 노드 → 그 노드 좌표, 없으면 첫 하위 말단 /
+           단말 → 단말 lat/lon, 없으면 그 말단 / 전체·없음 → DEFAULT_LAT/LON(서울)
+대상 수  ─ 범위 안 ACTIVE 단말. 0 이면 409 NO_TARGETS(seq 발번 전)
+seq      ─ nextval('cmd_seq') → payload {"type":"COMMAND","seq","ts","exp","act","ch"[,"pwm"][,"dur"]}
+           (ts = 보낸 시각 KST YYMMDDThhmmss, 키 순서 고정, 384B 검사)
+DB       ─ command(type=COMMAND, target_kind, target_id, created_by, topics, exp, expected_count)
+           + command_target 스냅숏(INSERT … SELECT, status=pending, attempts=1, last_sent_at=now)
+커밋     ─ **발행 전에 커밋**. 시뮬레이터는 수 ms 안에 ACK 를 돌려준다 — 미들웨어 커밋(응답 뒤)을 기다리면
+           ACK 핸들러가 대상 행을 못 찾는다
+발행     ─ topic 마다 publisher.publish_command (QoS1, retain 0). 실패 → command 행 삭제(대상 CASCADE)
+           + 503 MQTT_UNAVAILABLE. 여러 topic 중 일부만 나갔으면 그 단말들의 ACK 는 "모르는 seq" 로 남는다
+이력     ─ 개별(device)만 device_event(COMMAND_SENT). 대상 uuid 를 재시도 후보 집합에 넣는다
+```
+
+### 16.3 자동 재시도 — 단말이 뭔가 보낸 직후 (S-17/S-18)
+- 걸리는 곳: REGISTER 핸들러(트랜잭션 커밋 뒤), TELEMETRY flush(커밋 뒤, 묶음의 uuid 전부).
+- **평소 비용 0**: 메모리 집합(재시도 후보가 있는 uuid)에 없으면 쿼리를 안 한다. 기동 시 DB 로 채우고, 발송 때
+  넣고, 30초 종료 타이머가 DB 기준으로 다시 맞춘다(ACK 로 끝난 uuid 가 빠진다).
+- 후보면 `UPDATE command_target … FROM command … RETURNING` 한 문장으로 **선점**(attempts+1, last_sent_at=now).
+  조건: status ∈ {pending, EXPIRED} · 명령 미종료 · now < sent_at + dur(auto 는 + COMMAND_TIMEOUT_SEC)
+  · attempts < COMMAND_MAX_ATTEMPTS(3) · last_sent_at < now − COMMAND_RETRY_MIN_SEC(20)
+  · **그 단말에 더 새 명령(seq 큰 대상 행)이 없다** — 옛 소등이 새 점등 뒤에 도착하면 옛 것이 적용된다.
+  인덱스 `(uuid, status)`. 파이썬 판 `command_rules.retry_eligible` 과 같은 규칙.
+- 선점한 것만 응답 큐(§7, 토큰 버킷·FIFO)에 `CommandRetryJob` → **개별 topic, 같은 seq, 새 ts**(발행 순간 시각 —
+  큐 대기가 exp 를 잡아먹지 않게) → device_event(COMMAND_SENT, by=register/telemetry). 그룹 재발행은 하지 않는다.
+- 수동 재시도(`POST /api/commands/{seq}/retry`)는 같은 선점 쿼리에서 시도 상한·RETRY_MIN 만 뺀다(사람이 누른 것).
+  나머지 조건(미종료·유효·pending/EXPIRED·더 새 명령 없음)은 같다. 발행은 같은 큐. 브로커 끊김이면 503.
+
+### 16.4 COMMAND_ACK (result: OK / LOCAL / EXPIRED / BAD / STATE)
+1. device_event(COMMAND_ACK), dedup `uuid:COMMAND_ACK:<seq>:sha1(payload)` — QoS1 재전송은 여기서 끝.
+2. seq 가 COMMAND 가 아니거나(모름·PING) 이 단말이 스냅숏에 없으면 경고 + `command_ack_mismatch`.
+3. `command_target.status = result`(단, **OK 는 내려가지 않는다** — 늦은 EXPIRED 가 덮지 않게. LOCAL→OK 는 허용),
+   `acked_at`, `ack`(원본). 첫 응답(pending 에서)이면 `command.acked_count + 1`. 모르는 result 값은 원본만 남긴다.
+4. **OK** → `device.override_*` (§16.6).
+5. 대상이 다 응답했으면 종료 판정을 그 seq 하나에 바로 돌린다(개별 명령이 30초 동안 "진행 중"으로 보이지 않게).
+
+### 16.5 종료 (30초 타이머, `tasks/command_finisher`)
+미종료 COMMAND 마다 대상 상태를 센다. 종결 = OK/LOCAL/BAD/STATE + 시도를 다 쓴 EXPIRED.
+- 전부 종결 → `OK`(전부 OK) / `PARTIAL`
+- `COMMAND_TIMEOUT_SEC`(900) 경과 → 응답 0(전부 pending)이면 `TIMEOUT`, 아니면 `PARTIAL`
+끝난 명령은 재시도 대상에서 빠진다. 파이썬 판 `command_rules.finish_result`.
+
+### 16.6 override 표시 (S-19, §3.10.8)
+- 계층: device 명령 → `device`, node → `group`, all → `all`.
+- OK(on/off/pwm): `override_until = 그 단말에 마지막으로 보낸 시각(last_sent_at = 그 발송의 ts) + dur`.
+  기록된 것이 **더 높은 계층이고 아직 유효**하면 덮지 않는다(단말은 여전히 그 계층 값을 쓴다).
+- OK(auto): 개별 auto 는 전부 NULL. 그룹/전체 auto 는 기록된 계층이 같을 때만 NULL.
+- 재부팅(TM flush 의 sq 감소 판정, REBOOT 이벤트)이면 그 단말 override 필드 NULL — 단말이 잃는다.
+- 화면: `remote_active = last_telemetry.md == 2 AND override_until > now`, `remote_remaining_sec` = until 까지
+  남은 초(미래일 때만. md 와 무관 — OK 직후 md 를 실은 TM 전에도 보인다). 목록 `?remote=true` 는 SQL 판.
+
+### 16.7 권한 (§3.9.3 #9)
+- 사용자 = `X-Remote-User`(nginx Basic auth 사용자명). `SUPER_ADMIN_USERS`(쉼표, 기본 `admin`) = super_admin.
+- 헤더 없음: `APP_ENV=dev` 면 super_admin `local`, 아니면 admin `anonymous`.
+- super_admin 전용: 전체(all) 명령, 트리 편집(from-address·PATCH·DELETE). 그 외 403 `FORBIDDEN`.
+- `command.created_by` = 사용자명. `GET /api/me` → `{"user","role"}`.
+
+### 16.8 설정 (`.env`)
+`KAKAO_REST_API_KEY`(""), `SUPER_ADMIN_USERS`(admin), `APPROVE_REQUIRES_NODE`(미설정 = prod true / dev false),
+`COMMAND_EXP_SEC`(30), `COMMAND_TIMEOUT_SEC`(900), `COMMAND_MAX_ATTEMPTS`(3), `COMMAND_RETRY_MIN_SEC`(20),
+`DEFAULT_LAT`/`DEFAULT_LON`(37.5665/126.9780).

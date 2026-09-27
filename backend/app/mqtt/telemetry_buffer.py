@@ -19,6 +19,8 @@
        (사양서 §1.1.10 "단말 송신 직후", ADR-002, 60초 쿨다운)
     5. ACTIVE 가 아닌 단말의 TM 은 저장은 하되 `telemetry_not_active` 로 센다 — 사양서 §3.8
        상 보내면 안 되는 상태다(승인 전 펌웨어 1.1.x 이거나 retain 이 어긋난 것)
+    6. (5차) 재부팅 감지 단말은 override 표시 필드를 지운다(단말이 override 를 잃는다, §3.10.7).
+       커밋 뒤 이 묶음의 uuid 로 COMMAND 자동 재시도를 부른다(mqtt/command_retry, ADR-005)
 
 안전장치:
     · flush 실패 → 그 묶음은 **버린다**. 다시 큐에 넣지 않는다. DB 가 아픈 동안 대기열이
@@ -37,9 +39,9 @@ import contextlib
 import datetime as dt
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,7 +61,15 @@ from app.mqtt.config_decide import (
 )
 from app.mqtt.config_sync import ConfigSyncQueue
 
+if TYPE_CHECKING:
+    from app.mqtt.command_retry import CommandRetrier
+
 log = logging.getLogger(__name__)
+
+#: 재부팅 감지 시 지우는 override 표시 필드(§3.10.8 "재부팅 → 전부 소거").
+OVERRIDE_CLEAR = {
+    "override_act": None, "override_level": None, "override_seq": None, "override_until": None,
+}
 
 #: 문장당 행 수. 21컬럼 × 1000 = 21,000 바인드 < 32,767.
 _CHUNK = 1000
@@ -118,10 +128,13 @@ class TelemetryBuffer:
         interval_sec: float | None = None,
         max_pending: int | None = None,
         config_sync: ConfigSyncQueue | None = None,
+        retrier: CommandRetrier | None = None,
     ) -> None:
         self._interval = interval_sec if interval_sec is not None else settings.flush_interval
         self._max_pending = max_pending or settings.telemetry_flush_max_pending
         self._config_sync = config_sync
+        #: 5차 COMMAND 자동 재시도(단말 송신 직후). flush 커밋 뒤 이 묶음의 uuid 로 부른다.
+        self._retrier = retrier
         #: 이력 후보. (uuid, payload, received_at) 도착 순서대로.
         self._rows: list[tuple[str, dict[str, Any], dt.datetime]] = []
         #: uuid → 마지막 last_sq. 기동 시 warm() 으로 채운다.
@@ -291,6 +304,15 @@ class TelemetryBuffer:
                     )
                 if events:
                     await db.execute(pg_insert(DeviceEvent).values(events))
+                    # 5차: 재부팅한 단말은 override 슬롯을 전부 잃고 스케줄로 시작한다(§3.10.7) —
+                    # 화면의 "원격 n분 남음"도 같이 지운다.
+                    rebooted = sorted({e["uuid"] for e in events
+                                       if e["kind"] == EventKind.REBOOT.value})
+                    if rebooted:
+                        await db.execute(
+                            update(Device).where(Device.uuid.in_(rebooted))
+                            .values(**OVERRIDE_CLEAR)
+                        )
         except Exception:  # noqa: BLE001
             metrics.telemetry_dropped += len(history)
             metrics.flush_failures += 1
@@ -299,6 +321,9 @@ class TelemetryBuffer:
 
         metrics.telemetry_flushed += len(history)
         metrics.record_flush((time.perf_counter() - started) * 1000.0)
+        if self._retrier is not None:
+            # 커밋 뒤. 후보 집합에 없는 uuid 는 쿼리 없이 걸러진다(평소 비용 0).
+            await self._retrier.on_device_messages(latest.keys(), reason="telemetry")
         if not_active:
             metrics.telemetry_not_active += not_active
             log.debug("ACTIVE 아닌 단말의 TELEMETRY %d대 (저장은 함)", not_active)

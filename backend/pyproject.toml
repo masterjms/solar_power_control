@@ -19,6 +19,8 @@ dependencies = [
     "aiomqtt>=2.3",
     "apscheduler>=3.10,<4",
     "python-multipart>=0.0.17",
+    # 5차 카카오 로컬 주소 검색 프록시(app/core/kakao_geo.py). 비동기 HTTP 클라이언트.
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +38,8 @@ packages = ["app"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# app/vendor/ 는 단말·도구와 비트 단위로 같아야 하는 기준 구현 사본이다(docs/spec/ref). 고치지 않는다.
+extend-exclude = ["app/vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

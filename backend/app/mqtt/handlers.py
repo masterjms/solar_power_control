@@ -10,7 +10,8 @@
               CONFIG_ACK  device_event. OK → cv_device/ti_device/ka_device 반영(cv 일치 때만)
                           RANGE → 경고(서버 버그). STATE → 단말이 승인 전이라 함: DB 가 ACTIVE 면
                           REGISTER_ACK 재발행. FLASH → 쿨다운 해제(다음 송신 때 재전송)
-              CMD_ACK     5차. 지금은 device_event 만
+              COMMAND_ACK 5차(옛 이름 CMD_ACK 도 받음). device_event(COMMAND_ACK) + command_target
+                          상태·acked_count. OK 면 device.override_* 기록(§3.10.8 S-19)
     event     LWT         online=false (presence.apply_presence — 브로커 로그 경로와 같은 함수).
                           last_seen_at 은 건드리지 않는다 — 브로커가 대신 보내는 사망 통지를
                           "방금 통신함"으로 적으면 죽은 단말이 온라인으로 잡힌다
@@ -42,23 +43,38 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import DeviceState, EventKind, MsgType, TopicKind
+from app.constants import ACK_RESULTS, DeviceState, EventKind, MsgType, TargetStatus, TopicKind
 from app.core import presence
+from app.core.command_rules import OverrideState, override_after_ok, override_level_for
 from app.core.effective import effective_ka_sql, effective_ti_sql
 from app.core.metrics import metrics
 from app.db import session_scope
-from app.models.command import Command, CommandAck
+from app.models.command import Command, CommandAck, CommandTarget
 from app.models.device import Device
 from app.models.event import DeviceEvent
 from app.mqtt import topics
+from app.mqtt.command_retry import CommandRetrier
 from app.mqtt.config_decide import CONFIG_COLUMNS, DeviceConfigRow, decide_and_enqueue
 from app.mqtt.config_sync import ConfigSyncQueue, register_ack_job_for
+from app.mqtt.publisher import parse_kst_ts
 from app.mqtt.telemetry_buffer import TelemetryBuffer
+from app.tasks.command_finisher import finish_due
 
 log = logging.getLogger(__name__)
 
 #: status 토픽에서 Telemetry 로 받아들이는 type 값. 1.1.0+ "TELEMETRY", 초기 2차 "TM".
 TELEMETRY_TYPES = frozenset({MsgType.TELEMETRY.value, MsgType.TM.value})
+#: result 토픽의 원격 명령 응답. CMD_ACK 는 5차 확정 전 이름이라 같이 받는다.
+COMMAND_ACK_TYPES = frozenset({MsgType.COMMAND_ACK.value, MsgType.CMD_ACK.value})
+
+
+def next_target_status(current: str, result: str) -> str:
+    """COMMAND_ACK.result → command_target.status. 한 번 OK 면 내려가지 않는다 — 같은 seq 재발송에
+    단말은 처음 결과로 답하지만(최근 8개 기억), 순서가 뒤바뀐 늦은 EXPIRED 가 OK 를 덮으면 안 된다.
+    LOCAL → OK 는 허용(현장 조작이 끝나 적용했다는 뜻, §3.10.11)."""
+    if current == TargetStatus.OK.value and result != TargetStatus.OK.value:
+        return current
+    return result
 
 
 # ── 순수 함수 ────────────────────────────────────────────────────────────
@@ -152,10 +168,12 @@ class Dispatcher:
     """MqttConnection 의 on_message. 의존성(버퍼·큐)을 들고 있어 람다 대신 클래스다."""
 
     def __init__(
-        self, *, buffer: TelemetryBuffer | None, config_sync: ConfigSyncQueue | None
+        self, *, buffer: TelemetryBuffer | None, config_sync: ConfigSyncQueue | None,
+        retrier: CommandRetrier | None = None,
     ) -> None:
         self._buffer = buffer
         self._config_sync = config_sync
+        self._retrier = retrier
         #: `t` 키로 보고하는 단말. 로그는 uuid 당 한 번.
         self._legacy_t: set[str] = set()
 
@@ -205,6 +223,12 @@ class Dispatcher:
             elif kind is TopicKind.EVENT:
                 await self.handle_event(db, uuid, msg_type, data, now)
 
+        # 5차 자동 재시도: REGISTER 트랜잭션이 커밋된 **뒤**(선점 쿼리가 방금 쓴 행을 보도록).
+        # 큐는 FIFO 라 방금 넣은 REGISTER_ACK 다음에 나간다.
+        if (kind is TopicKind.REGISTER and self._retrier is not None
+                and msg_type == MsgType.REGISTER.value):
+            await self._retrier.on_device_messages([uuid], reason="register")
+
     # ── REGISTER ────────────────────────────────────────────────────────
     async def handle_register(
         self, db: AsyncSession, uuid: str, data: dict[str, Any], now: dt.datetime
@@ -232,12 +256,13 @@ class Dispatcher:
         await presence.apply_presence(db, {uuid: True}, now, source="register")
 
         row = (await db.execute(
-            select(*CONFIG_COLUMNS, Device.site, Device.state_reason).where(Device.uuid == uuid)
+            select(*CONFIG_COLUMNS, Device.site, Device.state_reason, Device.grp)
+            .where(Device.uuid == uuid)
         )).first()
         if row is None:  # 방금 upsert 했으니 없을 수 없다
             return
         cfg = DeviceConfigRow(*row[:len(CONFIG_COLUMNS)])
-        site, state_reason = row[len(CONFIG_COLUMNS)], row[len(CONFIG_COLUMNS) + 1]
+        site, state_reason, grp = row[len(CONFIG_COLUMNS):len(CONFIG_COLUMNS) + 3]
 
         # RETIRED 단말이 다시 REGISTER 를 보냈다 = 같은 보드를 다른 곳에 재설치했다(docs/05
         # 상태 전이 표). 빈 retain 상태라 승인 절차를 처음부터 다시 밟는다 → PENDING.
@@ -259,7 +284,7 @@ class Dispatcher:
             return
         # 1. REGISTER_ACK 는 상태와 무관하게 **항상**, 즉시 (사양서 §3.3, S-7).
         self._config_sync.offer_register_ack(
-            register_ack_job_for(uuid=uuid, state=state, site=site, reason=state_reason)
+            register_ack_job_for(uuid=uuid, state=state, site=site, reason=state_reason, grp=grp)
         )
         # 2. ACTIVE 일 때만 cv 비교 → CONFIG_SET (S-10, S-13). FIFO 라 ACK 뒤에 나간다.
         await decide_and_enqueue(
@@ -287,14 +312,8 @@ class Dispatcher:
             await self._handle_config_ack(db, uuid, data, now)
             return
 
-        if msg_type == MsgType.CMD_ACK.value:
-            seq = _int(data.get("seq"))
-            inserted = await _insert_event(
-                db, uuid=uuid, kind=EventKind.CMD_ACK, payload=data,
-                key=dedup_key(uuid, "CMD_ACK", seq, data), received_at=now,
-            )
-            if inserted and seq is not None:
-                await self._ack_command(db, uuid, seq, str(data.get("result") or "OK"), data, now)
+        if msg_type in COMMAND_ACK_TYPES:
+            await self._handle_command_ack(db, uuid, data, now)
             return
 
         metrics.unknown_type += 1
@@ -335,14 +354,15 @@ class Dispatcher:
             # CONFIG 를 보낸 것이라 버그다 — 판정이 막았어야 한다.
             metrics.config_ack_state += 1
             row = (await db.execute(
-                select(Device.state, Device.site, Device.state_reason).where(Device.uuid == uuid)
+                select(Device.state, Device.site, Device.state_reason, Device.grp)
+                .where(Device.uuid == uuid)
             )).first()
             if row is not None and row[0] == DeviceState.ACTIVE.value:
                 log.warning("CONFIG_ACK STATE %s 인데 DB 는 ACTIVE — REGISTER_ACK 재발행", uuid)
                 if self._config_sync is not None:
-                    self._config_sync.offer_register_ack(
-                        register_ack_job_for(uuid=uuid, state=row[0], site=row[1], reason=row[2])
-                    )
+                    self._config_sync.offer_register_ack(register_ack_job_for(
+                        uuid=uuid, state=row[0], site=row[1], reason=row[2], grp=row[3]
+                    ))
             else:
                 log.error("CONFIG_ACK STATE %s (DB state=%s) — ACTIVE 전에 CONFIG 가 나갔다",
                           uuid, row[0] if row else None)
@@ -356,6 +376,101 @@ class Dispatcher:
                 self._config_sync.clear_cooldown(uuid)
             return
         log.warning("CONFIG_ACK 알 수 없는 result=%r %s cv=%s", result, uuid, cv)
+
+    async def _handle_command_ack(
+        self, db: AsyncSession, uuid: str, data: dict[str, Any], now: dt.datetime
+    ) -> None:
+        """COMMAND_ACK (사양서 §3.10.11, ADR-005).
+
+        1. device_event(COMMAND_ACK) — dedup 키로 QoS1 재전송을 거른다(걸리면 여기서 끝).
+        2. command 가 COMMAND 이고 이 단말이 **대상 스냅숏에 있어야** 한다(§1.1.5 seq·uuid 대조).
+           모르는 seq·스냅숏 밖 단말은 경고 + command_ack_mismatch.
+        3. command_target: status(= result, OK 는 안 내려감), acked_at, ack. 첫 응답이면
+           command.acked_count + 1.
+        4. OK 면 device.override_* (until = 그 대상에 마지막으로 보낸 ts + dur).
+        5. 대상이 다 응답했으면 종료 판정(finish_due)을 이 seq 하나에 바로 돌린다.
+        """
+        seq = _int(data.get("seq"))
+        result = str(data.get("result") or "").strip().upper()
+        inserted = await _insert_event(
+            db, uuid=uuid, kind=EventKind.COMMAND_ACK, payload=data,
+            key=dedup_key(uuid, "COMMAND_ACK", seq, data), received_at=now,
+        )
+        if not inserted or seq is None:
+            return
+        metrics.command_ack += 1
+
+        cmd = (await db.execute(
+            select(Command.type, Command.target_kind, Command.payload, Command.sent_at,
+                   Command.expected_count, Command.acked_count)
+            .where(Command.seq == seq)
+        )).first()
+        if cmd is None or cmd[0] != MsgType.COMMAND.value:
+            metrics.command_ack_mismatch += 1
+            log.warning("모르는 seq 의 COMMAND_ACK %s seq=%s (지운 명령이거나 위조)", uuid, seq)
+            return
+        target = (await db.execute(
+            select(CommandTarget).where(CommandTarget.seq == seq, CommandTarget.uuid == uuid)
+            .with_for_update()
+        )).scalar_one_or_none()
+        if target is None:
+            metrics.command_ack_mismatch += 1
+            log.warning("seq=%s 대상 스냅숏에 없는 단말의 COMMAND_ACK %s (보낸 뒤 그룹에 들어옴?)",
+                        seq, uuid)
+            return
+        if result not in ACK_RESULTS:
+            # 상태는 두고 원본만 남긴다 — 모르는 값으로 집계를 흐리지 않는다.
+            log.warning("COMMAND_ACK 알 수 없는 result=%r %s seq=%s", result, uuid, seq)
+            target.ack = data
+            return
+
+        first = target.status == TargetStatus.PENDING.value
+        target.status = next_target_status(target.status, result)
+        target.acked_at = now
+        target.ack = data
+        if first:
+            await db.execute(
+                update(Command).where(Command.seq == seq)
+                .values(acked_count=Command.acked_count + 1)
+            )
+
+        if result == TargetStatus.OK.value:
+            await self._apply_override(db, uuid, seq, cmd[1], cmd[2] or {}, target, now)
+
+        if first and (cmd[5] or 0) + 1 >= (cmd[4] or 0):
+            await db.flush()
+            await finish_due(db, now, seqs=[seq])
+
+    async def _apply_override(
+        self, db: AsyncSession, uuid: str, seq: int, target_kind: str,
+        payload: dict[str, Any], target: CommandTarget, now: dt.datetime,
+    ) -> None:
+        """OK 응답 → device.override_* (§3.10.8). until 기준은 그 단말이 적용한 발송의 ts —
+        첫 발송이면 payload.ts, 재시도였으면 last_sent_at(재발송 ts 와 같은 초)."""
+        sent_at = target.last_sent_at
+        if sent_at is None:
+            try:
+                sent_at = parse_kst_ts(str(payload.get("ts")))
+            except ValueError:
+                sent_at = now
+        device = (await db.execute(
+            select(Device).where(Device.uuid == uuid).with_for_update()
+        )).scalar_one_or_none()
+        if device is None:
+            return
+        current = OverrideState(device.override_act, device.override_level,
+                                device.override_seq, device.override_until)
+        dur = payload.get("dur")
+        new = override_after_ok(
+            current, act=str(payload.get("act") or ""), level=override_level_for(target_kind),
+            seq=seq, sent_at=sent_at, dur=int(dur) if isinstance(dur, int) else None, now=now,
+        )
+        if new is None:
+            return
+        device.override_act = new.act
+        device.override_level = new.level
+        device.override_seq = new.seq
+        device.override_until = new.until
 
     async def _ack_command(
         self, db: AsyncSession, uuid: str, seq: int, result: str, data: dict[str, Any],

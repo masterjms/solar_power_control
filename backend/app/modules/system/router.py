@@ -1,4 +1,4 @@
-"""/health · /api/metrics · /api/admin/*"""
+"""/health · /api/metrics · /api/me · /api/admin/*"""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core import ids
+from app.core.auth import Principal, current_user
 from app.core.metrics import metrics
 from app.db import get_db
 from app.modules.deps import get_broker_log, get_buffer, get_config_sync, get_connection
@@ -78,6 +79,12 @@ async def get_metrics(
     # uint32 상한 근접 경보 (docs/03 command.seq).
     snapshot["cmd_seq_alert"] = current is not None and current >= ids.SEQ_ALERT_THRESHOLD
     return snapshot
+
+
+@router.get("/api/me")
+async def me(principal: Principal = Depends(current_user)) -> dict[str, str]:
+    """현재 사용자·역할(ADR-005). 화면이 최고관리자 전용 버튼(전체 명령·트리 편집)을 숨긴다."""
+    return {"user": principal.user, "role": principal.role}
 
 
 @router.post("/api/admin/rollup")

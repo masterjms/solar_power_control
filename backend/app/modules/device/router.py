@@ -43,9 +43,12 @@ async def list_devices(
     state: str | None = Query(default=None),
     online: bool | None = Query(default=None, description="is_online 판정값으로 필터"),
     q: str | None = Query(default=None, max_length=64, description="uuid 또는 site 부분 일치"),
+    node_id: int | None = Query(default=None, description="5차: 그 트리 노드 아래 전체"),
+    remote: bool | None = Query(default=None, description="5차: remote_active 로 필터"),
     db: AsyncSession = Depends(get_db),
 ) -> DevicePage:
-    return await service.list_devices(db, page=page, size=size, state=state, online=online, q=q)
+    return await service.list_devices(db, page=page, size=size, state=state, online=online, q=q,
+                                      node_id=node_id, remote=remote)
 
 
 @router.get(f"/{_UUID_PATH}", response_model=DeviceOut)

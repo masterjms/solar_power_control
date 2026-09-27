@@ -148,7 +148,8 @@ RETIRED  → PENDING(같은 보드 재설치. 빈 retain 상태에서 REGISTER �
 # 5차 API (2026-09-27, ADR-005)
 
 모든 `/api/*` 요청의 사용자 = 헤더 `X-Remote-User`(nginx Basic auth). 역할은 `SUPER_ADMIN_USERS` 로 판정.
-최고관리자 전용 API 는 관리자에게 403 `FORBIDDEN`.
+최고관리자 전용 API 는 관리자에게 403 `FORBIDDEN`. 헤더가 없으면 `APP_ENV=dev` 만 최고관리자 `local`, 그 외는 관리자 `anonymous`.
+구현: `backend/app/modules/{region,command}/`, 규칙 `app/core/command_rules.py`, 처리 흐름 docs/02 §16.
 
 ### `GET /api/me` → `{"user":"admin","role":"super_admin"|"admin"}`
 
@@ -162,7 +163,9 @@ RETIRED  → PENDING(같은 보드 재설치. 빈 retain 상태에서 REGISTER �
 ```
 
 ### `GET /api/geo/search?query=경기도 군포시 금산로 91`
-카카오 로컬 주소 검색 프록시(`KAKAO_REST_API_KEY`). 키가 없으면 503 `GEO_UNAVAILABLE`.
+카카오 로컬 주소 검색 프록시(`KAKAO_REST_API_KEY`). 키가 없으면 503 `GEO_UNAVAILABLE`(카카오 HTTP 오류·5초 시간 초과도 같은 503,
+`detail.reason` = `NO_KEY`/`HTTP`/`TIMEOUT`/`CONNECT`). 최대 10건, 같은 법정동은 한 번만. 법정동코드(`address.b_code`)가 없는 행은 뺀다.
+`sido` 는 정식 이름("경기" → "경기도"), 세종처럼 시군구가 없으면 `sigungu` 에 시도 이름을 다시 넣는다. `dong` = `region_3depth_name`(법정동).
 ```json
 [{"address_name":"경기 군포시 금정동 ...","bjd_code":"4141010400","sido":"경기도","sigungu":"군포시","dong":"금정동","lat":37.36,"lon":126.93}]
 ```
@@ -170,19 +173,24 @@ RETIRED  → PENDING(같은 보드 재설치. 빈 retain 상태에서 REGISTER �
 ### `POST /api/regions/from-address` (최고관리자) `{"query":"..."}` 또는 `{"pick":{GeoResult}}`
 검색 첫 결과(또는 고른 결과)로 시도·시군구·법정동을 find-or-create. 말단 반환(201, 이미 있으면 200).
 개발 환경(`APP_ENV=dev`)에서는 `{"sido","sigungu","dong","bjd_code","lat"?,"lon"?}` 직접 입력도 허용(카카오 키 없이 시험).
+응답 = 위 목록의 한 항목(카운트 포함). 운영에서 직접 입력 → 422(`detail.reason="MANUAL_NOT_ALLOWED"`), 검색 결과 없음 → 422(`NO_RESULT`).
+말단은 법정동코드로 찾는다(이미 있으면 이름·위치가 달라도 그 말단, 200).
 
 ### `PATCH /api/regions/{id}` (최고관리자) `{"name"}` · `DELETE /api/regions/{id}` (최고관리자)
-자식 또는 배정된 단말이 있으면 409 `REGION_IN_USE`.
+자식 또는 배정된 단말이 있으면 409 `REGION_IN_USE`(`detail.children`, `detail.devices`). 이름 중복(같은 부모) 422.
+PATCH → 목록 항목 모양, DELETE → `{"id","deleted":true}`. 없는 id 404 `REGION_NOT_FOUND`.
 
 ## 단말 배정
 
-- `PATCH /api/devices/{uuid}/config` 에 `node_id` 추가(말단만, 아니면 422 `NODE_NOT_LEAF`). `null` 이면 배정 해제.
-  바뀌면 `grp`·`bjd_code` 갱신 → REGISTER_ACK retain 재발행(`register_ack_republished`).
+- `PATCH /api/devices/{uuid}/config` 에 `node_id` 추가(말단만, 아니면 422 `NODE_NOT_LEAF`, 없는 id 404 `REGION_NOT_FOUND`).
+  `null` 이면 배정 해제(`grp`·`bjd_code` 도 null). 바뀌면 `grp`·`bjd_code` 갱신 → REGISTER_ACK retain 재발행(`register_ack_republished`).
+  `node_id` 와 `bjd_code` 를 같이 보내면 말단의 코드가 이긴다. 응답에 `node_id`, `grp` 추가.
 - `PATCH /api/devices/{uuid}/state` 에 `node_id` 추가. ACTIVE 로 갈 때 단말에 말단이 없고 `APPROVE_REQUIRES_NODE=true` 면 409 `NODE_REQUIRED`.
+  `APPROVE_REQUIRES_NODE` 를 **안 적으면** 운영 true, `APP_ENV=dev` 는 false. 응답 `StateOut` 에 `node_id`, `grp` 추가.
 - REGISTER_ACK: `{"type":"REGISTER_ACK","uuid","state"[,"site"][,"grp"][,"reason"]}` — `grp` 는 배정돼 있으면 항상 싣는다.
 - `DeviceOut` 추가: `node_id`, `node_name`, `node_path`(예 "경기도 > 안양시 만안구 > 안양동"), `override_act`, `override_level`, `override_seq`, `override_until`,
-  `remote_active`(= `last_telemetry.md == 2 AND override_until > now`), `remote_remaining_sec`.
-- 목록 필터 추가: `node_id`(그 노드 아래 전체), `remote=true`.
+  `remote_active`(= `last_telemetry.md == 2 AND override_until > now`), `remote_remaining_sec`(until 이 미래면 남은 초 — md 와 무관, 지났으면 null).
+- 목록 필터 추가: `node_id`(그 노드 아래 전체, 없는 id 404), `remote=true|false`.
 
 ## 명령
 
@@ -192,9 +200,12 @@ RETIRED  → PENDING(같은 보드 재설치. 빈 retain 상태에서 REGISTER �
  "act":"on"|"off"|"pwm"|"auto", "ch":[1,2], "pwm":[70,40],
  "dur":3600 | null, "dur_preset":"30m"|"1h"|"3h"|"tonight"|null, "exp":30}
 ```
-- `ch` 기본 `[1,2]`, 값 1~3 중복 없음. `pwm` 은 `act=pwm` 일 때만, `ch` 와 같은 길이, 0~100.
-- `act != auto` 면 `dur`(1~86400) 또는 `dur_preset` 중 하나 필수. `tonight` = 대상 좌표 기준 오늘 소등 시각까지 남은 초(suntable).
-- `kind=all` 은 최고관리자만.
+- `ch` 기본 `[1,2]`, 값 1~3 중복 없음(빈 배열 422). `pwm` 은 `act=pwm` 일 때만(그 외에 주면 422), `ch` 와 같은 길이, 0~100.
+- `act != auto` 면 `dur`(1~86400) 또는 `dur_preset` 중 **정확히 하나**. `act=auto` 면 둘 다 없어야 한다(422).
+  `30m`=1800, `1h`=3600, `3h`=10800. `tonight` = 대상 좌표 기준 **다음 소등(아침) 시각**까지 남은 초(suntable, 올림, 1~86400) —
+  소등 전 새벽이면 오늘 아침, 그 뒤면 내일 아침. 좌표: 노드 좌표(없으면 첫 하위 말단) / 단말 lat·lon(없으면 그 말단) / 없으면 서울.
+- `exp` 기본 `COMMAND_EXP_SEC`(30), 1~3600. `target.id`: device = uuid(대소문자 무관), node = region id(숫자·문자열).
+- `kind=all` 은 최고관리자만. 없는 노드 404 `REGION_NOT_FOUND`, 없는 단말 404 `DEVICE_NOT_FOUND`. 검증 실패는 422 `VALIDATION_FAILED`(`detail.field`).
 
 ### `POST /api/commands/preview` → 보내기 전 확인
 ```json
@@ -202,6 +213,7 @@ RETIRED  → PENDING(같은 보드 재설치. 빈 retain 상태에서 REGISTER �
  "topics":["iotlight/group/411711010000/cmd"],"dur":3600,"payload":{...seq 제외...}}
 ```
 `low_battery` = 대상 중 `last_telemetry.er & 1`(BATT_LOW) — 점등 명령이어도 안 켜질 수. `not_active` = 대상 범위 안이지만 ACTIVE 가 아니라 제외된 수.
+`online`/`offline` 은 ACTIVE 대상 중 `is_online` 기준. `payload` 의 `ts` 는 미리보기 시각(보낼 때 다시 찍는다). 대상 0 이어도 200(`expected:0`).
 
 ### `POST /api/commands` → 201
 ```json
@@ -209,16 +221,22 @@ RETIRED  → PENDING(같은 보드 재설치. 빈 retain 상태에서 REGISTER �
  "payload":{"type":"COMMAND","seq":57,"ts":"260927T013512","exp":30,"act":"off","ch":[1,2],"dur":3600},
  "expected":120,"sent_at":"...","created_by":"admin"}
 ```
-브로커 끊김이면 503 `MQTT_UNAVAILABLE`(명령 행 롤백).
+브로커 끊김이면 503 `MQTT_UNAVAILABLE`(명령 행 삭제 — 서버는 **발행 전에 커밋**하고 실패하면 보상 삭제한다. seq 는 되감지 않는다).
+대상 ACTIVE 0 → 409 `NO_TARGETS`. `label`: device = `"<site> (<uuid>)"`(site 없으면 uuid), node = 경로, all = `"전체"`.
+개별(device) 명령만 `device_event(COMMAND_SENT)` 를 남긴다.
 
 ### `GET /api/commands?limit=50&uuid=&node_id=`
-이력(최신순): `{"seq","created_by","target_kind","target_id","target_label","act","ch","pwm","dur","sent_at","finished_at","result",
-"expected_count","counts":{"OK":n,"LOCAL":n,"EXPIRED":n,"BAD":n,"STATE":n,"pending":n}}`.
+이력(최신순, `type=COMMAND` 만 — PING 제외): `{"seq","created_by","target_kind","target_id","target_label","act","ch","pwm","dur","sent_at","finished_at","result",
+"expected_count","counts":{"OK":n,"LOCAL":n,"EXPIRED":n,"BAD":n,"STATE":n,"pending":n}}`. `limit` 1~500.
+`uuid` = 그 단말이 대상 스냅숏에 든 명령(그룹·전체 포함). `node_id` = 그 노드 또는 하위 노드를 대상으로 한 node 명령.
+`result` = `OK`(전부 OK) / `PARTIAL` / `TIMEOUT`(응답 0), 진행 중이면 null(종료 판정은 30초마다 + 마지막 응답 직후).
 
 ### `GET /api/commands/{seq}` → 위 + `targets:[{"uuid","site","node_name","status","attempts","last_sent_at","acked_at","is_online"}]`
 
 ### `POST /api/commands/{seq}/retry` `{"uuids":[...]|null}`
 무응답(pending)·EXPIRED 대상만 **개별 topic** 으로 같은 seq·새 ts 재발송. → `{"resent":n}`. 종료된 명령이면 409 `COMMAND_FINISHED`.
+본문 생략 가능(= 전부). 시도 상한·최소 간격은 보지 않지만(사람이 누른 것) **그 단말에 더 새 명령이 있으면 건너뛴다**
+(옛 명령이 새 명령을 덮지 않게). 발행은 응답 큐(토큰 버킷)로 수 초 안에 나간다. 브로커 끊김 503. 자동 재시도는 docs/02 §16.3.
 
 ### 에러 코드 추가
 `FORBIDDEN` 403 · `GEO_UNAVAILABLE` 503 · `REGION_IN_USE` 409 · `NODE_NOT_LEAF` 422 · `NODE_REQUIRED` 409 · `REGION_NOT_FOUND` 404 · `COMMAND_NOT_FOUND` 404 · `COMMAND_FINISHED` 409 · `NO_TARGETS` 409(대상 ACTIVE 단말 0)

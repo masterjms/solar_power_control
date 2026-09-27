@@ -7,10 +7,12 @@
   · REST API          요청/응답
   · MQTT 수신         브로커 구독 → 버퍼 → DB
   · TelemetryBuffer   1초 배치 flush
-  · ConfigSyncQueue   REGISTER_ACK · CONFIG_SET 발행(토큰 버킷)
+  · ConfigSyncQueue   REGISTER_ACK · CONFIG_SET · COMMAND 재시도 발행(토큰 버킷)
+  · CommandRetrier    5차 COMMAND 자동 재시도 후보(단말 송신 직후, ADR-005)
   · BrokerLogTail     Mosquitto 로그 → online/offline (ADR-004)
   · /internal/mqtt/*  브로커 인증 플러그인(go-auth)이 부르는 HMAC 인증·ACL (ADR-003)
-  · 스케줄러          파티션 점검(매일), 일 집계(00:30 KST), 계정 파일 재조정(5분)
+  · 스케줄러          파티션 점검(매일), 일 집계(00:30 KST), 계정 파일 재조정(5분),
+                      COMMAND 종료 판정(30초)
 
 기동 순서가 중요하다: HMAC 키 검사 → 파티션 확인 → 계정 내보내기 → 버퍼 warm → MQTT 연결.
 키가 틀리면 전 단말이 못 붙으므로 기동 때 죽는 편이 낫고, 파티션이 없으면 첫 flush 가
@@ -32,17 +34,21 @@ from app.config import settings
 from app.core import device_password
 from app.db import SessionFactory, engine, session_scope
 from app.errors import register_exception_handlers
+from app.modules.command.router import router as command_router
 from app.modules.device import service as device_service
 from app.modules.device.router import router as device_router
 from app.modules.mqtt_auth.router import router as mqtt_auth_router
 from app.modules.profile.router import router as profile_router
+from app.modules.region.router import geo_router
+from app.modules.region.router import router as region_router
 from app.modules.system.router import router as system_router
+from app.mqtt.command_retry import CommandRetrier
 from app.mqtt.config_sync import ConfigSyncQueue
 from app.mqtt.connection import MqttConnection
 from app.mqtt.handlers import Dispatcher
 from app.mqtt.publisher import MqttPublisher
 from app.mqtt.telemetry_buffer import TelemetryBuffer
-from app.tasks import daily_rollup, partitions
+from app.tasks import command_finisher, daily_rollup, partitions
 from app.tasks.broker_log import BrokerLogTail
 
 # ⚠ Windows 에서 `python -m uvicorn app.main:app` 로 띄우면 MQTT 가 죽는다.
@@ -105,13 +111,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     connection = MqttConnection(on_message=lambda t, raw: dispatcher(t, raw))
     publisher = MqttPublisher(connection)
     config_sync = ConfigSyncQueue(publisher)
-    telemetry_buffer = TelemetryBuffer(config_sync=config_sync)
-    dispatcher = Dispatcher(buffer=telemetry_buffer, config_sync=config_sync)
+    retrier = CommandRetrier(config_sync)
+    telemetry_buffer = TelemetryBuffer(config_sync=config_sync, retrier=retrier)
+    dispatcher = Dispatcher(buffer=telemetry_buffer, config_sync=config_sync, retrier=retrier)
     broker_log = BrokerLogTail()
 
     app.state.mqtt = connection
     app.state.publisher = publisher
     app.state.config_sync = config_sync
+    app.state.command_retrier = retrier
     app.state.telemetry_buffer = telemetry_buffer
     app.state.broker_log = broker_log
 
@@ -129,6 +137,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("last_sq 캐시 적재: %d대", warmed)
     except Exception:  # noqa: BLE001
         log.exception("last_sq 캐시 적재 실패 — 첫 TM 의 유실/재부팅 판정을 건너뛴다")
+
+    # 5차: 재시도 후보 uuid 집합을 DB 에서 채운다. 비어 있으면 단말 송신마다 쿼리가 0 번이다.
+    try:
+        async with SessionFactory() as db:
+            pending = await retrier.rebuild(db)
+        log.info("COMMAND 재시도 후보: %d대", pending)
+    except Exception:  # noqa: BLE001
+        log.exception("COMMAND 재시도 후보 적재 실패 — 30초 뒤 종료 판정 타이머가 다시 채운다")
 
     await config_sync.start()
     await telemetry_buffer.start()
@@ -154,10 +170,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _reconcile_accounts, "interval", minutes=5, id="accounts-reconcile",
         coalesce=True, max_instances=1,
     )
+    # 5차 COMMAND 종료 판정(OK/PARTIAL/TIMEOUT) + 재시도 후보 집합 재조정.
+    scheduler.add_job(
+        command_finisher.run, "interval", seconds=30, id="command-finisher",
+        kwargs={"retrier": retrier}, coalesce=True, max_instances=1,
+    )
     scheduler.start()
     app.state.scheduler = scheduler
 
-    log.info("기동 완료 (env=%s, root=%s)", settings.app_env, settings.mqtt_topic_root)
+    log.info("기동 완료 (env=%s, root=%s, 승인에 말단 필요=%s, 최고관리자=%s)",
+             settings.app_env, settings.mqtt_topic_root, settings.approve_requires_node,
+             sorted(settings.super_admin_users))
     yield
 
     # ── 종료 ────────────────────────────────────────────────────────────
@@ -212,3 +235,6 @@ app.include_router(system_router)
 app.include_router(mqtt_auth_router)
 app.include_router(profile_router)
 app.include_router(device_router)
+app.include_router(region_router)
+app.include_router(geo_router)
+app.include_router(command_router)

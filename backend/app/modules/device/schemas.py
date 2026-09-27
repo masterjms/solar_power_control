@@ -57,6 +57,19 @@ class DeviceOut(BaseModel):
     address: str | None = None
     bjd_code: str | None = None
     grp: str | None = None
+    #: 5차 말단 법정동. node_name = 그 이름, node_path = "경기도 > 안양시 만안구 > 안양동".
+    node_id: int | None = None
+    node_name: str | None = None
+    node_path: str | None = None
+    #: 5차 원격 제어 표시(§3.10.8). 마지막 OK 명령 기준. 재부팅이면 NULL.
+    override_act: str | None = None
+    override_level: str | None = None
+    override_seq: int | None = None
+    override_until: dt.datetime | None = None
+    #: last_telemetry.md == 2 AND override_until > now.
+    remote_active: bool = False
+    #: override_until 까지 남은 초(미래일 때만. md 와 무관 — OK 직후 TM 전에도 보인다).
+    remote_remaining_sec: int | None = None
     last_register_at: dt.datetime | None = None
     last_telemetry_at: dt.datetime | None = None
     last_seen_at: dt.datetime | None = None
@@ -97,6 +110,9 @@ class StatePatch(BaseModel):
     site: str | None = Field(default=None, max_length=SITE_MAX_LEN)
     #: REJECTED 사유 등. REJECTED 면 REGISTER_ACK reason 으로 나간다.
     reason: str | None = Field(default=None, max_length=200)
+    #: 5차 말단 법정동 배정(보낸 경우만 바꾼다, null = 해제). ACTIVE 로 갈 때 말단이 없고
+    #: APPROVE_REQUIRES_NODE 면 409 NODE_REQUIRED.
+    node_id: int | None = None
 
     @field_validator("state")
     @classmethod
@@ -111,6 +127,8 @@ class StateOut(BaseModel):
     uuid: str
     state: str
     site: str | None
+    node_id: int | None = None
+    grp: str | None = None
     #: 브로커 끊김이면 false — DB 는 커밋됐다. POST …/register-ack 로 재발행하거나 다음
     #: REGISTER 때 자동.
     published: bool
@@ -137,6 +155,8 @@ class ConfigPatch(BaseModel):
     site: str | None = Field(default=None, max_length=SITE_MAX_LEN)
     address: str | None = Field(default=None, max_length=500)
     bjd_code: str | None = Field(default=None, min_length=10, max_length=10)
+    #: 5차 말단 법정동(말단 아니면 422 NODE_NOT_LEAF). null = 배정 해제. grp·bjd_code 가 따라간다.
+    node_id: int | None = None
 
     @field_validator("ti_override")
     @classmethod
@@ -163,6 +183,8 @@ class ConfigPatchOut(BaseModel):
     site: str | None
     address: str | None
     bjd_code: str | None
+    node_id: int | None = None
+    grp: str | None = None
     #: 적용값이 바뀌어 cv_server 를 올렸다.
     cv_bumped: bool
     #: CONFIG_SET 을 즉시 발행했다(ACTIVE 만). false 면 reason 을 본다.
@@ -171,7 +193,7 @@ class ConfigPatchOut(BaseModel):
     reason: str | None
     #: 발행했거나(published) 다음 송신 때 나갈 CONFIG_SET 전체값.
     payload: dict[str, Any] | None
-    #: site 가 바뀌어 REGISTER_ACK 를 다시 retain 했다.
+    #: site 또는 grp(말단 배정)가 바뀌어 REGISTER_ACK 를 다시 retain 했다.
     register_ack_republished: bool
 
 

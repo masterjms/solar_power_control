@@ -107,8 +107,20 @@ class Device(Base):
     address: Mapped[str | None] = mapped_column(Text)
     #: 법정동코드 10자리. 5차 group_id 재료.
     bjd_code: Mapped[str | None] = mapped_column(CHAR(10))
-    #: 5차 그룹 12자리. 단말당 1개. REGISTER_ACK 로 보낸다.
+    #: 5차 그룹 12자리. 단말당 1개. REGISTER_ACK 로 보낸다. node_id 배정 시 같이 쓴다(비정규화 —
+    #: REGISTER 마다 트리를 조인하지 않고 ACK 를 만들려고).
     grp: Mapped[str | None] = mapped_column(CHAR(12), index=True)
+    #: 5차 말단 법정동(region.level='dong'). 승인 때 고른다(§3.9.3 #2).
+    node_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("region.id"), index=True)
+
+    # ── 원격 제어 표시 (5차, §3.10.8 S-19) ──────────────
+    #: 마지막 OK 명령의 act(on/off/pwm). auto 로 해제되면 NULL.
+    override_act: Mapped[str | None] = mapped_column(Text)
+    #: device / group / all — 그 명령이 어느 계층 슬롯에 들어갔나.
+    override_level: Mapped[str | None] = mapped_column(Text)
+    override_seq: Mapped[int | None] = mapped_column(BigInteger)
+    #: 보낸 시각(ts) + dur. 재부팅(sq 감소)이면 단말이 잃으므로 NULL 로 지운다.
+    override_until: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     # ── 최신값 캐시 ─────────────────────────────────────
     last_register_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))

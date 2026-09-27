@@ -4,6 +4,10 @@
 단말 송신 이후일 수 있다. 승인(REGISTER_ACK)은 retain 이라 재접속 때 반드시 받는다. CONFIG_SET
 은 비retain 이라 즉시 1회 보내고, 못 받았으면 다음 TELEMETRY 의 cv 불일치가 다시 보낸다.
 발행 실패(브로커 끊김)는 예외로 올리지 않고 `published=false` 로 알린다 — DB 는 커밋한다.
+
+5차(ADR-005): 말단 법정동 배정(node_id) → grp·bjd_code 동기화 → REGISTER_ACK 재발행(grp 가
+거기 실린다). 승인에는 말단이 필요하다(APPROVE_REQUIRES_NODE). DeviceOut 에 트리 경로와
+원격 제어 표시(override·remote_active)가 붙는다.
 """
 
 from __future__ import annotations
@@ -16,19 +20,30 @@ from sqlalchemy import Select, case, delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.constants import STATE_TRANSITIONS, DeviceState, EventKind, MsgType
 from app.core import ids, mqtt_accounts, presence
+from app.core.command_rules import remote_status
 from app.core.config_rules import (
     bump_cv_server,
     effective_config,
     next_cv_server,
     should_send_config,
 )
-from app.errors import DeviceNotFound, InvalidStateTransition, ProfileNotFound
+from app.core.region_tree import Tree, group_id
+from app.errors import (
+    DeviceNotFound,
+    InvalidStateTransition,
+    NodeNotLeaf,
+    NodeRequired,
+    ProfileNotFound,
+    RegionNotFound,
+)
 from app.models.command import Command
 from app.models.device import Device
 from app.models.event import DeviceEvent
 from app.models.profile import ConfigProfile
+from app.models.region import Region
 from app.models.system import MqttAccountExport
 from app.models.telemetry import Telemetry
 from app.modules.device.schemas import (
@@ -44,7 +59,8 @@ from app.modules.device.schemas import (
     StatePatch,
     TelemetryOut,
 )
-from app.mqtt.config_sync import ConfigSyncQueue
+from app.modules.region.service import load_tree
+from app.mqtt.config_sync import ConfigSyncQueue, register_ack_job_for
 from app.mqtt.publisher import MqttPublisher, config_set_payload, register_ack_payload
 
 log = logging.getLogger(__name__)
@@ -63,8 +79,16 @@ def _now() -> dt.datetime:
 
 
 # ── 출력 변환 ────────────────────────────────────────────────────────────
-def _to_out(device: Device, profile: ConfigProfile | None, now: dt.datetime) -> DeviceOut:
+def _to_out(
+    device: Device, profile: ConfigProfile | None, now: dt.datetime, tree: Tree | None = None
+) -> DeviceOut:
     data: dict[str, Any] = {c.name: getattr(device, c.name) for c in Device.__table__.columns}
+    node = tree.get(device.node_id) if tree is not None else None
+    data["node_name"] = node.name if node else None
+    data["node_path"] = tree.path_name(device.node_id) if tree is not None else None
+    data["remote_active"], data["remote_remaining_sec"] = remote_status(
+        device.last_telemetry, device.override_until, now
+    )
     # FK 가 보장하지만 프로필을 못 찾으면(방금 지움) 화면이 죽지 않게 0 으로 표시한다.
     p_ti, p_ka = (profile.ti, profile.ka) if profile else (0, 0)
     eff = effective_config(
@@ -84,10 +108,20 @@ def _to_out(device: Device, profile: ConfigProfile | None, now: dt.datetime) -> 
 
 
 # ── 조회 ─────────────────────────────────────────────────────────────────
-def _filtered(state: str | None, online: bool | None, q: str | None, now: dt.datetime) -> Select:
+def _filtered(
+    state: str | None, online: bool | None, q: str | None, now: dt.datetime, *,
+    node_ids: list[int] | None = None, remote: bool | None = None,
+) -> Select:
     stmt = select(Device, ConfigProfile).join(
         ConfigProfile, ConfigProfile.id == Device.profile_id, isouter=True
     )
+    if node_ids is not None:
+        # 그 노드 아래 전체(자신 포함). 트리는 메모리에서 펼쳤다 — 말단 수천 개여도 IN 이면 된다.
+        stmt = stmt.where(Device.node_id.in_(node_ids or [-1]))
+    if remote is not None:
+        # remote_active 의 SQL 판(core/command_rules.remote_status 와 같은 규칙).
+        active = (Device.last_telemetry["md"].astext == "2") & (Device.override_until > now)
+        stmt = stmt.where(active if remote else ~func.coalesce(active, False))
     if state:
         stmt = stmt.where(Device.state == state.upper())
     if online is True:
@@ -114,10 +148,16 @@ async def _counts(db: AsyncSession, now: dt.datetime) -> dict[str, int]:
 
 async def list_devices(
     db: AsyncSession, *, page: int, size: int, state: str | None, online: bool | None,
-    q: str | None,
+    q: str | None, node_id: int | None = None, remote: bool | None = None,
 ) -> DevicePage:
     now = _now()
-    base = _filtered(state, online, q, now)
+    tree = await load_tree(db)
+    node_ids = None
+    if node_id is not None:
+        if tree.get(node_id) is None:
+            raise RegionNotFound(detail={"id": node_id})
+        node_ids = tree.subtree_ids(node_id)
+    base = _filtered(state, online, q, now, node_ids=node_ids, remote=remote)
     total = await db.scalar(select(func.count()).select_from(base.subquery())) or 0
     # PENDING 먼저(승인 대기가 화면 맨 위), 그다음 최근 수신 순, NULL(한 번도 안 옴) 마지막.
     pending_first = case((Device.state == DeviceState.PENDING.value, 0), else_=1)
@@ -129,7 +169,7 @@ async def list_devices(
         )
     ).all()
     return DevicePage(
-        items=[_to_out(d, p, now) for d, p in rows], total=int(total), page=page, size=size,
+        items=[_to_out(d, p, now, tree) for d, p in rows], total=int(total), page=page, size=size,
         counts=await _counts(db, now),
     )
 
@@ -149,7 +189,7 @@ async def _get_with_profile(db: AsyncSession, uuid: str) -> tuple[Device, Config
 
 async def get_device(db: AsyncSession, uuid: str) -> DeviceOut:
     device, profile = await _get_with_profile(db, uuid)
-    return _to_out(device, profile, _now())
+    return _to_out(device, profile, _now(), await load_tree(db))
 
 
 async def list_telemetry(
@@ -205,14 +245,16 @@ async def _publish_register_ack(
 
     반환 (발행 성공, payload). 실패는 로그만 — 다음 REGISTER 때 큐가 다시 답한다.
     """
-    retired = device.state == DeviceState.RETIRED.value
-    reason = device.state_reason if device.state == DeviceState.REJECTED.value else None
+    # 모양(reason 은 REJECTED 만, grp 는 배정돼 있으면 항상)은 수신 경로와 같은 함수로 정한다.
+    job = register_ack_job_for(uuid=device.uuid, state=device.state, site=device.site,
+                               reason=device.state_reason, grp=device.grp)
+    retired = job.clear_after
     payload = register_ack_payload(
-        uuid=device.uuid, state=device.state, site=device.site, reason=reason
+        uuid=job.uuid, state=job.state, site=job.site, reason=job.reason, grp=job.grp
     )
     try:
         await publisher.publish_register_ack(
-            uuid=device.uuid, state=device.state, site=device.site, reason=reason
+            uuid=job.uuid, state=job.state, site=job.site, reason=job.reason, grp=job.grp
         )
         if retired:
             await publisher.clear_register_ack(uuid=device.uuid)
@@ -226,6 +268,28 @@ async def _publish_register_ack(
         event["retain_cleared"] = True
     await _event(db, device.uuid, EventKind.REGISTER_ACK, event, now)
     return True, payload
+
+
+async def _assign_node(db: AsyncSession, device: Device, node_id: int | None) -> bool:
+    """말단 배정/해제 → grp·bjd_code 동기화(ADR-005). grp 가 바뀌었으면 True(REGISTER_ACK 재발행).
+
+    말단(법정동)만 된다 — 상위 노드는 422 NODE_NOT_LEAF(단말은 그룹 하나만 구독, §3.10.4).
+    """
+    old_grp = device.grp
+    if node_id is None:
+        device.node_id = None
+        device.grp = None
+        device.bjd_code = None
+    else:
+        node = await db.get(Region, node_id)
+        if node is None:
+            raise RegionNotFound(detail={"id": node_id})
+        if node.level != "dong" or not node.bjd_code:
+            raise NodeNotLeaf(detail={"node_id": node_id, "level": node.level})
+        device.node_id = node.id
+        device.bjd_code = node.bjd_code
+        device.grp = group_id(node.bjd_code)
+    return (old_grp or None) != (device.grp or None)
 
 
 async def set_state(
@@ -246,6 +310,12 @@ async def set_state(
         raise InvalidStateTransition(
             detail={"from": old, "to": patch.state, "allowed": sorted(STATE_TRANSITIONS[old])}
         )
+    if "node_id" in patch.model_fields_set:
+        await _assign_node(db, device, patch.node_id)
+    if (patch.state == DeviceState.ACTIVE.value and device.node_id is None
+            and settings.approve_requires_node):
+        # 주소 없는 단말은 두지 않는다(§3.10.4) — 그룹 명령을 영영 못 받는다.
+        raise NodeRequired(detail={"uuid": uuid})
     now = _now()
     device.state = patch.state
     device.state_changed_at = now
@@ -256,12 +326,13 @@ async def set_state(
         device.cv_server = next_cv_server(device.cv_server, device.cv_device)
     await _event(db, uuid, EventKind.STATE_CHANGE, {
         "from": old, "to": patch.state, "site": device.site, "reason": patch.reason, "by": "admin",
+        "grp": device.grp,
     }, now)
     await db.flush()
 
     published, payload = await _publish_register_ack(db, device, publisher, now)
-    return StateOut(uuid=uuid, state=device.state, site=device.site, published=published,
-                    register_ack=payload)
+    return StateOut(uuid=uuid, state=device.state, site=device.site, node_id=device.node_id,
+                    grp=device.grp, published=published, register_ack=payload)
 
 
 async def republish_register_ack(
@@ -323,6 +394,10 @@ async def patch_config(
         device.address = patch.address
     if "bjd_code" in sent:
         device.bjd_code = patch.bjd_code
+    grp_changed = False
+    if "node_id" in sent:
+        # node_id 가 bjd_code 보다 우선 — 같이 오면 말단의 코드로 덮는다.
+        grp_changed = await _assign_node(db, device, patch.node_id)
 
     after = effective_config(
         ti_override=device.ti_override, ka_override=device.ka_override,
@@ -336,9 +411,9 @@ async def patch_config(
         device.cv_server = bump_cv_server(device.cv_server, device.cv_device)
     await db.flush()
 
-    # site 변경 → REGISTER_ACK 재발행 (RETIRED 제외).
+    # site·grp 변경 → REGISTER_ACK 재발행 (RETIRED 제외). 둘 다 retain ACK 에 실린다.
     ack_republished = False
-    if device.site != old_site and device.state in _SITE_REPUBLISH_STATES:
+    if (device.site != old_site or grp_changed) and device.state in _SITE_REPUBLISH_STATES:
         ack_republished, _ = await _publish_register_ack(db, device, publisher, now)
 
     published = False
@@ -377,7 +452,8 @@ async def patch_config(
         ti_override=device.ti_override, ka_override=device.ka_override,
         ti_effective=after.ti, ka_effective=after.ka, lat=device.lat, lon=device.lon,
         site=device.site, address=device.address, bjd_code=device.bjd_code,
-        cv_bumped=changed, published=published, reason=reason, payload=payload,
+        node_id=device.node_id, grp=device.grp, cv_bumped=changed, published=published,
+        reason=reason, payload=payload,
         register_ack_republished=ack_republished,
     )
 

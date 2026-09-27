@@ -97,6 +97,64 @@ class MqttUnavailable(ServiceUnavailable):
     message = "MQTT 브로커에 연결되어 있지 않아 명령을 보낼 수 없습니다."
 
 
+# ── 5차 (docs/05 "에러 코드 추가") ────────────────────────────────────────
+class Forbidden(ApiError):
+    """최고관리자 전용(전체 명령, 트리 편집)을 관리자가 부름 (ADR-005 권한)."""
+
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "FORBIDDEN"
+    message = "최고관리자만 할 수 있습니다."
+
+
+class GeoUnavailable(ServiceUnavailable):
+    """카카오 키 없음·카카오 오류·시간 초과. 운영자가 코드를 손으로 치게 두지 않는다(§3.10.5)."""
+
+    code = "GEO_UNAVAILABLE"
+    message = "주소 검색을 사용할 수 없습니다."
+
+
+class RegionNotFound(NotFound):
+    code = "REGION_NOT_FOUND"
+    message = "없는 법정동 트리 노드입니다."
+
+
+class RegionInUse(Conflict):
+    code = "REGION_IN_USE"
+    message = "하위 노드나 배정된 단말이 있어 지울 수 없습니다."
+
+
+class NodeNotLeaf(ValidationFailed):
+    """단말은 말단 법정동(그룹)에만 넣는다(§3.9.3 #2)."""
+
+    code = "NODE_NOT_LEAF"
+    message = "단말은 말단 법정동에만 배정할 수 있습니다."
+
+
+class NodeRequired(Conflict):
+    """APPROVE_REQUIRES_NODE=true 인데 말단 없이 승인하려 함.
+    §3.10.4 "주소 없는 단말은 두지 않는다" — 그룹 명령을 영영 못 받는다."""
+
+    code = "NODE_REQUIRED"
+    message = "승인하려면 먼저 말단 법정동을 배정해야 합니다."
+
+
+class CommandNotFound(NotFound):
+    code = "COMMAND_NOT_FOUND"
+    message = "없는 명령입니다."
+
+
+class CommandFinished(Conflict):
+    code = "COMMAND_FINISHED"
+    message = "이미 종료된 명령입니다."
+
+
+class NoTargets(Conflict):
+    """대상 범위 안에 ACTIVE 단말이 없다 — 보내도 받을 단말이 없다(PENDING 등은 STATE 로 거부)."""
+
+    code = "NO_TARGETS"
+    message = "명령을 받을 승인(ACTIVE) 단말이 없습니다."
+
+
 class PayloadTooLarge(ApiError):
     """MQTT payload 가 단말 AT 버퍼(384B)를 넘었을 때. 보내봐야 못 받으므로 발행 전에 막는다."""
 

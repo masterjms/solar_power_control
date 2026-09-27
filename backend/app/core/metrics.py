@@ -40,6 +40,15 @@ class Metrics:
         #: 단말 Flash 기록 실패. 쿨다운을 풀어 다음 송신 때 바로 재전송한다.
         self.config_ack_flash = 0
         self.pong_mismatch = 0
+        # ── 5차 COMMAND (ADR-005) ──
+        #: COMMAND 발행 수(topic 단위 — 상위 노드 명령은 하위 말단 수만큼).
+        self.command_published = 0
+        #: 개별 재시도 발송(자동 + 수동).
+        self.command_retry_sent = 0
+        #: COMMAND_ACK 수신(중복 제외).
+        self.command_ack = 0
+        #: 모르는 seq / 대상 스냅숏에 없는 단말의 COMMAND_ACK.
+        self.command_ack_mismatch = 0
         self.mqtt_reconnects = 0
         self.mqtt_publish_failures = 0
         #: 1차 펌웨어(`t` 키)로 보고 있는 단말 수.
@@ -84,6 +93,10 @@ class Metrics:
             "config_ack_state": self.config_ack_state,
             "config_ack_flash": self.config_ack_flash,
             "pong_mismatch": self.pong_mismatch,
+            "command_published": self.command_published,
+            "command_retry_sent": self.command_retry_sent,
+            "command_ack": self.command_ack,
+            "command_ack_mismatch": self.command_ack_mismatch,
             "legacy_t_devices": self.legacy_t_devices,
             "mqtt_auth_ok": self.mqtt_auth_ok,
             "mqtt_auth_fail": self.mqtt_auth_fail,

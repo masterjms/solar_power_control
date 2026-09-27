@@ -37,7 +37,10 @@ class MsgType(str, Enum):
     TM = "TM"
     PONG = "PONG"
     CONFIG_ACK = "CONFIG_ACK"
+    #: 5차 이전 초안 이름. 받기만 한다(COMMAND_ACK 와 같이 처리).
     CMD_ACK = "CMD_ACK"
+    #: 5차 원격 명령 응답(사양서 §3.10.11).
+    COMMAND_ACK = "COMMAND_ACK"
     LWT = "LWT"
     EV = "EV"
     # 서버 → 단말
@@ -45,6 +48,8 @@ class MsgType(str, Enum):
     CONFIG_SET = "CONFIG_SET"
     REGISTER_ACK = "REGISTER_ACK"
     CMD = "CMD"
+    #: 5차 원격 제어(사양서 §3.10.7). "CMD" 로 줄이지 않는다.
+    COMMAND = "COMMAND"
 
 
 class EventKind(str, Enum):
@@ -64,7 +69,11 @@ class EventKind(str, Enum):
     #: CONFIG_SET 발행(payload 그대로).
     CONFIG_SET = "CONFIG_SET"
     CONFIG_ACK = "CONFIG_ACK"
+    #: 5차 전 이름. 새로 쓰지 않는다(읽기만 — 이전 이력).
     CMD_ACK = "CMD_ACK"
+    #: 5차 COMMAND 개별 발송(첫 발송·재시도). 그룹/전체 발송은 command 행 하나로 충분해 안 쓴다.
+    COMMAND_SENT = "COMMAND_SENT"
+    COMMAND_ACK = "COMMAND_ACK"
     PONG = "PONG"
 
 
@@ -93,3 +102,60 @@ class TopicKind(str, Enum):
     STATUS = "status"
     RESULT = "result"
     EVENT = "event"
+
+
+# ── 5차: 법정동 트리 · COMMAND (ADR-005, 사양서 §3.10) ─────────────────────
+class RegionLevel(str, Enum):
+    """region.level. 말단(그룹)은 dong 뿐이다 — bjd_code 를 가진 노드."""
+
+    SIDO = "sido"
+    SIGUNGU = "sigungu"
+    DONG = "dong"
+
+
+#: 법정동코드 10자리(카카오 `b_code` 앞 10자리). group_id = 이것 + 확장 "00" (§3.10.4).
+BJD_CODE_RE = re.compile(r"^[0-9]{10}$")
+GROUP_SUFFIX = "00"
+
+#: COMMAND.act (사양서 §17).
+COMMAND_ACTS = ("on", "off", "pwm", "auto")
+#: COMMAND.ch — 1 주등, 2 입간판, 3 예비(§3.10.7). 관리 화면은 1·2 만 보인다.
+COMMAND_CHANNELS = (1, 2, 3)
+COMMAND_DEFAULT_CH = (1, 2)
+#: COMMAND.dur 범위(초). auto 는 dur 이 없다.
+DUR_MIN_SEC = 1
+DUR_MAX_SEC = 86_400
+#: 화면 유지시간 버튼(§3.9.3 #4). tonight 은 suntable 로 계산한다.
+DUR_PRESETS = {"30m": 1_800, "1h": 3_600, "3h": 10_800}
+DUR_PRESET_TONIGHT = "tonight"
+
+
+class TargetStatus(str, Enum):
+    """command_target.status. pending 외에는 단말 COMMAND_ACK.result 그대로(§3.10.11)."""
+
+    PENDING = "pending"
+    OK = "OK"
+    LOCAL = "LOCAL"
+    EXPIRED = "EXPIRED"
+    BAD = "BAD"
+    STATE = "STATE"
+
+
+#: 단말이 보낼 수 있는 result 값.
+ACK_RESULTS = frozenset({"OK", "LOCAL", "EXPIRED", "BAD", "STATE"})
+#: 다시 보내 볼 만한 상태 — 무응답과 늦게 도착해 버려진 것(ADR-005).
+RETRYABLE_STATUSES = frozenset({TargetStatus.PENDING.value, TargetStatus.EXPIRED.value})
+#: 받은 것으로 끝난 상태. EXPIRED 는 시도를 다 쓴 경우에만 종결로 본다.
+TERMINAL_STATUSES = frozenset({"OK", "LOCAL", "BAD", "STATE"})
+
+
+class OverrideLevel(str, Enum):
+    """device.override_level — 단말 override 슬롯 계층(§3.10.8). 개별 > 그룹 > 전체."""
+
+    DEVICE = "device"
+    GROUP = "group"
+    ALL = "all"
+
+
+#: 높을수록 우선.
+OVERRIDE_PRIORITY = {"device": 3, "group": 2, "all": 1}

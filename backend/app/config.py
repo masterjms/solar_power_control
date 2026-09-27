@@ -129,6 +129,40 @@ class Settings(BaseSettings):
     rollup_hour_kst: int = 0
     rollup_minute_kst: int = 30
 
+    # ── 5차: 법정동 트리 · 원격 명령 · 권한 (ADR-005) ───────────
+    #: 카카오 로컬 REST 키. 비우면 주소 검색이 503 GEO_UNAVAILABLE(개발은 직접 입력으로 시험).
+    #: 서버 전용 비밀값 — 로그·응답에 절대 내보내지 않는다.
+    kakao_rest_api_key: str = ""
+    #: 최고관리자 사용자명(쉼표). nginx Basic auth 사용자명이 X-Remote-User 로 들어온다.
+    super_admin_users_raw: str = Field(default="admin", validation_alias="SUPER_ADMIN_USERS")
+    #: 승인(ACTIVE)에 말단 법정동 배정을 요구할지. **안 적으면** 운영 true, APP_ENV=dev 는 false
+    #: — 개발 compose 로 도는 3차 시나리오는 노드 없이 승인한다(approve_requires_node 참고).
+    approve_requires_node_raw: bool | None = Field(
+        default=None, validation_alias="APPROVE_REQUIRES_NODE"
+    )
+    #: COMMAND.exp 기본(초). 단말 RTC - ts 가 이보다 크면 EXPIRED(사양서 §3.10.7, 30 권장).
+    command_exp_sec: int = 30
+    #: 명령 종료 판정 상한(초). 이 뒤로는 자동 재시도도 멈춘다(ADR-005).
+    command_timeout_sec: int = 900
+    #: 대상 단말 1대당 최대 발송 횟수(첫 발송 포함). 자동 재시도 상한.
+    command_max_attempts: int = 3
+    #: 같은 대상에 다시 보내기까지 최소 간격(초). 단말 송신 직후 재시도의 연타 방지.
+    command_retry_min_sec: int = 20
+    #: "오늘 밤" 유지시간 계산에 쓸 좌표가 없을 때의 기본값(서울시청).
+    default_lat: float = 37.5665
+    default_lon: float = 126.9780
+
+    @property
+    def super_admin_users(self) -> frozenset[str]:
+        return frozenset(u.strip() for u in self.super_admin_users_raw.split(",") if u.strip())
+
+    @property
+    def approve_requires_node(self) -> bool:
+        """명시값이 있으면 그것, 없으면 dev 만 false(3차 시나리오 호환). 운영 기본 true."""
+        if self.approve_requires_node_raw is not None:
+            return self.approve_requires_node_raw
+        return self.app_env != "dev"
+
     @property
     def cors_origins(self) -> list[str]:
         return [item.strip() for item in self.cors_origins_raw.split(",") if item.strip()]

@@ -8,12 +8,13 @@
   2. 크기 검사 (384B 초과 = 발행 전에 실패, 300B 초과 = 경고)
   3. QoS / retain 정책 — cmd 는 절대 retain 하지 않고, retain 은 REGISTER_ACK 하나뿐(ADR-002)
 
-5차 CMD · 6차 SCH · 7차 OTA 빌더가 여기 추가된다. 그때도 규칙은 같다 —
+5차 COMMAND(command_payload) · 6차 SCH · 7차 OTA 빌더가 여기 있다/추가된다. 그때도 규칙은 같다 —
 빌더는 dict 를 만들고, 실제 전송은 _send() 하나만 쓴다.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 from collections.abc import Mapping
@@ -68,6 +69,40 @@ def config_set_payload(
 
 def ping_payload(*, seq: int) -> dict[str, Any]:
     return {"type": MsgType.PING.value, "seq": seq}
+
+
+#: COMMAND.ts 형식 — 보낸 시각 KST `YYMMDDThhmmss` (사양서 §3.10.7).
+KST = dt.timezone(dt.timedelta(hours=9), "KST")
+
+
+def kst_ts(at: dt.datetime) -> str:
+    """aware datetime → `YYMMDDThhmmss`(KST). 단말은 RTC - ts > exp 면 EXPIRED 로 버린다."""
+    return at.astimezone(KST).strftime("%y%m%dT%H%M%S")
+
+
+def parse_kst_ts(value: str) -> dt.datetime:
+    """`YYMMDDThhmmss` → aware datetime(KST). 형식이 틀리면 ValueError."""
+    return dt.datetime.strptime(value, "%y%m%dT%H%M%S").replace(tzinfo=KST)
+
+
+def command_payload(
+    *, seq: int, ts: str, exp: int, act: str, ch: list[int] | tuple[int, ...],
+    pwm: list[int] | tuple[int, ...] | None = None, dur: int | None = None,
+) -> dict[str, Any]:
+    """COMMAND (사양서 §3.10.7) — 키 순서 `type seq ts exp act ch [pwm] [dur]` 고정.
+
+    `pwm` 은 act=pwm 일 때만, `dur` 은 auto 가 아닐 때만 싣는다(auto 는 dur 이 없다). 값 검증은
+    호출부(core/command_rules)가 끝낸 뒤다 — 여기서는 모양만 만든다.
+    """
+    payload: dict[str, Any] = {
+        "type": MsgType.COMMAND.value, "seq": seq, "ts": ts, "exp": exp, "act": act,
+        "ch": list(ch),
+    }
+    if act == "pwm" and pwm is not None:
+        payload["pwm"] = list(pwm)
+    if act != "auto" and dur is not None:
+        payload["dur"] = dur
+    return payload
 
 
 def register_ack_payload(
@@ -153,3 +188,13 @@ class MqttPublisher:
         """개별 cmd. retain=False 고정 — cmd 에 retain 을 걸면 재접속 단말에 옛 명령이
         되살아난다(5차 소등 명령이면 사고다)."""
         await self._send(topics.device_cmd(uuid), payload, qos=_QOS_CMD, retain=False)
+
+    async def publish_command(self, *, topic: str, payload: Mapping[str, Any]) -> None:
+        """5차 COMMAND — 개별·그룹·전체 cmd topic 공용. QoS1, **retain=False 고정**.
+
+        topic 은 topics.device_cmd / group_cmd / all_cmd 로 만든 것만 받는다. 다른 topic 으로
+        새지 않게 여기서 한 번 더 본다(오타 하나가 "명령이 조용히 안 감"이 된다)."""
+        if not topic.endswith("/cmd"):
+            raise ValueError(f"COMMAND 는 cmd topic 으로만 보낸다: {topic}")
+        await self._send(topic, payload, qos=_QOS_CMD, retain=False)
+        metrics.command_published += 1
