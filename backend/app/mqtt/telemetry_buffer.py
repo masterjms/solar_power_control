@@ -41,7 +41,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,6 +49,7 @@ from app.config import settings
 from app.constants import DeviceState, EventKind
 from app.core.metrics import metrics
 from app.db import session_scope
+from app.models.command import CommandTarget
 from app.models.device import Device
 from app.models.event import DeviceEvent
 from app.models.telemetry import Telemetry
@@ -306,11 +307,27 @@ class TelemetryBuffer:
                     await db.execute(pg_insert(DeviceEvent).values(events))
                     # 5차: 재부팅한 단말은 override 슬롯을 전부 잃고 스케줄로 시작한다(§3.10.7) —
                     # 화면의 "원격 n분 남음"도 같이 지운다.
-                    rebooted = sorted({e["uuid"] for e in events
-                                       if e["kind"] == EventKind.REBOOT.value})
-                    if rebooted:
+                    # 단, 재부팅 TM 을 받은 **뒤에** 보낸 명령으로 기록된 override 는 지우지 않는다.
+                    # flush 는 최대 1초 늦게 돌아서, 그 사이 새 명령의 ACK 가 먼저 기록될 수 있다
+                    # (시나리오 B11 에서 실제로 지워졌다). 재부팅은 드물어 단말별로 본다.
+                    reboot_at: dict[str, dt.datetime] = {}
+                    for e in events:
+                        if e["kind"] == EventKind.REBOOT.value:
+                            reboot_at[e["uuid"]] = max(
+                                reboot_at.get(e["uuid"], e["received_at"]), e["received_at"])
+                    for uuid, at in sorted(reboot_at.items()):
+                        sent_at = (
+                            select(CommandTarget.last_sent_at)
+                            .where(CommandTarget.seq == Device.override_seq,
+                                   CommandTarget.uuid == Device.uuid)
+                            .correlate(Device)
+                            .scalar_subquery()
+                        )
                         await db.execute(
-                            update(Device).where(Device.uuid.in_(rebooted))
+                            update(Device)
+                            .where(Device.uuid == uuid,
+                                   or_(Device.override_seq.is_(None),
+                                       func.coalesce(sent_at, at) <= at))
                             .values(**OVERRIDE_CLEAR)
                         )
         except Exception:  # noqa: BLE001

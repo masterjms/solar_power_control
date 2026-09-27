@@ -469,8 +469,16 @@ async def ping(db: AsyncSession, uuid: str, publisher: MqttPublisher) -> PingOut
     payload = {"type": MsgType.PING.value, "seq": seq}
     db.add(Command(seq=seq, target_kind="device", target_id=uuid, type=MsgType.PING.value,
                    payload=payload, expected_count=1, sent_at=_now()))
-    await db.flush()
-    await publisher.publish_ping(uuid=uuid, seq=seq)
+    # 발행 **전에** 커밋한다. 단말(시뮬레이터)의 PONG 은 수 ms 안에 오는데, 커밋이 응답 뒤라면
+    # 수신 처리가 command 행을 못 보고 "모르는 seq" 로 버린다(S2-08 에서 실제 발생 — COMMAND 와
+    # 같은 이유, docs/02 §16). 발행이 실패하면 행을 지우고 예외를 올린다.
+    await db.commit()
+    try:
+        await publisher.publish_ping(uuid=uuid, seq=seq)
+    except Exception:
+        await db.execute(delete(Command).where(Command.seq == seq))
+        await db.commit()
+        raise
     return PingOut(uuid=uuid, seq=seq)
 
 
