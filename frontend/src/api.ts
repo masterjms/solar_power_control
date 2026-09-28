@@ -96,8 +96,36 @@ export interface Device {
   override_until: string | null;
   remote_active: boolean; // last_telemetry.md == 2 AND override_until > now
   remote_remaining_sec: number | null;
+  /** 채널별 원격(F/W 2026-09-27-9, "채널마다 마지막 명령 하나"). "1" 주등, "2" 입간판. 끝난 채널은 없다. */
+  override_ch?: Record<string, { act: CmdAct; seq: number; level: string; remaining_sec: number }>;
   // S-23 (docs/05 "단말 설정 API"): device_settings.sync, 없으면 "unknown"
   settings_sync?: SettingsSync;
+}
+
+/** GET /api/devices/map — 좌표가 있는 단말만. */
+export interface MapPoint {
+  uuid: string;
+  site: string | null;
+  lat: number;
+  lon: number;
+  state: DeviceState;
+  is_online: boolean;
+  on: number | null;
+  node_name: string | null;
+}
+
+/** GET /api/devices/energy — 오늘(KST 0시~지금) 누적. */
+export interface EnergyToday {
+  samples: number;
+  gen_wh: number;
+  use_wh: number;
+  co2_g: number;
+}
+
+/** GET /api/ui-config */
+export interface UiConfig {
+  kakao_js_key: string | null;
+  ghg_kg_per_kwh: number;
 }
 
 export interface DeviceCounts {
@@ -494,6 +522,13 @@ export const api = {
     return request<DeviceList>(`/api/devices?${q}`);
   },
   getDevice: (uuid: string) => request<Device>(`/api/devices/${uuid}`),
+  mapPoints: (state?: string) =>
+    request<MapPoint[]>(`/api/devices/map${state ? `?state=${encodeURIComponent(state)}` : ""}`),
+  energyToday: (uuids: string[]) => {
+    const q = new URLSearchParams();
+    uuids.forEach((u) => q.append("uuid", u));
+    return uuids.length ? request<Record<string, EnergyToday>>(`/api/devices/energy?${q}`) : Promise.resolve({});
+  },
   telemetry: (uuid: string, limit = 50) =>
     request<Telemetry[]>(`/api/devices/${uuid}/telemetry?limit=${limit}`),
   events: (uuid: string, limit = 50, kind?: string) =>
@@ -511,11 +546,14 @@ export const api = {
 
   // 5차: 권한
   me: () => request<Me>("/api/me"),
+  uiConfig: () => request<UiConfig>("/api/ui-config"),
 
   // 5차: 법정동 트리
   listRegions: () => request<Region[]>("/api/regions"),
   geoSearch: (query: string) =>
     request<GeoResult[]>(`/api/geo/search?${new URLSearchParams({ query })}`),
+  geoReverse: (lat: number, lon: number) =>
+    request<GeoResult | null>(`/api/geo/reverse?${new URLSearchParams({ lat: String(lat), lon: String(lon) })}`),
   createRegionFromAddress: (body: FromAddressBody) =>
     request<Region>("/api/regions/from-address", json("POST", body)),
   patchRegion: (id: number, body: { name: string }) =>

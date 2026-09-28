@@ -10,8 +10,16 @@ const decimals = (scale: number) => (scale > 1 ? Math.round(Math.log10(scale)) :
 /** 단말 정수 → 화면 글자(값 / scale). */
 export function toText(it: SettingsItem, v: number | null | undefined): string {
   if (v === null || v === undefined) return "";
-  return it.scale > 1 ? (v / it.scale).toFixed(decimals(it.scale)) : String(v);
+  if (it.scale <= 1) return String(v);
+  // 전압은 소수 1자리로 보인다(문제점 #2 "12.5 V"). 단말 값이 12.75 처럼 0.01 단위면 그대로 2자리 —
+  // 반올림해 보이면 손대지 않아도 "바뀜"이 되고, 쓰면 현장 값이 바뀐다.
+  let t = (v / it.scale).toFixed(decimals(it.scale)); // "12.50" / "12.75" / "12.00"
+  t = t.replace(/0+$/, "");
+  return t.endsWith(".") ? `${t}0` : t;
 }
+
+/** 슬라이더 한 칸(단말 정수). 전압(x100)은 0.1 V = 10. */
+export const sliderStep = (it: SettingsItem) => (it.scale >= 100 ? it.scale / 10 : 1);
 
 /** 화면 글자 → 단말 정수. 비었거나 숫자가 아니면 null. */
 export function parseText(it: SettingsItem, t: string | undefined): number | null {

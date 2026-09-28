@@ -106,3 +106,27 @@ export function eventSummary(kind: string, payload: unknown): string {
       return JSON.stringify(payload);
   }
 }
+
+/** 배터리 전압 x100 → 소수 1자리 "24.5 V"(문제점 #11). */
+export function volt1(v: number | null | undefined): string {
+  return v === null || v === undefined ? "" : `${(v / 100).toFixed(1)} V`;
+}
+
+/** 전력 x100 → 소수 1자리 W. 값이 없으면 공백(문제점 #11 "정보가 없으면 공백"). */
+export function watt1(v: number | null | undefined): string {
+  return v === null || v === undefined ? "" : `${(v / 100).toFixed(1)} W`;
+}
+
+/** 에너지 Wh → 소수 1자리. 1 kWh 넘으면 kWh. */
+export function wh1(v: number | null | undefined): string {
+  if (v === null || v === undefined) return "";
+  return v >= 1000 ? `${(v / 1000).toFixed(1)} kWh` : `${v.toFixed(1)} Wh`;
+}
+
+/** 온실가스 g → gCO2eq / kgCO2eq / MgCO2eq(톤) 자동 단위. */
+export function co2Text(g: number | null | undefined): string {
+  if (g === null || g === undefined) return "";
+  if (g >= 1e6) return `${(g / 1e6).toFixed(2)} MgCO2eq`;
+  if (g >= 1e3) return `${(g / 1e3).toFixed(1)} kgCO2eq`;
+  return `${g.toFixed(1)} gCO2eq`;
+}

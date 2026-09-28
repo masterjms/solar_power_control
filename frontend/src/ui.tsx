@@ -37,10 +37,11 @@ export function PlaceholderCard({
   );
 }
 
+/** 상태 문구는 짧게 — 운영·대기·중지·거부·폐기(문제점 #11). 영문 state 는 마우스를 올리면. */
 const STATE_LABEL: Record<DeviceState, [string, string]> = {
-  PENDING: ["승인 대기", "b-blue"],
+  PENDING: ["대기", "b-blue"],
   ACTIVE: ["운영", "b-ok"],
-  SUSPENDED: ["일시 중지", "b-warn"],
+  SUSPENDED: ["중지", "b-warn"],
   REJECTED: ["거부", "b-alarm"],
   RETIRED: ["폐기", "b-off"],
 };
@@ -52,7 +53,7 @@ export function stateLabel(s: DeviceState): string {
 /** 승인 상태 배지. 목업의 .badge.b-* 색을 state 에 대응. */
 export function StateBadge({ state }: { state: DeviceState }) {
   const [label, cls] = STATE_LABEL[state] ?? [state, "b-off"];
-  return <span className={`badge ${cls}`} title={state}>{label} <span style={{ fontWeight: 400, marginLeft: 4 }}>{state}</span></span>;
+  return <span className={`badge ${cls}`} title={state}>{label}</span>;
 }
 
 /** 온라인 표시 — 목업의 통신 열처럼 점 + 글자. */
@@ -81,6 +82,20 @@ export function Battery({ sc }: { sc: number | null | undefined }) {
 export function Lamp({ on }: { on: number | null | undefined }) {
   if (on === null || on === undefined) return <><span className="bulb" /> <span className="muted">알 수 없음</span></>;
   return on ? <><span className="bulb on" /> 점등</> : <><span className="bulb" /> 소등</>;
+}
+
+/** 채널 점등 한 칸 — "주등 ● 점등". pw 가 없으면 공백. */
+export function ChLamp({ label, on }: { label: string; on: boolean | null }) {
+  if (on === null) return <span className="chl"><small>{label}</small></span>;
+  return <span className="chl"><small>{label}</small><span className={`bulb ${on ? "on" : ""}`} />{on ? "점등" : "소등"}</span>;
+}
+
+/** 주등(PWM1)·입간판(PWM2) 점등 — Telemetry pw 배열(%)이 0 보다 크면 점등. pw 가 없으면 on 으로 주등만. */
+export function LampPair({ t }: { t: { on?: number; pw?: number[] } | null | undefined }) {
+  const pw = t?.pw;
+  const main = pw && pw.length > 0 ? pw[0] > 0 : t?.on === undefined || t?.on === null ? null : t.on === 1;
+  const sign = pw && pw.length > 1 ? pw[1] > 0 : null;
+  return <span className="chp"><ChLamp label="주등" on={main} /><ChLamp label="입간판" on={sign} /></span>;
 }
 
 export function Met({ l, v, h, cls }: { l: ReactNode; v: ReactNode; h?: ReactNode; cls?: string }) {

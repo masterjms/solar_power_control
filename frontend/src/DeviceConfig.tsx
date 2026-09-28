@@ -3,13 +3,13 @@
 import { Fragment, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api, ApiErrorException, Device, DeviceEvent, DeviceSettings, SchedulePreview, SettingsHistoryRow, SettingsItem,
-  SettingsSchema, SettingsSent, SettingsSync, SettingsTblIn, errorText,
+  SettingsSchema, SettingsSent, SettingsSync, SettingsTbl, SettingsTblIn, errorText,
 } from "./api";
 import { eventSummary, localTime, relTime, str } from "./format";
 import { Card, Met, OnlineMark, StateBadge, SyncBadge, nf, syncLabel } from "./ui";
 import {
   RuleError, TBL_SRC, allItems, checkRules, effPwm, fmtVal, hoursText, parseText, rangeError, regionError,
-  signed, stageKeys, toText, utf8Bytes,
+  signed, sliderStep, stageKeys, toText, utf8Bytes,
 } from "./settingsLogic";
 
 const REFRESH_MS = 10_000;
@@ -164,12 +164,22 @@ function isDirty(c: FieldCtx, it: SettingsItem): boolean {
   return !!c.values && parseText(it, c.edit[it.key]) !== c.values[it.key];
 }
 
-function NumInput({ c, it, width }: { c: FieldCtx; it: SettingsItem; width?: number }) {
-  const step = it.scale > 1 ? 1 / it.scale : 1;
+function NumInput({ c, it }: { c: FieldCtx; it: SettingsItem }) {
+  // 전압(x100)은 0.1 V 씩 — 화면은 소수 1자리(문제점 #2). 단말 값이 0.01 단위면 그 값 그대로 보인다.
+  const step = it.scale > 1 ? sliderStep(it) / it.scale : 1;
   return (
     <input className="num" type="number" step={step} min={it.min / (it.scale || 1)} max={it.max / (it.scale || 1)}
-      style={width ? { width } : undefined} aria-label={it.label} disabled={c.disabled}
+      aria-label={it.label} disabled={c.disabled}
       value={shownText(c, it)} onChange={(e) => c.set(it.key, e.target.value)} />
+  );
+}
+
+/** 선택바 — 모든 항목에 같은 자리(문제점 #2 "항목이름 선택바 숫자 단위"). 값은 단말 정수. */
+function Slider({ c, it }: { c: FieldCtx; it: SettingsItem }) {
+  const v = parseText(it, shownText(c, it));
+  return (
+    <input type="range" min={it.min} max={it.max} step={sliderStep(it)} value={v ?? it.min} disabled={c.disabled}
+      aria-label={`${it.label} 선택바`} onChange={(e) => c.set(it.key, toText(it, Number(e.target.value)))} />
   );
 }
 
@@ -190,50 +200,115 @@ function FieldNote({ c, keys, help }: { c: FieldCtx; keys: string[]; help?: stri
   );
 }
 
+/** 한 줄 = 항목 이름 | 선택바 | 숫자 | 단위. */
 function Field({ c, it }: { c: FieldCtx; it: SettingsItem }) {
   const dirty = isDirty(c, it);
   const bad = c.bad.has(it.key) || !!c.serverErr[it.key] || (!!c.values && !!rangeError(it, parseText(it, c.edit[it.key])));
-  const tenth = it.unit === "x100ms"; // fade: 10 = 1.0초
-  const v = parseText(it, shownText(c, it));
   return (
     <div className={`fld ${bad ? "bad" : ""} ${c.values ? "" : "ref"}`.trim()} title={`${it.key} · 범위 ${toText(it, it.min)}~${toText(it, it.max)} · 기본 ${toText(it, it.default)}`}>
       <label>{dirty && <span className="mk edit" title="편집함, 아직 안 보냄" />}{it.label}</label>
-      <div className="in">
-        {it.widget === "slider" && (
-          <input type="range" min={it.min} max={it.max} value={v ?? it.min} disabled={c.disabled} aria-label={it.label}
-            onChange={(e) => c.set(it.key, toText(it, Number(e.target.value)))} />
-        )}
-        <NumInput c={c} it={it} />
-        {tenth && v !== null && <small className="muted">{(v / 10).toFixed(1)}초</small>}
-      </div>
+      <div className="in"><Slider c={c} it={it} /></div>
+      <NumInput c={c} it={it} />
       <span className="unit">{it.unit}</span>
       <FieldNote c={c} keys={[it.key]} help={it.help || undefined} />
     </div>
   );
 }
 
-/** time_h + time_m (+ 같은 단계의 slider) 를 한 줄로. */
+const pad2 = (n: number | null) => (n === null ? "" : String(n).padStart(2, "0"));
+
+/** 다단계 한 줄 = "1단계" | [시각(시계 아이콘) + 선택바] | 숫자 | %. 시·분은 시각 칸 하나로 고른다. */
 function TimeField({ c, h, m, pwm }: { c: FieldCtx; h: SettingsItem; m: SettingsItem; pwm?: SettingsItem }) {
   const its = [h, m, ...(pwm ? [pwm] : [])];
   const dirty = its.some((it) => isDirty(c, it));
   const bad = its.some((it) => c.bad.has(it.key) || c.serverErr[it.key]);
   const label = h.label.replace(/\s*시$/, "");
-  const pv = pwm ? parseText(pwm, shownText(c, pwm)) : null;
+  const hv = parseText(h, shownText(c, h));
+  const mv = parseText(m, shownText(c, m));
+  const time = hv === null || mv === null ? "" : `${pad2(hv)}:${pad2(mv)}`;
   return (
     <div className={`fld ${bad ? "bad" : ""} ${c.values ? "" : "ref"}`.trim()} title={its.map((i) => i.key).join(" · ")}>
       <label>{dirty && <span className="mk edit" title="편집함, 아직 안 보냄" />}{label}</label>
       <div className="in">
-        <NumInput c={c} it={h} width={52} /><span className="muted">:</span><NumInput c={c} it={m} width={52} />
-        {pwm && (
-          <>
-            <input type="range" min={pwm.min} max={pwm.max} value={pv ?? pwm.min} disabled={c.disabled} aria-label={pwm.label}
-              onChange={(e) => c.set(pwm.key, String(e.target.value))} />
-            <NumInput c={c} it={pwm} width={60} />
-          </>
-        )}
+        <input type="time" className="tm" value={time} disabled={c.disabled} aria-label={`${label} 시각`} step={60}
+          onChange={(e) => {
+            const mt = /^(\d{1,2}):(\d{2})/.exec(e.target.value);
+            if (!mt) return;
+            c.set(h.key, String(Number(mt[1])));
+            c.set(m.key, String(Number(mt[2])));
+          }} />
+        {pwm && <Slider c={c} it={pwm} />}
       </div>
+      {pwm ? <NumInput c={c} it={pwm} /> : <span />}
       <span className="unit">{pwm ? pwm.unit : ""}</span>
       <FieldNote c={c} keys={its.map((i) => i.key)} />
+    </div>
+  );
+}
+
+/** 오늘 밤 주등 밝기 막대(문제점 #2 그림) — 점등 → 시작 밝기 → 1~4단계 → 소등.
+ *  점등·소등 시각은 단말 표 조건으로 서버가 계산한 오늘 행 + 시작/종료 Offset. 표 조건을 모르면 그리지 않는다. */
+function StageBar({ schema, pv, tbl }: { schema: SettingsSchema; pv: (k: string) => number | null; tbl: SettingsTbl | null }) {
+  const [today, setToday] = useState<{ on: string; off: string } | null>(null);
+  const sig = tbl ? `${tbl.lat_e6}|${tbl.lon_e6}|${tbl.on}|${tbl.off}` : "";
+  useEffect(() => {
+    if (!tbl) return;
+    let alive = true;
+    api.schedulePreview({ lat: tbl.lat_e6 / 1e6, lon: tbl.lon_e6 / 1e6, on: tbl.on, off: tbl.off })
+      .then((p) => {
+        // 미리보기는 달마다 두 날(1일·16일)만 준다 — 오늘과 가장 가까운 날(점등 시각 차이 수 분)을 쓴다.
+        const doy = (m: number, d: number) => Math.round((Date.UTC(2026, m - 1, d) - Date.UTC(2026, 0, 1)) / 864e5);
+        const now = new Date();
+        const t = doy(now.getMonth() + 1, now.getDate());
+        const dist = (x: { month: number; day: number }) => {
+          const a = Math.abs(doy(x.month, x.day) - t);
+          return Math.min(a, 365 - a);
+        };
+        const r = [...p.rows].sort((a, b) => dist(a) - dist(b))[0];
+        if (alive && r) setToday({ on: r.on, off: r.off });
+      })
+      .catch(() => alive && setToday(null));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig]);
+  if (!tbl || !today) return <div className="cap">오늘 밤 막대는 단말에서 읽은 뒤(표 조건을 알아야) 보인다.</div>;
+
+  const toMin = (t: string) => {
+    const [a, b] = t.split(":").map(Number);
+    return a * 60 + b;
+  };
+  const items = allItems(schema);
+  const startOfs = items.find((i) => i.unit === "분" && /start/.test(i.key));
+  const stopOfs = items.find((i) => i.unit === "분" && /stop/.test(i.key));
+  // 시작 밝기 = 실제 출력 계산식의 곱하는 항목(schema.calc.keys 마지막)
+  const startPwm = items.find((i) => i.key === schema.calc.keys[schema.calc.keys.length - 1]);
+  const on = toMin(today.on) + (startOfs ? pv(startOfs.key) ?? 0 : 0);
+  const off = toMin(today.off) + (stopOfs ? pv(stopOfs.key) ?? 0 : 0);
+  const night = ((off - on) % 1440 + 1440) % 1440 || 1440;
+  const rel = (t: number) => ((t - on) % 1440 + 1440) % 1440; // 점등부터 몇 분 뒤
+  const segs: { from: number; pct: number | null }[] = [{ from: 0, pct: startPwm ? pv(startPwm.key) : null }];
+  stageKeys(schema).forEach((st) => {
+    const hv = pv(st.h), mv = pv(st.m);
+    const p = items.find((i) => i.key === st.h.replace(/_h$/, "_pwm"));
+    if (hv === null || mv === null) return;
+    const r = rel(hv * 60 + mv);
+    if (r > 0 && r < night) segs.push({ from: r, pct: p ? pv(p.key) : null });
+  });
+  segs.sort((a, b) => a.from - b.from);
+  const hhmm = (t: number) => `${pad2(Math.floor((((t % 1440) + 1440) % 1440) / 60))}:${pad2((((t % 1440) + 1440) % 1440) % 60)}`;
+  return (
+    <div className="stbar" title="DIP4 가 ON 일 때 다단계가 쓰인다">
+      <div className="bar">
+        {segs.map((sg, i) => {
+          const to = i + 1 < segs.length ? segs[i + 1].from : night;
+          const w = ((to - sg.from) / night) * 100;
+          const a = sg.pct === null ? 0.15 : 0.2 + (sg.pct / 100) * 0.8;
+          return <i key={i} style={{ width: `${w}%`, background: `rgba(245, 180, 0, ${a})` }} title={`${hhmm(on + sg.from)}~${hhmm(on + to)} ${sg.pct ?? "-"}%`}>{w > 7 ? `${sg.pct ?? "-"}%` : ""}</i>;
+        })}
+      </div>
+      <div className="lg"><span>점등 {hhmm(on)}</span><span>오늘 밤 주등</span><span>소등 {hhmm(off)}</span></div>
     </div>
   );
 }
@@ -641,6 +716,7 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
         {schema.groups.map((g) => (
           <Card key={g.id} title={g.title} meta={groupMeta(g.id, g.items.length)}>
             <GroupFields c={ctx} items={g.items} />
+            {g.id === stageGroupId && <StageBar schema={schema} pv={pv} tbl={t} />}
             {g.id === calcGroupId && mult && (
               <div className={`out ${values ? "" : "ref"}`.trim()} style={{ marginTop: "auto" }} title={schema.calc.text}>
                 <span>실제 출력 (x {pv(mult) ?? "-"}%)</span>

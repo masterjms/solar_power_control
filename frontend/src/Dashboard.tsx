@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import { api, Device, DeviceCounts, Health, errorText } from "./api";
-import { relTime, str } from "./format";
-import { Card, PlaceholderCard, nf } from "./ui";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api, Device, DeviceCounts, DeviceList as DeviceListRes, EnergyToday, Health, MapPoint, STATES, errorText } from "./api";
+import { co2Text, localTime, relTime, str, volt1, watt1, wh1 } from "./format";
+import { Battery, Card, LampPair, OnlineMark, PlaceholderCard, StateBadge, nf, stateLabel } from "./ui";
+import { DeviceMap } from "./KakaoMap";
+import { Pager, RemoteBadge, shortPath } from "./DeviceList";
+import { CommandForm, CommandResult, durText } from "./Command";
 
 const REFRESH_MS = 30_000;
 const SAMPLE = 500; // 목록 API 최대 size. ACTIVE 가 이보다 많으면 "표본 500대"
@@ -170,7 +173,7 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
       </Card>
 
       {/* 2행 */}
-      <PlaceholderCard title="지도" meta="법정동별 군집 · 알람 핀" className="h500" stage="7차" note="지도 API 키와 법정동 집계 API 뒤에 붙인다" />
+      <MapCard onSelect={onSelect} tick={tick} />
       <Card title="조치 필요" className="h500" meta={error ? <span className="err">{error}</span> : <span>{sampled ? "표본 기준" : ""}</span>}>
         <div className="tabs">
           {(["all", "pending", "offline", "mismatch"] as const).map((k) => (
@@ -200,10 +203,178 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
 
       {/* 4행 */}
       <PlaceholderCard title="최근 이벤트" meta="전체 단말" className="full h200" stage="6차" note="전체 이벤트 조회 API(GET /api/events) 추가 필요 — 지금은 단말별 이벤트만 드로어에서" />
+
+      {/* 5행 — 단말 목록(문제점 #11) */}
+      <DashDevices tick={tick} onSelect={onSelect} />
     </div>
   );
 }
 
 function d_label(d: Device): string {
   return `${d.site ?? "(장소 없음)"} · ${d.uuid}`;
+}
+
+/** 지도 — 좌표가 있는 단말 핀(점등 노랑·소등 초록·오프라인 회색·대기 파랑). 핀을 누르면 드로어. */
+function MapCard({ onSelect, tick }: { onSelect: (uuid: string) => void; tick: number }) {
+  const [points, setPoints] = useState<MapPoint[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.mapPoints().then((p) => alive && (setPoints(p), setErr(null))).catch((e) => alive && setErr(errorText(e)));
+    load();
+    const id = setInterval(load, REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [tick]);
+  const pick = useCallback((u: string) => onSelect(u), [onSelect]);
+  return (
+    <Card title="지도" className="h500" meta={err ? <span className="err">{err}</span> : <span>좌표 있는 단말 {nf(points.length)}대 · 핀 누르면 상세</span>}>
+      <DeviceMap points={points} onSelect={pick} height={430} />
+      <div className="keys-inline">
+        <span><span className="dot" style={{ background: "#f5b400" }} />점등</span>
+        <span><span className="dot" style={{ background: "#22a06b" }} />소등</span>
+        <span><span className="dot" style={{ background: "#8a94a6" }} />오프라인</span>
+        <span><span className="dot" style={{ background: "#3b82f6" }} />승인 대기</span>
+      </div>
+    </Card>
+  );
+}
+
+/** 대시보드 단말 목록(문제점 #11 탭 "2"). 행 아무 데나 누르면 LED 제어 창, "상세" 는 드로어.
+ *  발전량·사용량·감축량은 오늘(KST 0시~지금) 누적 — 화면에 보이는 단말만 계산한다(GET /api/devices/energy). */
+function DashDevices({ tick, onSelect }: { tick: number; onSelect: (uuid: string) => void }) {
+  const [text, setText] = useState("");
+  const [q, setQ] = useState("");
+  const [state, setState] = useState("ACTIVE");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(20);
+  const [res, setRes] = useState<DeviceListRes | null>(null);
+  const [energy, setEnergy] = useState<Record<string, EnergyToday>>({});
+  const [err, setErr] = useState<string | null>(null);
+  const [ctl, setCtl] = useState<Device | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    const id = setTimeout(() => (setQ(text.trim()), setPage(1)), 300);
+    return () => clearTimeout(id);
+  }, [text]);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await api.listDevices({ page, size, q: q || undefined, state: state || undefined });
+        if (!alive) return;
+        setRes(r);
+        setErr(null);
+        const e = await api.energyToday(r.items.map((d) => d.uuid));
+        if (alive) setEnergy(e);
+      } catch (x) {
+        if (alive) setErr(errorText(x));
+      }
+    };
+    load();
+    const id = setInterval(load, REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [page, size, q, state, tick]);
+
+  const rows = res?.items ?? [];
+  const total = res?.total ?? 0;
+  return (
+    <Card title="단말 목록" className="full" meta={<span>{res ? `${nf(total)}대` : ""} · 발전·사용·감축량은 오늘 누적 · 행을 누르면 LED 제어</span>}>
+      <div className="tool">
+        <input type="search" placeholder="시설명·UUID·주소·지역 검색" aria-label="대시보드 단말 검색" value={text} onChange={(e) => setText(e.target.value)} style={{ width: 260 }} />
+        <select value={state} aria-label="승인 상태" onChange={(e) => (setState(e.target.value), setPage(1))}>
+          <option value="">전체 상태</option>
+          {STATES.map((s) => <option key={s} value={s}>{stateLabel(s)}</option>)}
+        </select>
+        <span className="sp" />
+        <select value={size} aria-label="페이지 크기" onChange={(e) => (setSize(Number(e.target.value)), setPage(1))}>
+          {[20, 50, 100].map((n) => <option key={n} value={n}>{n}개씩</option>)}
+        </select>
+      </div>
+      {err && <div className="err">{err}</div>}
+      {note && <div className="okl">{note}</div>}
+      <div className="tw">
+        <table className="list">
+          <thead>
+            <tr>
+              <th>상태</th><th>시설명</th><th>지역</th><th>통신</th><th>조명</th><th>원격</th><th>배터리</th><th>배터리 전압</th>
+              <th className="n">발전전력</th><th className="n">일일발전량</th><th className="n">일일사용량</th><th className="n">온실가스 감축량</th><th>상세정보</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((d) => {
+              const e = energy[d.uuid];
+              return (
+                <tr key={d.uuid} data-click onClick={() => setCtl(d)} title="누르면 LED 제어">
+                  <td><StateBadge state={d.state} /></td>
+                  <td>{str(d.site)}</td>
+                  <td title={d.node_path ?? ""}>{d.node_id ? shortPath(d) : ""}</td>
+                  <td><OnlineMark on={d.is_online} /></td>
+                  <td><LampPair t={d.last_telemetry} /></td>
+                  <td><RemoteBadge d={d} onReleased={setNote} /></td>
+                  <td><Battery sc={d.last_telemetry?.sc} /></td>
+                  <td>{volt1(d.last_telemetry?.bv)}</td>
+                  <td className="n">{watt1(d.last_telemetry?.pp)}</td>
+                  <td className="n">{wh1(e?.gen_wh)}</td>
+                  <td className="n">{wh1(e?.use_wh)}</td>
+                  <td className="n">{co2Text(e?.co2_g)}</td>
+                  <td><button type="button" className="btn sm" onClick={(x) => (x.stopPropagation(), onSelect(d.uuid))}>상세</button></td>
+                </tr>
+              );
+            })}
+            {rows.length === 0 && <tr><td colSpan={13} className="empty">{res ? "조건에 맞는 단말이 없습니다." : "불러오는 중…"}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <Pager page={page} pages={Math.max(1, Math.ceil(total / size))} total={total} size={size} onPage={setPage} />
+      {ctl && <LedControl d={ctl} onClose={() => setCtl(null)} onDetail={() => (setCtl(null), onSelect(ctl.uuid))} />}
+    </Card>
+  );
+}
+
+/** LED 제어 창 — 그 단말 하나에 개별 COMMAND(점등·소등·밝기·스케줄 복귀, 채널, 유지시간). */
+function LedControl({ d, onClose, onDetail }: { d: Device; onClose: () => void; onDetail: () => void }) {
+  const [seq, setSeq] = useState<number | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [onClose]);
+  const t = d.last_telemetry;
+  return (
+    <div className="modal-ov" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal wide" role="dialog" aria-label="LED 제어">
+        <div className="dh">
+          <div style={{ minWidth: 0 }}>
+            <h3>LED 제어 · {d.site ?? d.uuid}</h3>
+            <div className="u">{d.node_path ?? ""} · {d.uuid}</div>
+          </div>
+          <button type="button" className="x" onClick={onClose} aria-label="닫기">✕</button>
+        </div>
+        <div className="db">
+          <div className="bar2">
+            <LampPair t={t} />
+            <RemoteBadge d={d} onReleased={setMsg} />
+            <span className="sp" />
+            <span className="cap">마지막 수신 {localTime(d.last_telemetry_at)}</span>
+          </div>
+          <div className="cap">원격 명령 뒤 점등 상태는 단말이 2초 뒤 보내는 Telemetry 로 바뀐다. 단말은 송신 직후에만 명령을 받아 수십 초~최대 약 5분 걸릴 수 있다.</div>
+          {msg && <div className="okl">{msg}</div>}
+          <CommandForm target={{ kind: "device", id: d.uuid }} targetLabel={d.site ?? d.uuid}
+            blocked={d.state !== "ACTIVE" ? "운영(ACTIVE) 단말에만 보낼 수 있다" : null}
+            onSent={(c) => (setSeq(c.seq), setMsg(`명령 #${c.seq} 발행함${c.payload.dur ? ` · 유지 ${durText(Number(c.payload.dur))}` : ""}`))} />
+          {seq !== null && <CommandResult seq={seq} onClose={() => setSeq(null)} />}
+          <div className="bar2"><span className="sp" /><button type="button" className="btn" onClick={onDetail}>단말 상세 열기</button></div>
+        </div>
+      </div>
+    </div>
+  );
 }

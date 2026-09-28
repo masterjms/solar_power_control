@@ -3,6 +3,7 @@ import { api, DeviceCounts, Health, Me, errorText } from "./api";
 import Dashboard from "./Dashboard";
 import DeviceList from "./DeviceList";
 import DeviceDetail from "./DeviceDetail";
+import Approval from "./Approval";
 import Pending from "./Pending";
 import DeviceConfig from "./DeviceConfig";
 import Profiles from "./Profiles";
@@ -182,7 +183,7 @@ export default function App() {
             <DeviceList tick={tick} selected={selected} onSelect={setSelected} />
           </div>
         )}
-        {page === "pending" && <Pending tick={tick} onChanged={refresh} onSelect={setSelected} />}
+        {page === "pending" && <Pending tick={tick} onSelect={setSelected} />}
         {page === "group" && <GroupControl role={me?.role ?? null} counts={counts} tick={tick} onSelect={setSelected} />}
         {page === "regions" && <Regions role={me?.role ?? null} health={health} tick={tick} onSelect={setSelected} />}
         {page === "config" && <DeviceConfig tick={tick} onSelect={setSelected} />}
@@ -197,9 +198,10 @@ export default function App() {
       {selected && <div className="ov" onClick={() => setSelected(null)} />}
       <aside className={`drawer wide ${selected ? "open" : ""}`} aria-label="단말 상세" aria-hidden={!selected}>
         {selected && (
-          <DeviceDetail
+          <DeviceDrawer
+            key={selected}
             uuid={selected}
-            onChanged={refresh}
+            onChanged={() => (refresh(), setTick((t) => t + 1))}
             onClose={() => setSelected(null)}
             onDeleted={() => {
               setSelected(null);
@@ -211,4 +213,21 @@ export default function App() {
       </aside>
     </div>
   );
+}
+
+/** 승인 대기(PENDING) 단말은 승인 전용 창, 그 밖은 단말 상세(문제점 #4·#6). 어디서 고르든 같은 규칙. */
+function DeviceDrawer({ uuid, onChanged, onClose, onDeleted }: {
+  uuid: string; onChanged: () => void; onClose: () => void; onDeleted: () => void;
+}) {
+  const [state, setState] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const check = useCallback(() => {
+    api.getDevice(uuid).then((d) => (setState(d.state), setErr(null))).catch((e) => setErr(errorText(e)));
+  }, [uuid]);
+  useEffect(check, [check]);
+  if (err && state === null) return <div className="db"><div className="err">{err}</div></div>;
+  if (state === null) return <div className="db"><div className="muted">불러오는 중…</div></div>;
+  if (state === "PENDING")
+    return <Approval uuid={uuid} onClose={onClose} onChanged={() => (onChanged(), check())} />;
+  return <DeviceDetail uuid={uuid} onChanged={() => (onChanged(), check())} onClose={onClose} onDeleted={onDeleted} />;
 }

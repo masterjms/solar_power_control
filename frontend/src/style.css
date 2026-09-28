@@ -272,12 +272,20 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .grp2{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--s4)}
 .grid4{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--s2)}
 .grid5{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:var(--s2)}
-.fld{display:grid; grid-template-columns:120px minmax(0,1fr) 48px; gap:var(--s1) var(--s3); align-items:center; min-height:40px}
+/* 한 줄 = 항목 이름 | 선택바(다단계는 시각 + 선택바) | 숫자 | 단위 — 모든 상자 같은 열(문제점 #2) */
+.fld{display:grid; grid-template-columns:120px minmax(0,1fr) 84px 56px; gap:var(--s1) var(--s3); align-items:center; min-height:40px}
 .fld > label{font-size:var(--f2); display:flex; align-items:center; gap:6px; min-width:0}
 .fld .in{display:flex; gap:var(--s2); align-items:center; min-width:0}
 .fld .unit{font-size:var(--f1); color:var(--muted)}
 .fld input[type=range]{flex:1; min-width:0; accent-color:var(--blue)}
 .fld .help{grid-column:2 / -1; font-size:var(--f1); color:var(--muted2)}
+.fld .num{width:84px}
+.fld .tm{height:32px; border:1px solid var(--line); border-radius:var(--r1); background:var(--soft); padding:0 var(--s2); font-size:var(--f2); color:var(--text); width:124px; flex:none}
+.stbar{margin-top:var(--s3)}
+.stbar .bar{display:flex; height:30px; border-radius:var(--r1); overflow:hidden; border:1px solid var(--line)}
+.stbar .bar i{display:flex; align-items:center; justify-content:center; font-style:normal; font-size:var(--f1); color:var(--text); border-right:1px solid var(--panel); white-space:nowrap; overflow:hidden}
+.stbar .bar i:last-child{border-right:0}
+.stbar .lg{display:flex; justify-content:space-between; font-size:var(--f1); color:var(--muted); margin-top:4px}
 .fld .help.c-alarm{color:var(--alarm)}
 .num,.inp{height:32px; border:1px solid var(--line); border-radius:var(--r1); background:var(--soft); padding:0 var(--s2); font-size:var(--f2)}
 .num{width:80px; text-align:right}
@@ -300,3 +308,17 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .dips span.on{border-color:var(--ok); background:var(--bg-ok); color:var(--ok)}
 .dips span.on b{color:var(--ok)}
 @media (max-width:1280px){ .cfgx{grid-template-columns:1fr} .cfgx > .col{position:static} .cfgr,.grp2{grid-template-columns:1fr} .grid4,.grid5{grid-template-columns:1fr 1fr} .form5{grid-template-columns:1fr 1fr} }
+
+/* ===== 2026-09-28 문제점 #2~#11: 지도·승인 창·조명 두 채널·LED 제어 창 ===== */
+.kmap{width:100%; border:1px solid var(--line); border-radius:var(--r1); overflow:hidden; background:var(--soft)}
+.keys-inline{display:flex; gap:var(--s3); flex-wrap:wrap; font-size:var(--f1); color:var(--muted); margin-top:var(--s2)}
+.keys-inline .dot{margin-right:4px}
+.chp{display:inline-flex; gap:var(--s3); white-space:nowrap}
+.chl{display:inline-flex; align-items:center; gap:4px}
+.chl small{color:var(--muted2); font-size:var(--f1)}
+.modal.wide{width:min(720px,100%)}
+.modal .db{overflow:auto}
+.appr .step h4{display:flex; align-items:center; gap:var(--s2)}
+.appr .step .no{display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; background:var(--blue); color:#fff; font-size:var(--f1); font-weight:600; flex:none}
+.appr .step .no.done{background:var(--ok)}
+.georesults{list-style:none; margin:var(--s2) 0 0; padding:0; display:grid; gap:4px; max-height:200px; overflow:auto}
