@@ -1,0 +1,18 @@
+# 관리 화면 HTTPS 오버라이드 (4차 준비, 2026-09-28 docker-compose.tls.yml 에서 분리).
+#
+# 브로커는 건드리지 않는다 — 단말 재접속 없음. 인증서(infra/scripts/cert-issue.sh)가 있으면 켤 수 있다.
+# 켜기: .env 에
+#         COMPOSE_FILE=docker-compose.yml:docker-compose.https.yml
+#       를 넣고 `docker compose up -d web`. 4차 브로커 분리 때는 뒤에 :docker-compose.tls.yml 을 더한다.
+# 끄기: 그 줄을 지우고 `docker compose up -d web` (80 평문 관리 화면으로 돌아감).
+#
+# web 은 ./infra/certs 를 물려 443(HTTPS)을 켜고 80 은 https 리다이렉트(frontend/nginx/40-tls.sh).
+# acme-challenge(인증서 갱신)와 Host localhost(healthcheck)는 80 에 그대로 남는다.
+
+services:
+  web:
+    ports:
+      # 기본 파일(80:80, 로컬 dev 는 8088:80)에 더해진다.
+      - "443:443"
+    volumes:
+      - ${TLS_CERTS_DIR:-./infra/certs}:/etc/nginx/certs:ro

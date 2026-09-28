@@ -1,7 +1,7 @@
 # 4차 — MQTTS 8883 + 운영/시험 브로커 분리 오버라이드 (사양서 §1.2.2, S-21, ADR-006).
 #
 # 켜기: 인증서 발급(infra/scripts/cert-issue.sh) 뒤 .env 에
-#         COMPOSE_FILE=docker-compose.yml:docker-compose.tls.yml
+#         COMPOSE_FILE=docker-compose.yml:docker-compose.https.yml:docker-compose.tls.yml
 #       를 넣고 `docker compose up -d`. 이후 모든 `docker compose ...` 명령이 이 파일을 포함한다.
 # 끄기(롤백): 그 줄을 지우고 `docker compose up -d --remove-orphans`.
 # 로컬(Windows) 시험: COMPOSE_FILE 구분자가 ';' 이다 —
@@ -13,8 +13,8 @@
 #   mosquitto-test  시험 브로커(새 컨테이너). 호스트 1883. 계정은 solarlte-test 하나뿐 —
 #                   운영 단말 계정이 없으므로 "1883 은 운영 계정 거부"(§1.2.4 #1)가 구조로 성립한다.
 #                   backend 는 여기 붙지 않는다(PC 시험 도구·레거시 시험용).
-#   web             ./infra/certs 를 물려 443(HTTPS)을 켜고 80 은 https 리다이렉트
-#                   (frontend/nginx/40-tls.sh). acme-challenge 는 80 에 그대로 남는다.
+#   web             (2026-09-28 분리) 관리 화면 HTTPS 는 docker-compose.https.yml 로 따로 켠다 —
+#                   브로커 분리(단말 재접속) 없이 먼저 켤 수 있게. COMPOSE_FILE 에 둘 다 넣는다.
 #
 # 인증서 위치를 바꿔 시험할 때만 TLS_CERTS_DIR 를 준다(기본 ./infra/certs).
 
@@ -55,12 +55,6 @@ services:
       timeout: 5s
       retries: 3
 
-  web:
-    ports:
-      # 기본 파일(80:80, 로컬 dev 는 8088:80)에 더해진다.
-      - "443:443"
-    volumes:
-      - ${TLS_CERTS_DIR:-./infra/certs}:/etc/nginx/certs:ro
 
 volumes:
   mosquitto-test-data:

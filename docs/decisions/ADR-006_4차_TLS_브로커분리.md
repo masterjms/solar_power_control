@@ -20,7 +20,7 @@
 - 시험 브로커에는 인증 플러그인이 필요 없으므로 순정 이미지를 쓴다. 비밀번호는 `.env MQTT_TEST_BROKER_PASSWORD`, 비면 사양서 공개값.
 
 ### 2. 켜고 끄기 = compose 오버라이드 (`docker-compose.tls.yml`)
-- 운영자가 `.env` 에 `COMPOSE_FILE=docker-compose.yml:docker-compose.tls.yml` 한 줄. 이후 `deploy.sh`·`healthcheck.sh`·수동 `docker compose` 가 모두 같은 구성을 본다.
+- 운영자가 `.env` 에 `COMPOSE_FILE=docker-compose.yml:docker-compose.https.yml:docker-compose.tls.yml` 한 줄(2026-09-28: 관리 화면 443 은 `docker-compose.https.yml` 로 분리 — 브로커 분리 전에 먼저 켤 수 있다). 이후 `deploy.sh`·`healthcheck.sh`·수동 `docker compose` 가 모두 같은 구성을 본다.
 - **롤백 = 그 줄을 주석 처리하고 `docker compose up -d --remove-orphans`.** 코드·DB·인증서는 그대로.
 - backend 설정은 바뀌지 않는다: `MQTT_HOST=mosquitto`, `MQTT_PORT=1883`, `MQTT_TLS=false`(컨테이너망, 호스트 밖으로 안 나감). "접속 설정만 바뀐다"는 원칙의 최소형 — 이번엔 서버 접속 설정조차 안 바뀐다. `docs/02` 의 "4차 = backend `MQTT_TLS=true`, 8883" 은 backend 를 브로커와 다른 호스트로 옮길 때의 경로로 남는다(그때 `connection.py` 밖은 여전히 무변경).
 

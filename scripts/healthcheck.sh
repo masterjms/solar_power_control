@@ -76,6 +76,9 @@ if docker compose config --services 2>/dev/null | grep -qx mosquitto-test; then
     TLS_MODE=1
     EXPECTED+=(iotlight-mosquitto-test)
 fi
+# 관리 화면 HTTPS(docker-compose.https.yml, 브로커 분리와 따로 켠다): web 이 443 을 여는지로 판단.
+HTTPS_MODE=0
+if docker compose config 2>/dev/null | grep -qE 'published: "?443"?'; then HTTPS_MODE=1; fi
 DOWN=()
 for name in "${EXPECTED[@]}"; do
     state="$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null | tr -d '[:space:]')"
@@ -147,7 +150,7 @@ else
 fi
 
 # 4차: 443 이 인증서로 응답하는지(이름 검증은 생략 -k — 밖에서 보는 이름 검증은 런북의 openssl 명령)
-if [ "$TLS_MODE" = 1 ] && [ -n "$ADMIN_PASSWORD" ]; then
+if [ "$HTTPS_MODE" = 1 ] && [ -n "$ADMIN_PASSWORD" ]; then
     TLS_CODE="$(curl -sk -o /dev/null -w '%{http_code}' -u "${ADMIN_USER:-admin}:$ADMIN_PASSWORD" "https://localhost/health" 2>/dev/null || echo '000')"
     if [ "$TLS_CODE" = "200" ]; then add_ok "web https /health 200"; else add_bad "web https /health ${TLS_CODE} — docker compose logs web | grep 모드"; fi
 fi
