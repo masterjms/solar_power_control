@@ -121,6 +121,9 @@ class Device(Base):
     override_seq: Mapped[int | None] = mapped_column(BigInteger)
     #: 보낸 시각(ts) + dur. 재부팅(sq 감소)이면 단말이 잃으므로 NULL 로 지운다.
     override_until: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 채널별 원격(F/W 2026-09-27-9, §3.10.8 "채널마다 마지막 명령 하나"). {"1": {act, seq, until, level}}.
+    #: 위 override_* 4개는 이것의 **요약**(가장 늦게 끝나는 채널) — 목록 필터·기존 화면용.
+    override_ch: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     # ── 최신값 캐시 ─────────────────────────────────────
     last_register_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))

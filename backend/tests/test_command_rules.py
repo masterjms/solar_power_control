@@ -14,7 +14,9 @@ from app.core.command_rules import (
     command_topics,
     finish_result,
     off_time,
-    override_after_ok,
+    channel_remaining,
+    channels_after_ok,
+    override_summary,
     override_level_for,
     remote_status,
     retry_eligible,
@@ -243,35 +245,52 @@ def test_local_is_terminal_never_applied_later():
 NOW = T0 + dt.timedelta(seconds=30)
 
 
-def test_override_ok_sets_until_from_ts_plus_dur():
-    new = override_after_ok(CLEARED, act="off", level="group", seq=57, sent_at=T0, dur=3600,
-                            now=NOW)
-    assert new == OverrideState("off", "group", 57, T0 + dt.timedelta(seconds=3600))
+def _ch(act, seq, until, level="device"):
+    return {"act": act, "level": level, "seq": seq, "until": until.isoformat()}
 
 
-def test_override_lower_level_does_not_hide_live_higher():
-    dev = OverrideState("on", "device", 50, NOW + dt.timedelta(hours=1))
-    assert override_after_ok(dev, act="off", level="group", seq=51, sent_at=T0, dur=60,
-                             now=NOW) is None
-    expired = OverrideState("on", "device", 50, NOW - dt.timedelta(seconds=1))
-    assert override_after_ok(expired, act="off", level="group", seq=51, sent_at=T0, dur=60,
-                             now=NOW).level == "group"
-    grp = OverrideState("on", "group", 50, NOW + dt.timedelta(hours=1))
-    assert override_after_ok(grp, act="pwm", level="device", seq=52, sent_at=T0, dur=60,
-                             now=NOW).act == "pwm"
+def test_channels_ok_sets_until_from_ts_plus_dur_per_channel():
+    new = channels_after_ok(None, act="off", level="group", seq=57, sent_at=T0, dur=3600,
+                            ch=[1, 2], now=NOW)
+    until = T0 + dt.timedelta(seconds=3600)
+    assert new == {"1": _ch("off", 57, until, "group"), "2": _ch("off", 57, until, "group")}
+    assert override_summary(new, NOW) == OverrideState("off", "group", 57, until)
 
 
-def test_override_auto_clears_its_level():
-    grp = OverrideState("off", "group", 50, NOW + dt.timedelta(hours=1))
-    assert override_after_ok(grp, act="auto", level="group", seq=60, sent_at=T0, dur=None,
-                             now=NOW) == CLEARED
-    assert override_after_ok(grp, act="auto", level="all", seq=60, sent_at=T0, dur=None,
-                             now=NOW) is None
-    # 개별 auto = 전부 해제
-    assert override_after_ok(grp, act="auto", level="device", seq=60, sent_at=T0, dur=None,
-                             now=NOW) == CLEARED
-    assert override_after_ok(CLEARED, act="auto", level="device", seq=60, sent_at=T0,
-                             dur=None, now=NOW) is None
+def test_channels_later_command_wins_regardless_of_level():
+    """F/W 2026-09-27-9: 개별 > 그룹 > 전체 계층 폐기. 나중 명령이 이긴다(경로 무관)."""
+    dev = {"1": _ch("on", 50, NOW + dt.timedelta(hours=1), "device")}
+    new = channels_after_ok(dev, act="off", level="all", seq=51, sent_at=T0, dur=60, ch=[1], now=NOW)
+    assert new["1"]["act"] == "off" and new["1"]["level"] == "all"
+    # 늦게 도착한 옛 seq 의 OK(재시도) 는 더 새 명령을 덮지 않는다
+    assert channels_after_ok(new, act="on", level="device", seq=50, sent_at=T0, dur=600,
+                             ch=[1], now=NOW) is None
+
+
+def test_channels_other_channel_untouched_and_auto_clears_only_its_channels():
+    base = channels_after_ok(None, act="on", level="device", seq=60, sent_at=T0, dur=3600,
+                             ch=[1], now=NOW)
+    both = channels_after_ok(base, act="off", level="group", seq=61, sent_at=T0, dur=600,
+                             ch=[2], now=NOW)
+    assert both["1"]["act"] == "on" and both["2"]["act"] == "off"      # 주등 그대로
+    only1 = channels_after_ok(both, act="auto", level="all", seq=62, sent_at=T0, dur=None,
+                              ch=[2], now=NOW)
+    assert set(only1) == {"1"}
+    assert channels_after_ok(only1, act="auto", level="device", seq=63, sent_at=T0, dur=None,
+                             ch=None, now=NOW) == {}                    # ch 없음 = 모든 채널
+    assert channels_after_ok(None, act="auto", level="device", seq=64, sent_at=T0, dur=None,
+                             ch=[1, 2], now=NOW) is None                 # 바꿀 것 없음
+
+
+def test_channels_expired_entries_dropped_and_summary_picks_latest_until():
+    old = {"1": _ch("on", 1, NOW - dt.timedelta(seconds=1))}
+    new = channels_after_ok(old, act="off", level="device", seq=2, sent_at=T0, dur=60, ch=[2], now=NOW)
+    assert set(new) == {"2"}
+    m = {"1": _ch("on", 5, NOW + dt.timedelta(seconds=100)), "2": _ch("off", 6, NOW + dt.timedelta(seconds=900))}
+    assert override_summary(m, NOW).seq == 6
+    assert override_summary({}, NOW) == CLEARED
+    rem = channel_remaining(m, NOW)
+    assert rem["1"]["remaining_sec"] == 100 and rem["2"]["act"] == "off"
 
 
 def test_remote_status():

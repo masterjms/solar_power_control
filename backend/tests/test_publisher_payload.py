@@ -44,12 +44,15 @@ def test_encode_is_compact_and_small():
 def test_ping_and_register_ack():
     assert ping_payload(seq=1) == {"type": "PING", "seq": 1}
     ack = register_ack_payload(uuid="A" * 24, state="ACTIVE", site="A-12")
-    assert ack == {"type": "REGISTER_ACK", "uuid": "A" * 24, "state": "ACTIVE", "site": "A-12"}
-    assert "cv" not in ack and "grp" not in ack and "ti" not in ack
+    assert ack == {"type": "REGISTER_ACK", "uuid": "A" * 24, "state": "ACTIVE", "site": "A-12", "grp": ""}
+    assert "cv" not in ack and "ti" not in ack
     rej = register_ack_payload(uuid="A" * 24, state="REJECTED", reason="unknown device")
-    assert rej["reason"] == "unknown device" and "site" not in rej
+    assert rej["reason"] == "unknown device" and rej["site"] == "" and rej["grp"] == ""
+    # 처음 보는 단말도 state·site·grp 셋 다 (§3.3, 2026-09-27 연동 시험 지적)
     pend = register_ack_payload(uuid="A" * 24, state="PENDING")
-    assert pend == {"type": "REGISTER_ACK", "uuid": "A" * 24, "state": "PENDING"}
+    assert pend == {"type": "REGISTER_ACK", "uuid": "A" * 24, "state": "PENDING", "site": "", "grp": ""}
+    pend2 = register_ack_payload(uuid="A" * 24, state="PENDING", site="산본LED", grp="414101040000")
+    assert pend2["grp"] == "414101040000" and pend2["site"] == "산본LED"
 
 
 def test_check_size_limits():

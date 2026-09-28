@@ -26,6 +26,8 @@ from app.errors import GeoUnavailable
 log = logging.getLogger(__name__)
 
 SEARCH_URL = "https://dapi.kakao.com/v2/local/search/address.json"
+REGION_URL = "https://dapi.kakao.com/v2/local/geo/coord2regioncode.json"
+COORD_ADDR_URL = "https://dapi.kakao.com/v2/local/geo/coord2address.json"
 TIMEOUT_SEC = 5.0
 #: 화면 드롭다운에 그 이상은 소음이다.
 MAX_RESULTS = 10
@@ -120,41 +122,86 @@ def map_documents(data: dict[str, Any]) -> list[GeoResult]:
     return out
 
 
-async def search_address(query: str, *, client: httpx.AsyncClient | None = None) -> list[GeoResult]:
-    """카카오 주소 검색. 키 없음·HTTP 오류·시간 초과는 전부 503 GEO_UNAVAILABLE."""
+async def _kakao_get(
+    url: str, params: dict[str, Any], *, what: str, client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """카카오 로컬 GET 한 번. 키 없음·HTTP 오류·시간 초과는 전부 503 GEO_UNAVAILABLE."""
     key = settings.kakao_rest_api_key
     if not key:
         raise GeoUnavailable(
             "카카오 REST 키가 설정되지 않았습니다(KAKAO_REST_API_KEY).",
             detail={"reason": "NO_KEY"},
         )
-    params = {"query": query, "size": MAX_RESULTS}
     headers = {"Authorization": f"KakaoAK {key}"}
     try:
         if client is None:
             async with httpx.AsyncClient(timeout=TIMEOUT_SEC) as own:
-                resp = await own.get(SEARCH_URL, params=params, headers=headers)
+                resp = await own.get(url, params=params, headers=headers)
         else:
-            resp = await client.get(SEARCH_URL, params=params, headers=headers,
-                                    timeout=TIMEOUT_SEC)
+            resp = await client.get(url, params=params, headers=headers, timeout=TIMEOUT_SEC)
     except httpx.TimeoutException as e:
-        log.warning("카카오 주소 검색 시간 초과(%.0f초)", TIMEOUT_SEC)
-        raise GeoUnavailable("카카오 주소 검색 시간이 초과됐습니다.",
+        log.warning("카카오 %s 시간 초과(%.0f초)", what, TIMEOUT_SEC)
+        raise GeoUnavailable(f"카카오 {what} 시간이 초과됐습니다.",
                              detail={"reason": "TIMEOUT"}) from e
     except httpx.HTTPError as e:
         # 예외 문자열에 요청 헤더가 섞이지 않게 종류만 남긴다.
-        log.warning("카카오 주소 검색 연결 실패: %s", e.__class__.__name__)
-        raise GeoUnavailable("카카오 주소 검색 서버에 연결하지 못했습니다.",
+        log.warning("카카오 %s 연결 실패: %s", what, e.__class__.__name__)
+        raise GeoUnavailable(f"카카오 {what} 서버에 연결하지 못했습니다.",
                              detail={"reason": "CONNECT"}) from e
     if resp.status_code != 200:
         # 401 키 오류, 403 앱 [카카오맵] 사용 설정 꺼짐, 429 쿼터 소진.
-        log.warning("카카오 주소 검색 HTTP %s", resp.status_code)
+        log.warning("카카오 %s HTTP %s", what, resp.status_code)
         raise GeoUnavailable(
-            f"카카오 주소 검색이 거부됐습니다(HTTP {resp.status_code}).",
+            f"카카오 {what}이 거부됐습니다(HTTP {resp.status_code}).",
             detail={"reason": "HTTP", "status": resp.status_code},
         )
     try:
         data = resp.json()
     except ValueError as e:
         raise GeoUnavailable("카카오 응답을 읽지 못했습니다.", detail={"reason": "BODY"}) from e
-    return map_documents(data if isinstance(data, dict) else {})
+    return data if isinstance(data, dict) else {}
+
+
+async def search_address(query: str, *, client: httpx.AsyncClient | None = None) -> list[GeoResult]:
+    """카카오 주소 검색."""
+    data = await _kakao_get(SEARCH_URL, {"query": query, "size": MAX_RESULTS},
+                            what="주소 검색", client=client)
+    return map_documents(data)
+
+
+def map_reverse(region: dict[str, Any], address: dict[str, Any], lat: float, lon: float) -> GeoResult | None:
+    """coord2regioncode + coord2address 응답 → GeoResult(지도에서 핀을 옮긴 자리).
+
+    법정동은 region_type "B" 문서의 code 앞 10자리. 주소 이름은 도로명이 있으면 도로명, 없으면 지번.
+    법정동을 못 찾으면(바다 등) None."""
+    doc = next((d for d in region.get("documents") or []
+                if isinstance(d, dict) and d.get("region_type") == "B"), None)
+    if doc is None:
+        return None
+    code = str(doc.get("code") or "")[:10]
+    if not BJD_CODE_RE.match(code):
+        return None
+    sido = normalize_sido(str(doc.get("region_1depth_name") or ""))
+    sigungu = str(doc.get("region_2depth_name") or "").strip() or sido
+    dong = " ".join(x for x in (str(doc.get("region_3depth_name") or "").strip(),
+                                str(doc.get("region_4depth_name") or "").strip()) if x)
+    if not sido or not dong:
+        return None
+    name = str(doc.get("address_name") or "")
+    for a in address.get("documents") or []:
+        if not isinstance(a, dict):
+            continue
+        road = (a.get("road_address") or {}).get("address_name")
+        jibun = (a.get("address") or {}).get("address_name")
+        name = str(road or jibun or name)
+        break
+    return GeoResult(address_name=name, bjd_code=code, sido=sido, sigungu=sigungu, dong=dong,
+                     lat=lat, lon=lon)
+
+
+async def reverse(lat: float, lon: float, *, client: httpx.AsyncClient | None = None) -> GeoResult | None:
+    """좌표 → 법정동·주소(지도 위치 보정). 카카오 좌표계 x = 경도, y = 위도."""
+    params = {"x": lon, "y": lat}
+    region = await _kakao_get(REGION_URL, params, what="좌표 변환", client=client)
+    address = await _kakao_get(COORD_ADDR_URL, params, what="좌표 변환", client=client)
+    return map_reverse(region, address, lat, lon)

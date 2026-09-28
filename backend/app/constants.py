@@ -161,12 +161,10 @@ TERMINAL_STATUSES = frozenset({"OK", "LOCAL", "BAD", "STATE"})
 
 
 class OverrideLevel(str, Enum):
-    """device.override_level — 단말 override 슬롯 계층(§3.10.8). 개별 > 그룹 > 전체."""
+    """명령이 온 경로(개별/그룹/전체) — 기록용. F/W 2026-09-27-9 부터 경로 사이 우선순위는 없다
+    (채널마다 마지막 명령 하나, §3.10.8 개정)."""
 
     DEVICE = "device"
     GROUP = "group"
     ALL = "all"
 
-
-#: 높을수록 우선.
-OVERRIDE_PRIORITY = {"device": 3, "group": 2, "all": 1}

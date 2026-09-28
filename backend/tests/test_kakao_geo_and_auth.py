@@ -130,3 +130,24 @@ def test_register_ack_carries_grp_whenever_assigned():
     assert list(p) == ["type", "uuid", "state", "site", "grp"]
     assert register_ack_job_for(uuid=U, state="ACTIVE", site=None, reason=None, grp="").grp is None
     assert register_ack_job_for(uuid=U, state="ACTIVE", site=None, reason=None).grp is None
+
+
+def test_map_reverse_bjd_and_road_address():
+    """지도 위치 보정: coord2regioncode 의 B(법정동) 문서 + coord2address 의 도로명."""
+    region = {"documents": [
+        {"region_type": "H", "code": "4141056000", "region_1depth_name": "경기도",
+         "region_2depth_name": "군포시", "region_3depth_name": "산본1동"},
+        {"region_type": "B", "code": "4141010400", "region_1depth_name": "경기도",
+         "region_2depth_name": "군포시", "region_3depth_name": "산본동", "region_4depth_name": "",
+         "address_name": "경기도 군포시 산본동"},
+    ]}
+    address = {"documents": [{"road_address": {"address_name": "경기도 군포시 금산로 91"},
+                              "address": {"address_name": "경기도 군포시 산본동 1"}}]}
+    r = kakao_geo.map_reverse(region, address, 37.36, 126.93)
+    assert r is not None and r.bjd_code == "4141010400" and r.dong == "산본동"
+    assert r.address_name == "경기도 군포시 금산로 91" and r.lat == 37.36
+    # 도로명이 없으면 지번, 법정동이 없으면(바다) None
+    r2 = kakao_geo.map_reverse(region, {"documents": [{"road_address": None,
+                                                        "address": {"address_name": "지번"}}]}, 1, 2)
+    assert r2 is not None and r2.address_name == "지번"
+    assert kakao_geo.map_reverse({"documents": []}, {}, 1, 2) is None

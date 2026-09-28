@@ -16,6 +16,8 @@ from app.modules.device.schemas import (
     DeleteOut,
     DeviceOut,
     DevicePage,
+    EnergyToday,
+    MapPoint,
     EventOut,
     PingOut,
     RegisterAckOut,
@@ -49,6 +51,25 @@ async def list_devices(
 ) -> DevicePage:
     return await service.list_devices(db, page=page, size=size, state=state, online=online, q=q,
                                       node_id=node_id, remote=remote)
+
+
+@router.get("/map", response_model=list[MapPoint])
+async def map_points(
+    state: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> list[MapPoint]:
+    """지도 핀(좌표가 있는 단말만). 1만 대여도 한 번에 — 필드를 최소로 둔다.
+    `/{uuid}` 보다 먼저 선언해야 "map" 이 uuid 로 잡히지 않는다."""
+    return await service.map_points(db, state=state)
+
+
+@router.get("/energy", response_model=dict[str, EnergyToday])
+async def energy_today(
+    uuid: list[str] = Query(default=[], max_length=500, description="화면에 보이는 단말만"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, EnergyToday]:
+    """오늘(KST 0시~지금) 발전량·사용량·온실가스 감축량. Telemetry 가 없는 단말은 빠진다."""
+    return await service.energy_today(db, [_uuid(u) for u in uuid])
 
 
 @router.get(f"/{_UUID_PATH}", response_model=DeviceOut)

@@ -59,6 +59,7 @@ from app.constants import DeviceState, EventKind
 from app.core.metrics import metrics
 from app.core.settings_rules import SYNC_LOCAL_SAVED, SYNC_SYNCED
 from app.db import session_scope
+from app.core.override import apply_channels
 from app.models.command import CommandTarget
 from app.models.device import Device
 from app.models.event import DeviceEvent
@@ -78,11 +79,6 @@ if TYPE_CHECKING:
     from app.mqtt.settings_sync import SettingsSync
 
 log = logging.getLogger(__name__)
-
-#: 재부팅 감지 시 지우는 override 표시 필드(§3.10.8 "재부팅 → 전부 소거").
-OVERRIDE_CLEAR = {
-    "override_act": None, "override_level": None, "override_seq": None, "override_until": None,
-}
 
 #: 문장당 행 수. 21컬럼 × 1000 = 21,000 바인드 < 32,767.
 _CHUNK = 1000
@@ -150,6 +146,38 @@ def override_clear_times(
         if _int(payload.get("md")) == 1:
             out[uuid] = max(out.get(uuid, at), at)
     return out
+
+
+async def _clear_overrides_sent_before(db: AsyncSession, uuid: str, at: dt.datetime) -> None:
+    """재부팅·현장 조작(md == 1) TM 을 받은 시각 `at` **이전에 보낸** 명령의 채널만 지운다.
+
+    flush 는 최대 1초 늦게 돌아서 그 사이 새 명령의 ACK 가 먼저 기록될 수 있다(시나리오 B11) —
+    그 채널은 남긴다. 채널별(override_ch, 0005) 로 보고 요약 override_* 를 다시 계산한다."""
+    device = (await db.execute(
+        select(Device).where(Device.uuid == uuid).with_for_update()
+    )).scalar_one_or_none()
+    if device is None or (not device.override_ch and device.override_seq is None):
+        return
+    channels = dict(device.override_ch or {})
+    seqs = {int(v["seq"]) for v in channels.values() if isinstance(v, dict) and isinstance(v.get("seq"), int)}
+    if device.override_seq is not None:
+        seqs.add(int(device.override_seq))
+    sent: dict[int, dt.datetime] = {}
+    if seqs:
+        rows = await db.execute(
+            select(CommandTarget.seq, CommandTarget.last_sent_at)
+            .where(CommandTarget.uuid == uuid, CommandTarget.seq.in_(seqs))
+        )
+        sent = {int(q): t for q, t in rows if t is not None}
+    now = dt.datetime.now(dt.timezone.utc)
+    if channels:
+        keep = {k: v for k, v in channels.items()
+                if isinstance(v, dict) and isinstance(v.get("seq"), int)
+                and sent.get(int(v["seq"]), at) > at}
+        if keep != channels:
+            apply_channels(device, keep, now)
+    elif sent.get(int(device.override_seq), at) <= at:   # 0005 이전 기록(요약만 있음)
+        apply_channels(device, {}, now)
 
 
 class TelemetryBuffer:
@@ -346,20 +374,7 @@ class TelemetryBuffer:
                 # flush 는 최대 1초 늦게 돌아서, 그 사이 새 명령의 ACK 가 먼저 기록될 수 있다
                 # (시나리오 B11 에서 실제로 지워졌다). 드물어서 단말별로 본다.
                 for uuid, at in sorted(override_clear_times(batch, events).items()):
-                    sent_at = (
-                        select(CommandTarget.last_sent_at)
-                        .where(CommandTarget.seq == Device.override_seq,
-                               CommandTarget.uuid == Device.uuid)
-                        .correlate(Device)
-                        .scalar_subquery()
-                    )
-                    await db.execute(
-                        update(Device)
-                        .where(Device.uuid == uuid,
-                               Device.override_seq.is_not(None),
-                               func.coalesce(sent_at, at) <= at)
-                        .values(**OVERRIDE_CLEAR)
-                    )
+                    await _clear_overrides_sent_before(db, uuid, at)
                 # S-23: 현장 저장 감지(ss ≠ ss_known). 방금 upsert 한 device.ss_device 와 조인.
                 ss_uuids = [u for u, e in latest.items()
                             if _int(e["payload"].get("ss")) is not None]

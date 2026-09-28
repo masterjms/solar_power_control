@@ -63,3 +63,11 @@ async def geo_search(
 ) -> list[GeoResult]:
     """카카오 로컬 주소 검색 프록시. 키가 없으면 503 GEO_UNAVAILABLE."""
     return await kakao_geo.search_address(query)
+
+
+@geo_router.get("/reverse", response_model=GeoResult | None)
+async def geo_reverse(
+    lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-180, le=180),
+) -> GeoResult | None:
+    """좌표 → 법정동·주소(승인 화면 지도 위치 보정). 법정동이 없는 자리(바다 등)면 null."""
+    return await kakao_geo.reverse(lat, lon)

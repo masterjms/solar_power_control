@@ -66,6 +66,9 @@ class DeviceOut(BaseModel):
     override_level: str | None = None
     override_seq: int | None = None
     override_until: dt.datetime | None = None
+    #: 채널별 원격(F/W 2026-09-27-9) {"1": {act, seq, level, remaining_sec}} — 끝난 채널은 빠진다.
+    #: 1 = 주등(PWM1), 2 = 입간판(PWM2). 위 override_* 는 그 요약(가장 늦게 끝나는 채널).
+    override_ch: dict[str, dict[str, Any]] = Field(default_factory=dict)
     #: S-23 단말 설정 동기 상태(device_settings.sync). 행이 없으면 unknown(ADR-007).
     settings_sync: str = "unknown"
     #: last_telemetry.md == 2 AND override_until > now.
@@ -239,3 +242,26 @@ class DeleteOut(BaseModel):
     deleted: bool
     #: REGISTER_ACK retain 을 지웠다. 브로커 끊김이면 false (행은 지워졌다).
     retain_cleared: bool
+
+
+class MapPoint(BaseModel):
+    """지도 핀 한 개(GET /api/devices/map). 필드를 최소로 — 1만 대를 한 번에 준다."""
+
+    uuid: str
+    site: str | None
+    lat: float
+    lon: float
+    state: str
+    is_online: bool
+    #: 마지막 Telemetry on (주등). 없으면 None.
+    on: int | None
+    node_name: str | None
+
+
+class EnergyToday(BaseModel):
+    """오늘(KST) 누적 — core/energy.py."""
+
+    samples: int
+    gen_wh: float
+    use_wh: float
+    co2_g: float

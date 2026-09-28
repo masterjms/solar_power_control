@@ -115,15 +115,17 @@ def register_ack_payload(
     *, uuid: str, state: str, site: str | None = None, reason: str | None = None,
     grp: str | None = None,
 ) -> dict[str, Any]:
-    """REGISTER_ACK (사양서 §3.3). state·site(·reason, 5차 grp) 만 싣는다 — cv/ti/ka 는 절대
-    넣지 않는다. retain 메시지에 설정값이 섞이면 재부팅 시 옛 값이 먼저 도착한다."""
-    payload: dict[str, Any] = {"type": MsgType.REGISTER_ACK.value, "uuid": uuid, "state": state}
-    if site:
-        payload["site"] = site
+    """REGISTER_ACK (사양서 §3.3). state·site·grp(·reason) 만 싣는다 — cv/ti/ka 는 절대
+    넣지 않는다. retain 메시지에 설정값이 섞이면 재부팅 시 옛 값이 먼저 도착한다.
+
+    **state·site·grp 는 언제나 셋 다**, 없으면 `""` (2026-09-27 연동 시험 지적). 단말은
+    site·grp 가 빠진 ACK 를 "없음"으로 받아 그룹 구독을 해제한다. reason 만 있을 때 싣는다."""
+    payload: dict[str, Any] = {
+        "type": MsgType.REGISTER_ACK.value, "uuid": uuid, "state": state,
+        "site": site or "", "grp": grp or "",
+    }
     if reason:
         payload["reason"] = reason
-    if grp:
-        payload["grp"] = grp
     return payload
 
 

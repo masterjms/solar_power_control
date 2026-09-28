@@ -133,6 +133,12 @@ class Settings(BaseSettings):
     #: 카카오 로컬 REST 키. 비우면 주소 검색이 503 GEO_UNAVAILABLE(개발은 직접 입력으로 시험).
     #: 서버 전용 비밀값 — 로그·응답에 절대 내보내지 않는다.
     kakao_rest_api_key: str = ""
+    #: 카카오 **JavaScript** 키(지도 표시). REST 키와 다른 값이다. 브라우저에 내려가는 공개 키라
+    #: 비밀이 아니고, 카카오 개발자 콘솔 [플랫폼 > Web] 에 등록한 도메인에서만 동작한다.
+    #: 비우면 화면의 지도 자리는 "키 없음" 안내만 보인다.
+    kakao_js_key: str = ""
+    #: 온실가스 감축량 = 발전량(kWh) × 이 값(kgCO2eq/kWh). 국가 전력 배출계수 — 확정값을 받으면 .env 로 바꾼다.
+    ghg_kg_per_kwh: float = 0.4781
     #: 최고관리자 사용자명(쉼표). nginx Basic auth 사용자명이 X-Remote-User 로 들어온다.
     super_admin_users_raw: str = Field(default="admin", validation_alias="SUPER_ADMIN_USERS")
     #: 승인(ACTIVE)에 말단 법정동 배정을 요구할지. **안 적으면** 운영 true, APP_ENV=dev 는 false

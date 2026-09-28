@@ -50,7 +50,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import ACK_RESULTS, DeviceState, EventKind, MsgType, TargetStatus, TopicKind
 from app.core import presence
-from app.core.command_rules import OverrideState, override_after_ok, override_level_for
+from app.core.command_rules import channels_after_ok, override_level_for
+from app.core.override import apply_channels
 from app.core.effective import effective_ka_sql, effective_ti_sql
 from app.core.metrics import metrics
 from app.db import session_scope
@@ -509,19 +510,17 @@ class Dispatcher:
         )).scalar_one_or_none()
         if device is None:
             return
-        current = OverrideState(device.override_act, device.override_level,
-                                device.override_seq, device.override_until)
         dur = payload.get("dur")
-        new = override_after_ok(
-            current, act=str(payload.get("act") or ""), level=override_level_for(target_kind),
-            seq=seq, sent_at=sent_at, dur=int(dur) if isinstance(dur, int) else None, now=now,
+        ch = payload.get("ch")
+        chs = [c for c in ch if isinstance(c, int)] if isinstance(ch, list) else None
+        new = channels_after_ok(
+            device.override_ch, act=str(payload.get("act") or ""),
+            level=override_level_for(target_kind), seq=seq, sent_at=sent_at,
+            dur=int(dur) if isinstance(dur, int) else None, ch=chs, now=now,
         )
         if new is None:
             return
-        device.override_act = new.act
-        device.override_level = new.level
-        device.override_seq = new.seq
-        device.override_until = new.until
+        apply_channels(device, new, now)
 
     async def _ack_command(
         self, db: AsyncSession, uuid: str, seq: int, result: str, data: dict[str, Any],

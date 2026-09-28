@@ -57,6 +57,16 @@ async def health(
     }
 
 
+@router.get("/api/ui-config")
+async def ui_config() -> dict[str, Any]:
+    """화면 설정. 카카오 **JavaScript** 키(지도)는 브라우저가 쓰는 공개 키라 여기서 준다 —
+    REST 키(kakao_rest_api_key)는 절대 싣지 않는다."""
+    return {
+        "kakao_js_key": settings.kakao_js_key or None,
+        "ghg_kg_per_kwh": settings.ghg_kg_per_kwh,
+    }
+
+
 @router.get("/api/metrics")
 async def get_metrics(
     db: AsyncSession = Depends(get_db),

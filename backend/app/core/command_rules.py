@@ -20,7 +20,6 @@ from app.constants import (
     DUR_MIN_SEC,
     DUR_PRESET_TONIGHT,
     DUR_PRESETS,
-    OVERRIDE_PRIORITY,
     RETRYABLE_STATUSES,
     TERMINAL_STATUSES,
     OverrideLevel,
@@ -255,30 +254,79 @@ class OverrideState:
 CLEARED = OverrideState()
 
 
-def override_after_ok(
-    current: OverrideState, *, act: str, level: str, seq: int, sent_at: dt.datetime,
-    dur: int | None, now: dt.datetime,
-) -> OverrideState | None:
-    """OK 응답 뒤 device.override_* 새 값. 바꿀 것이 없으면 None.
+#: ch 가 빠진 명령 = 모든 채널(§3.10.7).
+ALL_CHANNELS = (1, 2, 3)
 
-    · act=auto: 그 계층 해제. 개별 auto 는 전부 해제(단말이 즉시 스케줄 복귀). 그룹/전체 auto 는
-      기록된 슬롯이 같은 계층일 때만 지운다 — 더 높은 계층(개별)이 살아 있으면 그대로다.
-    · on/off/pwm: until = 보낸 시각 + dur. 기록된 것이 **더 높은 계층이고 아직 유효**하면 덮지
-      않는다(단말은 그 계층 값을 계속 쓴다 — 화면이 거짓말하지 않게).
-      같은/낮은 계층이거나 기록이 만료됐으면 덮는다.
+
+def _until_of(entry: dict[str, Any]) -> dt.datetime | None:
+    raw = entry.get("until")
+    if not raw:
+        return None
+    try:
+        return dt.datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+
+
+def channels_after_ok(
+    current: dict[str, Any] | None, *, act: str, level: str, seq: int, sent_at: dt.datetime,
+    dur: int | None, ch: list[int] | tuple[int, ...] | None, now: dt.datetime,
+) -> dict[str, Any] | None:
+    """OK 응답 뒤 device.override_ch 새 값. 바꿀 것이 없으면 None(빈 dict = 전부 해제).
+
+    F/W 2026-09-27-9(§3.10.8 개정) — **채널마다 마지막에 받은 명령 하나**. 개별·그룹·전체 경로 사이
+    우선순위는 없다(level 은 기록용). 유지시간이 끝나면 그 채널은 스케줄(이전 명령을 되살리지 않는다).
+      · 명령의 ch 채널마다: 기록된 것이 **더 새 seq** 면 그대로(늦게 온 옛 재시도 OK 가 덮지 않게),
+        아니면 auto → 그 채널 지움, on/off/pwm → {act, level, seq, until = 보낸 시각 + dur}.
+      · 다른 채널은 건드리지 않는다. 이미 끝난 채널 기록은 이참에 버린다.
     """
-    if act == "auto":
-        if level == OverrideLevel.DEVICE.value or current.level == level:
-            return CLEARED if current != CLEARED else None
-        return None
-    if dur is None:
-        return None
-    until = sent_at + dt.timedelta(seconds=dur)
-    alive = current.until is not None and current.until > now
-    if alive and current.level is not None and \
-            OVERRIDE_PRIORITY.get(current.level, 0) > OVERRIDE_PRIORITY.get(level, 0):
-        return None
-    return OverrideState(act=act, level=level, seq=seq, until=until)
+    before = dict(current or {})
+    m = {k: v for k, v in before.items()
+         if isinstance(v, dict) and (u := _until_of(v)) is not None and u > now}
+    for c in (ch or ALL_CHANNELS):
+        key = str(c)
+        cur = m.get(key)
+        if cur is not None and isinstance(cur.get("seq"), int) and cur["seq"] > seq:
+            continue
+        if act == "auto":
+            m.pop(key, None)
+            continue
+        if dur is None:
+            continue
+        m[key] = {"act": act, "level": level, "seq": seq,
+                  "until": (sent_at + dt.timedelta(seconds=dur)).isoformat()}
+    return None if m == before else m
+
+
+def override_summary(channels: dict[str, Any] | None, now: dt.datetime) -> OverrideState:
+    """override_ch → 요약 override_*(목록 필터·"원격 n분 남음"). 살아 있는 채널 중 **가장 늦게 끝나는** 것."""
+    best: tuple[dt.datetime, dict[str, Any]] | None = None
+    for v in (channels or {}).values():
+        if not isinstance(v, dict):
+            continue
+        u = _until_of(v)
+        if u is None or u <= now:
+            continue
+        if best is None or u > best[0]:
+            best = (u, v)
+    if best is None:
+        return CLEARED
+    v = best[1]
+    return OverrideState(act=v.get("act"), level=v.get("level"), seq=v.get("seq"), until=best[0])
+
+
+def channel_remaining(channels: dict[str, Any] | None, now: dt.datetime) -> dict[str, dict[str, Any]]:
+    """화면용 {채널: {act, seq, level, remaining_sec}} — 끝난 채널은 뺀다."""
+    out: dict[str, dict[str, Any]] = {}
+    for k, v in (channels or {}).items():
+        if not isinstance(v, dict):
+            continue
+        u = _until_of(v)
+        if u is None or u <= now:
+            continue
+        out[k] = {"act": v.get("act"), "seq": v.get("seq"), "level": v.get("level"),
+                  "remaining_sec": int((u - now).total_seconds())}
+    return out
 
 
 def remote_status(

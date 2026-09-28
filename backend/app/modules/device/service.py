@@ -19,11 +19,12 @@ from typing import Any
 from sqlalchemy import Select, case, delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.config import settings
 from app.constants import STATE_TRANSITIONS, DeviceState, EventKind, MsgType
-from app.core import ids, mqtt_accounts, presence
-from app.core.command_rules import remote_status
+from app.core import energy, ids, mqtt_accounts, presence
+from app.core.command_rules import channel_remaining, remote_status
 from app.core.config_rules import (
     bump_cv_server,
     effective_config,
@@ -48,6 +49,8 @@ from app.models.settings import DeviceSettings
 from app.models.system import MqttAccountExport
 from app.models.telemetry import Telemetry
 from app.modules.device.schemas import (
+    EnergyToday,
+    MapPoint,
     ConfigPatch,
     ConfigPatchOut,
     DeleteOut,
@@ -93,6 +96,7 @@ def _to_out(
     data["remote_active"], data["remote_remaining_sec"] = remote_status(
         device.last_telemetry, device.override_until, now
     )
+    data["override_ch"] = channel_remaining(device.override_ch, now)
     # FK 가 보장하지만 프로필을 못 찾으면(방금 지움) 화면이 죽지 않게 0 으로 표시한다.
     p_ti, p_ka = (profile.ti, profile.ka) if profile else (0, 0)
     eff = effective_config(
@@ -132,9 +136,25 @@ def _filtered(
         stmt = stmt.where(presence.online_clause(now))
     elif online is False:
         stmt = stmt.where(~presence.online_clause(now))
-    if q:
-        needle = f"%{q.strip()}%"
-        stmt = stmt.where(Device.uuid.ilike(needle) | Device.site.ilike(needle))
+    if q and q.strip():
+        # 한 글자·숫자 몇 개로도 찾는다(부분 일치, 문제점 #8). 시설명·UUID·주소·지역(법정동 이름).
+        # % _ \ 는 글자 그대로 찾도록 이스케이프한다.
+        raw = q.strip()
+        esc = raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        needle = f"%{esc}%"
+        # 지역은 조상 이름도 본다(시·군·구 이름으로 그 아래 말단 단말). 트리는 3단(시도>시군구>동).
+        leaf, mid, top = aliased(Region), aliased(Region), aliased(Region)
+        region_hit = (
+            select(leaf.id)
+            .join(mid, mid.id == leaf.parent_id, isouter=True)
+            .join(top, top.id == mid.parent_id, isouter=True)
+            .where(leaf.name.ilike(needle, escape="\\") | mid.name.ilike(needle, escape="\\")
+                   | top.name.ilike(needle, escape="\\"))
+        )
+        stmt = stmt.where(
+            Device.uuid.ilike(needle, escape="\\") | Device.site.ilike(needle, escape="\\")
+            | Device.address.ilike(needle, escape="\\") | Device.node_id.in_(region_hit)
+        )
     return stmt
 
 
@@ -177,6 +197,34 @@ async def list_devices(
         page=page, size=size,
         counts=await _counts(db, now),
     )
+
+
+async def map_points(db: AsyncSession, *, state: str | None) -> list[MapPoint]:
+    """좌표가 있는 단말 전부(지도). 온라인 판정은 목록과 같은 SQL(presence.online_clause)."""
+    now = _now()
+    stmt = (
+        select(Device.uuid, Device.site, Device.lat, Device.lon, Device.state,
+               presence.online_clause(now).label("is_online"),
+               Device.last_telemetry["on"].astext.label("on"), Region.name)
+        .join(Region, Region.id == Device.node_id, isouter=True)
+        .where(Device.lat.is_not(None), Device.lon.is_not(None))
+    )
+    if state:
+        stmt = stmt.where(Device.state == state.upper())
+    out: list[MapPoint] = []
+    for uuid, site, lat, lon, st, online, on, node_name in await db.execute(stmt):
+        try:
+            on_v = int(on) if on is not None else None
+        except ValueError:
+            on_v = None
+        out.append(MapPoint(uuid=uuid, site=site, lat=lat, lon=lon, state=st,
+                            is_online=bool(online), on=on_v, node_name=node_name))
+    return out
+
+
+async def energy_today(db: AsyncSession, uuids: list[str]) -> dict[str, EnergyToday]:
+    rows = await energy.today(db, uuids, _now())
+    return {u: EnergyToday(**v) for u, v in rows.items()}
 
 
 async def _get_with_profile(db: AsyncSession, uuid: str) -> tuple[Device, ConfigProfile | None]:
