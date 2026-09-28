@@ -48,7 +48,7 @@ QoS0 으로 온다. 네 패턴을 하나(`iotlight/device/+/#`)로 합치지 않
 - **900B 초과면 발행하지 않고 `PayloadTooLarge`**(단말 수신 줄 1,024B 한계·실측 950B 정상, ADR-007). 800B 초과는 경고.
   (2026-09-27 전에는 384B 였다 — 그것은 단말 → 서버 AT 발행 버퍼 이야기였다. SETTINGS_SET 최대 약 560B.)
 - `cmd` 는 절대 retain 하지 않는다. 재접속 단말에 옛 명령이 되살아난다(5차 소등이면 사고).
-- `REGISTER_ACK` = `{"type":"REGISTER_ACK","uuid","state"}` + `site`(있을 때) + `reason`(**REJECTED 일 때만**).
+- `REGISTER_ACK` = `{"type":"REGISTER_ACK","uuid","state","site","grp"}` — **state·site·grp 는 언제나 셋 다**, 없으면 `""` (사양서 §3.3, 2026-09-27 연동 시험 지적·문제점 #1: 즉시 응답에서 site·grp 가 빠지면 단말이 "없음"으로 받아 그룹 구독을 해제한다). `reason` 은 있을 때만(REJECTED).
   `cv`/`ti`/`ka` 는 절대 싣지 않는다(§3.3). 5차: `grp`(말단 배정돼 있으면 상태와 무관하게 항상) —
   `{"type","uuid","state"[,"site"][,"reason"][,"grp"]}`. 모양은 `config_sync.register_ack_job_for()` 하나가 정하고
   수신 경로(큐)와 관리자 즉시 경로가 같이 쓴다.

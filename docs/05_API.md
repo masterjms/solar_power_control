@@ -59,7 +59,7 @@ ACTIVE 단말에는 즉시 CONFIG_SET 을 보내지 않는다 — 다음 송신 
 
 ### `GET /api/devices?page=1&size=50&state=&online=&q=`
 - 정렬: **PENDING 먼저**, 그다음 `last_seen_at` 내림차순(NULL 마지막), uuid.
-- `q`: uuid 부분 일치 또는 site 부분 일치(대소문자 무시).
+- `q`: **부분 일치, 한 글자부터**(문제점 #8) — uuid · site · address · 지역 이름(말단 법정동과 그 시군구·시도 이름). 대소문자 무시, `%` `_` `\` 는 글자 그대로.
 - `online`: `is_online` 판정값으로 필터.
 ```json
 {"items": [ {DeviceOut} ], "total": 9832, "page": 1, "size": 50,
@@ -73,6 +73,14 @@ ACTIVE 단말에는 즉시 CONFIG_SET 을 보내지 않는다 — 다음 송신 
 - `config_mismatch`: `ti_device != ti_effective OR ka_device != ka_effective` (단말 보고값 vs 서버 의도값, 화면 1 "다르면 표시")
 - `is_online`: `online` 컬럼(브로커 로그) AND 수신 시각 보조 규칙(docs/02 §9). 둘 다 만족해야 true.
 - `last_telemetry` 는 **목록에도 포함**(bv/sc 열 표시용. 2026-09-26 프론트 요청).
+
+### `GET /api/devices/map?state=` → 지도 핀 (2026-09-28, 문제점 #3)
+좌표(lat·lon)가 있는 단말 전부. 필드 최소: `[{"uuid","site","lat","lon","state","is_online","on","node_name"}]`. `on` = 마지막 Telemetry on(없으면 null).
+`/{uuid}` 보다 먼저 선언(경로 충돌 방지).
+
+### `GET /api/devices/energy?uuid=A&uuid=B…` (최대 500) → 오늘 누적 (문제점 #11)
+KST 0시~지금 `{uuid: {"samples","gen_wh","use_wh","co2_g"}}`. 오늘 Telemetry 가 없는 단말은 빠진다(화면은 공백).
+발전 = ∫pp, 사용 = ∫li·bv (사다리꼴, 간격 2시간 넘으면 빼기 — daily_rollup 과 같은 규칙), 감축 = 발전 kWh × `GHG_KG_PER_KWH`(기본 0.4781 kgCO2eq/kWh, .env 로 바꿈). `core/energy.py`.
 
 ### `GET /api/devices/{uuid}` → `DeviceOut`. 404 `DEVICE_NOT_FOUND`.
 ### `GET /api/devices/{uuid}/telemetry?from=&to=&limit=200` (변경 없음)
@@ -152,6 +160,8 @@ RETIRED  → PENDING(같은 보드 재설치. 빈 retain 상태에서 REGISTER �
 구현: `backend/app/modules/{region,command}/`, 규칙 `app/core/command_rules.py`, 처리 흐름 docs/02 §16.
 
 ### `GET /api/me` → `{"user":"admin","role":"super_admin"|"admin"}`
+### `GET /api/ui-config` → `{"kakao_js_key": "..."|null, "ghg_kg_per_kwh": 0.4781}` (2026-09-28)
+카카오 **JavaScript** 키(지도)는 브라우저가 쓰는 공개 키라 준다. REST 키는 절대 싣지 않는다.
 
 ## 법정동 트리
 
@@ -169,6 +179,9 @@ RETIRED  → PENDING(같은 보드 재설치. 빈 retain 상태에서 REGISTER �
 ```json
 [{"address_name":"경기 군포시 금정동 ...","bjd_code":"4141010400","sido":"경기도","sigungu":"군포시","dong":"금정동","lat":37.36,"lon":126.93}]
 ```
+
+### `GET /api/geo/reverse?lat=&lon=` → `GeoResult | null` (2026-09-28, 승인 창 지도 위치 보정)
+카카오 `coord2regioncode`(region_type **B** = 법정동 code 앞 10자리) + `coord2address`(도로명 있으면 도로명, 없으면 지번). 법정동이 없는 자리(바다 등)면 `null`. 오류는 search 와 같은 503.
 
 ### `POST /api/regions/from-address` (최고관리자) `{"query":"..."}` 또는 `{"pick":{GeoResult}}`
 검색 첫 결과(또는 고른 결과)로 시도·시군구·법정동을 find-or-create. 말단 반환(201, 이미 있으면 200).
@@ -288,3 +301,6 @@ suntable 로 표 계산 → `{"crc":"69C1DF86","lat_e6","lon_e6","on","off","row
 
 ### 에러 코드 추가
 `INVALID_STATE` 409 · `SETTINGS_PENDING` 409 · `SETTINGS_NOT_READ` 409 · `SETTINGS_INCOMPLETE` 422 · `SETTINGS_RANGE` 422 · `SETTINGS_RULE` 422 · `SETTINGS_NOT_CHANGED`(accept/revert 할 게 없음) 409
+
+### DeviceOut 추가 (2026-09-28, 0005)
+- `override_ch`: `{"1": {"act","seq","level","remaining_sec"}, "2": {...}}` — 채널별 원격(끝난 채널은 빠진다). `override_*` 는 그 요약.
