@@ -110,6 +110,9 @@ async def s3_01(ctx: Ctx) -> None:
                          what="재전송에도 서버가 매번 REGISTER_ACK 응답(§3.3)")
     delay = rx_delay(dev, "REGISTER_ACK", dev.last_register_sent_at)
     ctx.check(delay is not None and delay < IMMEDIATE, f"재전송 응답도 즉시 ({delay and round(delay, 3)}s)")
+    # 즉시 응답(S-7)도 state·site·grp 셋 다, 없으면 "" (§3.3, 문제점 #1)
+    ctx.check_eq(dev.stats.register_ack_incomplete, 0, "받은 REGISTER_ACK 모두 state·site·grp 셋 다")
+    ctx.check(ack.get("site") == "" and ack.get("grp") == "", f"처음 보는 단말 site·grp = \"\": {ack}")
 
     r = await ctx.s.rest.ping(dev.uuid)
     ctx.check(r.status_code < 300, "PENDING 상태에서 ping 허용")
@@ -155,7 +158,8 @@ async def s3_02(ctx: Ctx) -> None:
     await _wait_gate(ctx, dev, "ACTIVE")
     ack = await _retained_ack(ctx, dev)
     ctx.check(ack and ack.get("state") == "ACTIVE" and ack.get("site") == "A" * 24, f"retain REGISTER_ACK ACTIVE+site(24자): {ack}")
-    ctx.check(not ({"cv", "ti", "ka", "grp"} & set(ack)), "REGISTER_ACK 에 설정값 없음(§3.3)")
+    ctx.check(not ({"cv", "ti", "ka"} & set(ack)), "REGISTER_ACK 에 설정값 없음(§3.3)")
+    ctx.check(ack.get("grp") == "", f"지역 미배정이면 grp = \"\" (항상 싣는다, §3.3): {ack.get('grp')!r}")
 
     await ctx.wait_until(lambda: dev.stats.tm_sent >= 1, timeout=10, what="ACTIVE 뒤 단말 TM 1건")
     cfg = await wait_config_set(ctx, dev, count=1, timeout=10, what="TM 직후 CONFIG_SET")

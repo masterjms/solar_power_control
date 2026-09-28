@@ -179,10 +179,10 @@ def test_local_mode_acks_local_and_discards_even_after_end_local():
 
 def test_start_local_cancels_all_remote_slots_and_they_do_not_come_back():
     d = make()
-    d.handle_command(cmd(seq=1, act="off", dur=600), level="all")
-    d.handle_command(cmd(seq=2, act="on", dur=600), level="group")
+    d.handle_command(cmd(seq=1, act="off", ch=[1, 2, 3], dur=600), level="all")
+    d.handle_command(cmd(seq=2, act="on", ch=[2], dur=600), level="group")
     d.handle_command(cmd(seq=3, act="pwm", ch=[1], pwm=[30], dur=600))
-    assert set(d.slot_dump()) == {"all", "group", "device"} and d.md == 2
+    assert set(d.slot_dump()) == {"ch1", "ch2", "ch3"} and d.slot_levels() == {"device", "group", "all"} and d.md == 2
     assert d.start_local() == 3
     assert d.slot_dump() == {} and d.md == 1 and d.stats.local_cancelled_slots == 3
     assert d.start_local() == 0            # 이미 현장
@@ -222,35 +222,39 @@ def test_seq_memory_keeps_last_8_only():
     assert len(d._seq_memory) == SEQ_MEMORY
 
 
-# ── 슬롯 우선순위·만료 (§3.10.8) ──────────────────────────────────────────
+# ── 채널마다 마지막 명령 하나 (§3.10.8 개정, F/W 2026-09-27-9) ─────────────────
 
-def test_slot_priority_device_over_group_over_all_and_fallback():
+def test_later_command_wins_regardless_of_path_and_expiry_goes_to_schedule():
+    """개별 > 그룹 > 전체 계층은 없어졌다. 나중 명령이 이기고, 끝나면 이전 명령으로 돌아가지 않고 스케줄."""
     d = make()
     d.handle_command(cmd(seq=1, act="off", dur=100), level="all", now=0)
     d.handle_command(cmd(seq=2, act="on", dur=60), level="group", now=0)
     assert d.current_override(now=1).act == "on"
     d.handle_command(cmd(seq=3, act="pwm", pwm=[10, 20], dur=20), level="device", now=0)
     assert d.current_override(now=1).act == "pwm"
-    assert d.current_override(now=21).act == "on"     # 개별 만료 → 그룹
-    assert d.current_override(now=61).act == "off"    # 그룹 만료 → 전체
-    assert d.current_override(now=101) is None        # 전부 만료 → 스케줄
+    assert d.current_override(now=21) is None        # 개별 만료 → 그룹/전체로 돌아가지 않고 스케줄
+    # 개별 뒤에 온 전체 명령도 이긴다(경로 우선순위 없음)
+    d.handle_command(cmd(seq=4, act="on", dur=100), level="device", now=30)
+    d.handle_command(cmd(seq=5, act="off", dur=100), level="all", now=31)
+    assert d.current_override(now=32).act == "off" and d.slot_levels(now=32) == {"all"}
 
 
-def test_auto_clears_only_its_own_level():
+def test_auto_clears_its_channels_whatever_path_set_them():
     d = make()
     d.handle_command(cmd(seq=1, act="off", dur=100), level="group", now=0)
-    d.handle_command(cmd(seq=2, act="on", dur=100), level="device", now=0)
-    d.handle_command(cmd(seq=3, act="auto", dur=...), level="device", now=1)
-    assert d.current_override(now=2).act == "off" and set(d.active_slots(now=2)) == {"group"}
-    d.handle_command(cmd(seq=4, act="auto", dur=...), level="all", now=2)   # 전체 auto 는 그룹 슬롯을 안 건드린다
-    assert set(d.active_slots(now=3)) == {"group"}
+    d.handle_command(cmd(seq=2, act="auto", ch=[1], dur=...), level="all", now=1)
+    assert set(d.active_slots(now=2)) == {2}          # ch1 만 스케줄로, ch2 는 그룹 off 그대로
+    d.handle_command(cmd(seq=3, act="auto", dur=...), level="device", now=2)
+    assert d.active_slots(now=3) == {}
 
 
-def test_same_level_later_command_overwrites():
+def test_other_channel_command_does_not_touch():
+    """주등 on 뒤 입간판 off 가 와도 주등은 그대로(§3.10.8 표)."""
     d = make()
-    d.handle_command(cmd(seq=1, act="off", dur=100), level="group", now=0)
-    d.handle_command(cmd(seq=2, act="on", dur=10), level="group", now=5)
-    assert d.current_override(now=6).act == "on" and d.current_override(now=16) is None
+    d.handle_command(cmd(seq=1, act="on", ch=[1], dur=100), level="device", now=0)
+    d.handle_command(cmd(seq=2, act="off", ch=[2], dur=10), level="group", now=5)
+    assert d.channel_output(now=6) == {1: 100, 2: 0, 3: None}
+    assert d.channel_output(now=16) == {1: 100, 2: None, 3: None}
 
 
 def test_channel_output_per_channel_and_pw_in_telemetry(monkeypatch):
@@ -264,9 +268,11 @@ def test_channel_output_per_channel_and_pw_in_telemetry(monkeypatch):
     assert d.channel_output() == {1: 50, 2: 0, 3: None}
     tm = d.build_tm(NOON)
     assert tm["md"] == 2 and tm["pw"] == [35, 0, 0] and tm["on"] == 1
-    d.handle_command(cmd(seq=3, act="on", ch=[2], dur=100), level="device")   # 개별 슬롯이 ch2 로 덮임
-    assert d.channel_output() == {1: 0, 2: 100, 3: None}
-    assert d.build_tm(NOON)["pw"] == [0, 64, 0]
+    d.handle_command(cmd(seq=3, act="on", ch=[2], dur=100), level="device")   # ch2 만 새 명령, ch1 은 pwm 50 그대로
+    assert d.channel_output() == {1: 50, 2: 100, 3: None}
+    assert d.build_tm(NOON)["pw"] == [35, 64, 0]
+    now[0] = 51                                                                # ch1 pwm(dur 50) 끝 → ch1 스케줄
+    assert d.channel_output() == {1: None, 2: 100, 3: None}
     now[0] = 101
     tm = d.build_tm(NOON)
     assert tm["md"] == 0 and tm["pw"] == [0, 0, 0] and d.slot_dump() == {}
@@ -374,7 +380,7 @@ async def test_dispatch_group_command_acks_on_own_result_topic_qos1():
     await d._dispatch(f"iotlight/group/{GRP_A}/cmd", json.dumps(cmd(seq=3)).encode(), False)
     assert fake.published == [(d.topic("result"), {"type": "COMMAND_ACK", "uuid": d.uuid, "seq": 3, "result": "OK",
                                                    "act": "off", "dur": 600}, 1)]
-    assert d.stats.cmd_rx_by_level["group"] == 1 and d.slot_dump()["group"]["seq"] == 3
+    assert d.stats.cmd_rx_by_level["group"] == 1 and d.slot_dump()["ch1"]["seq"] == 3         and d.slot_dump()["ch1"]["level"] == "group"
     # 지금 구독 중이 아닌 그룹(해제 직후 도착 등)은 버린다
     await d._dispatch(f"iotlight/group/{GRP_B}/cmd", json.dumps(cmd(seq=4)).encode(), False)
     assert d.stats.cmd_foreign_group == 1 and len(fake.published) == 1
@@ -390,7 +396,7 @@ async def test_silent_commands_ignores_entirely_then_processes_retry():
     await d._dispatch("iotlight/all/cmd", json.dumps(cmd(seq=9)).encode(), False)
     assert d.stats.cmd_silenced == 1 and not fake.published and d.stats.cmd_rx == 0 and not d._seq_memory
     await d._dispatch(d.topic("cmd"), json.dumps(cmd(seq=9, ts=kst_ts_sec())).encode(), False)
-    assert fake.published[-1][1]["result"] == "OK" and d.slot_dump()["device"]["seq"] == 9
+    assert fake.published[-1][1]["result"] == "OK" and d.slot_dump()["ch1"]["seq"] == 9
     assert len(d.commands_received(seq=9)) == 2
 
 

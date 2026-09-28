@@ -295,7 +295,8 @@ class ApprovalGate:
 
 @dataclass
 class OverrideSlot:
-    """계층 하나(개별/그룹/전체)의 (값, 만료시각). `ch` 에 든 채널만 건드린다(§3.10.7 "없는 채널은 건드리지 않는다")."""
+    """채널 하나의 (값, 만료시각) — F/W 2026-09-27-9 "채널마다 마지막 명령 하나"(§3.10.8 개정).
+    `ch` 는 그 채널 하나, `level` 은 어느 경로(개별/그룹/전체)로 왔는지 기록용일 뿐 우선순위는 없다."""
 
     act: str                       # on / off / pwm (auto 는 슬롯을 지운다)
     ch: tuple[int, ...]
@@ -431,6 +432,9 @@ class Stats:
     config_ack_flash: int = 0
     register_ack_rx: int = 0
     register_ack_empty_rx: int = 0
+    #: state·site·grp 중 하나라도 빠진 REGISTER_ACK(§3.3 "언제나 셋 다"). 실기 펌웨어는 빠진 grp 를
+    #: "없음"으로 받아 그룹 구독을 해제한다 — 서버 회귀 검출용(2026-09-27 연동 시험 지적).
+    register_ack_incomplete: int = 0
     #: COMMAND 처리(§3.10.7) — 처리한 건수(무시·지연 대기 제외), 계층별 수신, 결과별 ACK.
     cmd_rx: int = 0
     cmd_rejected: int = 0          # = cmd_ack["BAD"] (옛 이름 유지)
@@ -632,7 +636,7 @@ class SimDevice:
 
         self.sq = 0
         self.er = 0
-        self._overrides: dict[str, OverrideSlot] = {}
+        self._overrides: dict[int, OverrideSlot] = {}
         #: 최근 8개 seq → 첫 ACK(§3.10.7). 순서 = 받은 순.
         self._seq_memory: OrderedDict[int, dict[str, Any]] = OrderedDict()
         self._subscriptions: list[str] = []
@@ -748,7 +752,7 @@ class SimDevice:
             self.end_local()
 
     def _cancel_all_slots(self) -> int:
-        n = len(self._overrides)
+        n = len(self._overrides)   # 취소한 채널 슬롯 수
         for slot in self._overrides.values():
             slot.cancelled = True
         self._overrides.clear()
@@ -773,35 +777,27 @@ class SimDevice:
         self._local_mode = False
 
     def _prune(self, now: float) -> None:
-        for level in list(self._overrides):
-            if not self._overrides[level].active(now):
-                del self._overrides[level]
+        for channel in list(self._overrides):
+            if not self._overrides[channel].active(now):
+                del self._overrides[channel]
 
-    def active_slots(self, now: float | None = None) -> dict[str, OverrideSlot]:
-        """만료되지 않은 슬롯 {level: slot}. 만료된 것은 여기서 지운다(dur 경과 → 스케줄/하위 계층 복귀)."""
+    def active_slots(self, now: float | None = None) -> dict[int, OverrideSlot]:
+        """만료되지 않은 슬롯 {채널: slot}. 만료된 것은 여기서 지운다(dur 경과 → 그 채널은 스케줄)."""
         self._prune(time.monotonic() if now is None else now)
         return dict(self._overrides)
 
     def current_override(self, now: float | None = None) -> OverrideSlot | None:
-        """유효한 슬롯 중 최상위(개별 > 그룹 > 전체, §3.10.8). 없으면 None(스케줄)."""
+        """대표 슬롯 — 주등(채널 1)이 있으면 그것, 없으면 가장 낮은 번호 채널. 없으면 None(스케줄)."""
         slots = self.active_slots(now)
-        for level in LEVELS:
-            if level in slots:
-                return slots[level]
+        for channel in sorted(slots):
+            return slots[channel]
         return None
 
     def channel_output(self, now: float | None = None) -> dict[int, int | None]:
-        """채널별 원격 밝기 %. 채널마다 그 채널을 건드리는 유효 슬롯 중 최상위가 정한다. None = 스케줄."""
+        """채널별 원격 밝기 %. 그 채널의 마지막 명령이 정한다(경로 무관). None = 스케줄."""
         slots = self.active_slots(now)
-        out: dict[int, int | None] = {}
-        for channel in CHANNELS:
-            out[channel] = None
-            for level in LEVELS:
-                slot = slots.get(level)
-                if slot is not None and (pct := slot.percent(channel)) is not None:
-                    out[channel] = pct
-                    break
-        return out
+        return {channel: (slots[channel].percent(channel) if channel in slots else None)
+                for channel in CHANNELS}
 
     @property
     def effective_act(self) -> str:
@@ -821,9 +817,13 @@ class SimDevice:
     def slot_dump(self, now: float | None = None) -> dict[str, dict[str, Any]]:
         """시나리오 로그용 슬롯 상태."""
         now = time.monotonic() if now is None else now
-        return {level: {"act": s.act, "ch": list(s.ch), "pwm": list(s.pwm) if s.pwm else None, "seq": s.seq,
-                        "remaining_sec": round(s.expires_at - now, 1)}
-                for level, s in self.active_slots(now).items()}
+        return {f"ch{channel}": {"act": s.act, "level": s.level, "pwm": list(s.pwm) if s.pwm else None,
+                                 "seq": s.seq, "remaining_sec": round(s.expires_at - now, 1)}
+                for channel, s in sorted(self.active_slots(now).items())}
+
+    def slot_levels(self, now: float | None = None) -> set[str]:
+        """살아 있는 슬롯이 어느 경로(device/group/all)로 왔는지 — 시나리오 확인용."""
+        return {s.level for s in self.active_slots(now).values()}
 
     def rtc_now(self) -> datetime:
         """단말 RTC(KST). `clock_skew_sec` 만큼 어긋나 있다."""
@@ -910,29 +910,30 @@ class SimDevice:
         return "OK"
 
     def _apply(self, level: str, payload: dict[str, Any], *, received_at: float) -> None:
-        """그 계층 슬롯에 적용. 만료 = 받은 시각 + dur. `auto` 는 그 계층 슬롯만 지운다(가정 B4).
-        만료 감시를 걸어 두어 유지시간이 끝나면 약 2초 뒤 Telemetry 를 한 건 더 보낸다(§3.10.8)."""
+        """`ch` 의 채널마다 이전 명령을 버리고 새 명령으로(경로 무관, F/W 2026-09-27-9). `auto` 는 그 채널을
+        스케줄로. 다른 채널은 건드리지 않는다. 만료 = 받은 시각 + dur, 끝나면 약 2초 뒤 Telemetry(§3.10.8)."""
         act = payload["act"]
-        old = self._overrides.pop(level, None)
-        if old is not None:
-            old.cancelled = True
-        if act == "auto":
-            return
         ch = tuple(payload.get("ch") or CHANNELS)
         pwm = tuple(int(p) for p in payload["pwm"]) if act == "pwm" else None
-        slot = OverrideSlot(act=act, ch=ch, pwm=pwm, expires_at=received_at + int(payload["dur"]),
-                            seq=int(payload["seq"]), level=level)
-        self._overrides[level] = slot
-        self._spawn(self._watch_expiry(slot))
+        for i, channel in enumerate(ch):
+            old = self._overrides.pop(channel, None)
+            if old is not None:
+                old.cancelled = True
+            if act == "auto":
+                continue
+            slot = OverrideSlot(act=act, ch=(channel,), pwm=(pwm[i],) if pwm else None,
+                                expires_at=received_at + int(payload["dur"]), seq=int(payload["seq"]), level=level)
+            self._overrides[channel] = slot
+            self._spawn(self._watch_expiry(slot, channel))
 
-    async def _watch_expiry(self, slot: OverrideSlot) -> None:
+    async def _watch_expiry(self, slot: OverrideSlot, channel: int) -> None:
         await asyncio.sleep(max(0.0, slot.expires_at - time.monotonic()))
         if slot.cancelled:
             return
-        if self._overrides.get(slot.level) is slot:
-            del self._overrides[slot.level]
+        if self._overrides.get(channel) is slot:
+            del self._overrides[channel]
         slot.cancelled = True
-        log.info("[%s] 원격 %s seq=%s 만료", self.uuid, slot.level, slot.seq)
+        log.info("[%s] 원격 ch%d(%s) seq=%s 만료", self.uuid, channel, slot.level, slot.seq)
         self._schedule_extra_tm("expiry")
 
     # ── 추가 Telemetry (§3.10.8) ─────────────────────────────────────────
@@ -1034,6 +1035,9 @@ class SimDevice:
         if payload.get("uuid") not in (None, self.uuid):
             log.warning("[%s] REGISTER_ACK uuid 불일치 %s", self.uuid, payload.get("uuid"))
             return
+        if not {"state", "site", "grp"} <= set(payload):
+            self.stats.register_ack_incomplete += 1
+            log.warning("[%s] REGISTER_ACK 에 state·site·grp 중 빠진 것 %s", self.uuid, payload)
         was_active = self.gate.state == "ACTIVE"
         self.gate.on_ack(payload.get("state"))
         grp = payload.get("grp")

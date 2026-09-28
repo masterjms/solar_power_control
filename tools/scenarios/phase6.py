@@ -610,7 +610,7 @@ async def s6_11(ctx: Ctx) -> None:
     await ctx.wait_until(lambda: remote(True), timeout=10, what="서버 remote_active true")
 
     n = len(d.extra_tm_log)
-    ctx.check_eq(d.start_local(), 1, "현장 시작 → 원격 슬롯 1개 취소")
+    ctx.check_eq(d.start_local(), 2, "현장 시작 → 원격 슬롯 취소(채널 1·2, F/W -9 채널별 슬롯)")
     ctx.check(d.slot_dump() == {} and d.md == 1, "슬롯 없음·md 1")
     await ctx.wait_until(lambda: len(d.extra_tm_log) > n, timeout=5, interval=0.1, what="현장 취소 뒤 추가 TM")
     _, why, extra = d.extra_tm_log[-1]

@@ -348,7 +348,7 @@ async def test_start_local_with_remote_sends_md1_extra_tm():
     d, fake = wired()
     await d._dispatch(d.topic("cmd"), raw(cmd(1)), False)
     await asyncio.sleep(0.15)
-    assert d.start_local() == 1
+    assert d.start_local() == 2            # cmd() 는 ch [1,2] — 채널 슬롯 2개 취소
     await asyncio.sleep(0.15)
     assert d.extra_tm_log[-1][1] == "local" and fake.of("TELEMETRY")[-1]["md"] == 1
     n = d.stats.extra_tm

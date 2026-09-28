@@ -510,7 +510,7 @@ async def s5_02(ctx: Ctx) -> None:
 
     await wait_acks(ctx, answering, seq, "OK", timeout=ACK_WAIT * 2)
     ctx.check(all(d.stats.cmd_silenced == 1 and not d.acks_for(seq) for d in silent), "무응답 2대는 ACK 없음")
-    ctx.check(all(d.effective_act == "off" and "group" in d.slot_dump() for d in answering), "8대 그룹 슬롯 off")
+    ctx.check(all(d.effective_act == "off" and "group" in d.slot_levels() for d in answering), "8대 그룹 슬롯 off")
     await ctx.hold(1.0, "B 쪽 늦은 도착이 없는지")
     ctx.check(all(not d.commands_received(seq=seq) and not d.acks_for(seq) for d in devs_b), "말단 B 3대는 수신 없음")
     grp_pubs = await published(ctx, sn, seq, 1)
@@ -658,7 +658,7 @@ async def s5_04(ctx: Ctx) -> None:
     ctx.check_eq((body.get("target") or {}).get("kind"), "all", "target.kind")
     await wait_acks(ctx, active, seq, "OK")
     await wait_acks(ctx, [pending, suspended], seq, "STATE", what="PENDING·SUSPENDED 는 STATE")
-    ctx.check(all("all" in d.slot_dump() for d in active) and not pending.slot_dump() and not suspended.slot_dump(),
+    ctx.check(all("all" in d.slot_levels() for d in active) and not pending.slot_dump() and not suspended.slot_dump(),
               "ACTIVE 만 전체 슬롯 적용")
     pubs = await published(ctx, sn, seq, 1)
     ctx.check(len(pubs) == 1 and pubs[0][1] == all_topic, f"all/cmd 정확히 1회: {[x[1] for x in pubs]}")
@@ -672,15 +672,15 @@ async def s5_04(ctx: Ctx) -> None:
     ctx.check(await ctx.s.rest.health_ok(), "/health ok (대상 밖 STATE ACK 수신 뒤)")
 
 
-# ── S5-05 우선순위·만료 ─────────────────────────────────────────────────
+# ── S5-05 채널마다 마지막 명령·만료 (F/W 2026-09-27-9) ─────────────────────
 
-@scenario("S5-05", "우선순위·만료 — 개별>그룹, 개별 만료 → 그룹 복귀, 개별 auto, 재부팅 소거", phase=5,
-          requires="group_cmd", timeout=180)
+@scenario("S5-05", "채널마다 마지막 명령 — 경로 무관 나중 명령 승, 만료 → 스케줄(그룹 복귀 없음), 채널 독립, auto, 재부팅 소거",
+          phase=5, requires="group_cmd", timeout=180)
 async def s5_05(ctx: Ctx) -> None:
-    """그룹 off(dur 90) → 개별 on(dur 20) 이 이긴다(TM pw1 = 기준, 서버 override_level device) → 20초 뒤 개별 만료 →
-    그룹 off 로 복귀(md 2 유지, pw1 0) → 개별 on 다시 → 개별 auto → 그룹 off(개별 auto 는 그 계층만, 가정 B4) →
-    그룹 off 새 명령(서버 override_level group) → `reboot()` → 슬롯 전부 소거·md 0, 재접속 retain 으로 그룹 재구독,
-    서버는 sq 감소(REBOOT)로 override 필드 NULL·remote_active false·REBOOT 이벤트 1건."""
+    """§3.10.8 개정: 개별 > 그룹 > 전체 계층 폐기. 그룹 off(dur 90) → 개별 on(dur 20) 이 이긴다(나중 명령) →
+    20초 뒤 개별 만료 → **스케줄**(그룹 off 로 돌아가지 않는다, md 0) · 서버 override_ch 비움 →
+    개별 on ch1 + 그룹 off ch2 → 두 채널 독립(서버 override_ch 1=device, 2=group) → 그룹 off ch1 이 개별 on 을 덮음 →
+    개별 auto ch1 → ch1 스케줄, ch2 그룹 off 유지 → `reboot()` → 전부 소거, 서버 override NULL·REBOOT 1건."""
     tree = await make_tree(ctx, [1])
     leaf = tree.leaves[0]
     (d,) = await devices_in(ctx, 1, leaf, offset=0)
@@ -693,34 +693,53 @@ async def s5_05(ctx: Ctx) -> None:
 
     i = await send(ctx, target("device", d.uuid), "on", dur=20)
     await wait_acks(ctx, [d], i["seq"], "OK")
-    ctx.check_eq(d.effective_act, "on", "개별 on 이 그룹 off 보다 우선(§3.10.8)")
+    ctx.check_eq(d.effective_act, "on", "나중에 온 개별 on 이 그룹 off 를 덮음")
     tm = await tm_now(ctx, d)
     ctx.check(tm["md"] == 2 and tm["pw"][0] == base, f"TM pw1 = 기준 {base}: {tm['pw']}")
 
     async def level_device() -> bool:
         dv = await rest_device(ctx, d.uuid)
-        return dv.get("override_level") == "device" and dv.get("override_seq") == i["seq"]
-    await ctx.wait_until(level_device, timeout=SERVER_WAIT, what="서버 override_level device")
-    await ctx.wait_until(lambda: d.effective_act == "off", timeout=30, what="개별 dur 20 만료 → 그룹 off 복귀")
-    ctx.check(set(d.slot_dump()) == {"group"}, f"남은 슬롯 = 그룹: {d.slot_dump()}")
+        ch = dv.get("override_ch") or {}
+        return dv.get("override_level") == "device" and dv.get("override_seq") == i["seq"]             and ch.get("1", {}).get("seq") == i["seq"] and ch.get("2", {}).get("seq") == i["seq"]
+    await ctx.wait_until(level_device, timeout=SERVER_WAIT, what="서버 override_ch 1·2 = 개별 명령")
+    await ctx.wait_until(lambda: d.md == 0, timeout=30, what="개별 dur 20 만료 → 스케줄(그룹 복귀 없음)")
+    ctx.check(d.slot_dump() == {} and d.effective_act == "schedule", f"남은 슬롯 없음: {d.slot_dump()}")
     tm = await tm_now(ctx, d)
-    ctx.check(tm["md"] == 2 and tm["pw"][0] == 0, f"복귀 뒤 TM md 2·pw1 0: {tm['md']} {tm['pw']}")
+    ctx.check_eq(tm["md"], 0, "만료 뒤 TM md 0")
 
-    i2 = await send(ctx, target("device", d.uuid), "on", dur=300)
+    async def server_expired() -> dict | None:
+        dv = await rest_device(ctx, d.uuid)
+        return dv if not dv.get("override_ch") and dv.get("remote_active") is False else None
+    await ctx.wait_until(server_expired, timeout=SERVER_WAIT, what="서버도 원격 끝(override_ch 비움·remote_active false)")
+
+    i2 = await send(ctx, target("device", d.uuid), "on", ch=[1], dur=300)
     await wait_acks(ctx, [d], i2["seq"], "OK")
-    ctx.check_eq(d.effective_act, "on", "개별 on 다시")
-    au = await send(ctx, target("device", d.uuid), "auto")
-    await wait_acks(ctx, [d], au["seq"], "OK")
-    ctx.check(d.effective_act == "off" and set(d.slot_dump()) == {"group"}, f"개별 auto → 그룹 off 로: {d.slot_dump()}")
-
-    g2 = await send(ctx, target("node", leaf.id), "off", dur=600)
+    g2 = await send(ctx, target("node", leaf.id), "off", ch=[2], dur=600)
     await wait_acks(ctx, [d], g2["seq"], "OK")
+    out = d.channel_output()
+    ctx.check(out[1] == 100 and out[2] == 0, f"주등 on 그대로, 입간판만 off(채널 독립): {out}")
+
+    async def two_channels() -> dict | None:
+        dv = await rest_device(ctx, d.uuid)
+        ch = dv.get("override_ch") or {}
+        ok = ch.get("1", {}).get("level") == "device" and ch.get("2", {}).get("level") == "group"
+        return dv if ok else None
+    dv = await ctx.wait_until(two_channels, timeout=SERVER_WAIT, what="서버 override_ch 1=device·2=group")
+    ctx.check(dv.get("override_seq") == g2["seq"], f"요약 = 가장 늦게 끝나는 채널(ch2 그룹 600s): {dv.get('override_seq')}")
+
+    g3 = await send(ctx, target("node", leaf.id), "off", ch=[1], dur=120)
+    await wait_acks(ctx, [d], g3["seq"], "OK")
+    ctx.check(d.channel_output()[1] == 0 and d.slot_levels() == {"group"}, f"그룹 off ch1 이 개별 on 을 덮음: {d.slot_dump()}")
+    au = await send(ctx, target("device", d.uuid), "auto", ch=[1])
+    await wait_acks(ctx, [d], au["seq"], "OK")
+    out = d.channel_output()
+    ctx.check(out[1] is None and out[2] == 0, f"개별 auto ch1 → ch1 스케줄, ch2 그룹 off 유지: {out}")
     await tm_now(ctx, d)
 
-    async def override_group() -> bool:
+    async def only_ch2() -> bool:
         dv = await rest_device(ctx, d.uuid)
-        return bool(dv.get("override_until")) and dv.get("override_level") == "group"
-    await ctx.wait_until(override_group, timeout=SERVER_WAIT, what="서버 override_level group·until 기록")
+        return set((dv.get("override_ch") or {})) == {"2"} and bool(dv.get("override_until"))
+    await ctx.wait_until(only_ch2, timeout=SERVER_WAIT, what="서버 override_ch = ch2 만")
     reboots0 = len(await ctx.s.db.events(d.uuid, "REBOOT"))
     await d.reboot(reconnect_after=0.5)
     await ctx.wait_until(lambda: d.state == "ACTIVE", timeout=20, what="재부팅 뒤 retain ACTIVE")
@@ -731,7 +750,8 @@ async def s5_05(ctx: Ctx) -> None:
         dv = await rest_device(ctx, d.uuid)
         return dv if dv.get("override_until") is None and dv.get("remote_active") is False else None
     dv = await ctx.wait_until(cleared, timeout=SERVER_WAIT * 2, what="서버 REBOOT 감지 → override 필드 NULL")
-    ctx.check(dv.get("override_act") is None and dv.get("override_level") is None, "override_act/level NULL")
+    ctx.check(dv.get("override_act") is None and dv.get("override_level") is None and not dv.get("override_ch"),
+              "override_act/level/ch 비움")
     ctx.check_eq(len(await ctx.s.db.events(d.uuid, "REBOOT")), reboots0 + 1, "REBOOT 이벤트 수")
 
 
@@ -812,7 +832,7 @@ async def s5_07(ctx: Ctx) -> None:
     b0 = await send(ctx, target("device", d.uuid), "off", dur=600)
     await wait_acks(ctx, [d], b0["seq"], "OK")
     ctx.check_eq(d.md, 2, "원격 적용")
-    ctx.check_eq(d.start_local(), 1, "현장 시작 → 원격 슬롯 취소")
+    ctx.check_eq(d.start_local(), 2, "현장 시작 → 원격 슬롯 취소(채널 1·2, F/W -9 채널별 슬롯)")
     tm = await tm_now(ctx, d)
     ctx.check_eq(tm["md"], 1, "현장 조작 중 TM md")
 
