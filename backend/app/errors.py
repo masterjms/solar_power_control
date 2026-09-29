@@ -211,6 +211,34 @@ class SettingsRule(ValidationFailed):
     message = "설정 규칙을 어겼습니다."
 
 
+# ── S-25 스케줄 배포 (ADR-010) ──────────────────────────────────────────
+class ScheduleProfileNotFound(NotFound):
+    code = "SCHEDULE_PROFILE_NOT_FOUND"
+    message = "없는 스케줄 프로필입니다."
+
+
+class ScheduleProfileInUse(Conflict):
+    code = "SCHEDULE_PROFILE_IN_USE"
+    message = "노드나 단말에 배정된 스케줄 프로필은 지울 수 없습니다. 배정을 먼저 푸세요."
+
+
+class ScheduleProfileNameTaken(Conflict):
+    code = "SCHEDULE_PROFILE_NAME_TAKEN"
+    message = "같은 이름의 스케줄 프로필이 있습니다."
+
+
+class DeployJobNotFound(NotFound):
+    code = "DEPLOY_JOB_NOT_FOUND"
+    message = "없는 배포 작업입니다."
+
+
+class DeployNoTargets(Conflict):
+    """그 범위에 이 프로필이 걸린 운영(ACTIVE) 단말이 없다."""
+
+    code = "DEPLOY_NO_TARGETS"
+    message = "이 프로필이 배정된 운영(ACTIVE) 단말이 없습니다."
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """앱 전역 예외 핸들러 등록. main.py 에서 한 번 호출한다."""
 

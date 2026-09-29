@@ -115,6 +115,9 @@ class Db:
         for sql in ("DELETE FROM device_settings_history WHERE uuid = $1", "DELETE FROM device_settings WHERE uuid = $1",
                     "DELETE FROM telemetry WHERE uuid = $1", "DELETE FROM device_event WHERE uuid = $1",
                     "DELETE FROM command_ack WHERE uuid = $1", "DELETE FROM command_target WHERE uuid = $1",
+                    # 알람·배포 행은 device FK 가 없거나 CASCADE 라 REST 삭제 뒤에도 남을 수 있다(S7-xx 재실행)
+                    "DELETE FROM alarm WHERE uuid = $1", "DELETE FROM deploy_item WHERE uuid = $1",
+                    "DELETE FROM device_schedule WHERE uuid = $1", "DELETE FROM schedule_assign WHERE uuid = $1",
                     "DELETE FROM device WHERE uuid = $1"):
             with contextlib.suppress(Exception):
                 await self.execute(sql, uuid)
@@ -328,6 +331,49 @@ class Rest:
                                user: str | None = None) -> httpx.Response:
         return await self.client.get("/api/schedule/preview", params={"lat": lat, "lon": lon, "on": on, "off": off},
                                      headers=self._h(user))
+
+    # ── 알람 S-24 · 스케줄 배포 S-25 (ADR-009·010) ───────────────────────
+    async def alarms(self, **params: Any) -> httpx.Response:
+        return await self.client.get("/api/alarms", params={k: v for k, v in params.items() if v is not None})
+
+    async def device_alarms(self, uuid: str, limit: int = 50) -> httpx.Response:
+        return await self.client.get(f"/api/devices/{uuid}/alarms", params={"limit": limit})
+
+    async def schedule_keys(self) -> httpx.Response:
+        return await self.client.get("/api/schedule/profile-keys")
+
+    async def create_schedule_profile(self, body: dict[str, Any], user: str | None = None) -> httpx.Response:
+        return await self.client.post("/api/schedule/profiles", json=body, headers=self._h(user))
+
+    async def patch_schedule_profile(self, pid: int, body: dict[str, Any], user: str | None = None) -> httpx.Response:
+        return await self.client.patch(f"/api/schedule/profiles/{pid}", json=body, headers=self._h(user))
+
+    async def delete_schedule_profile(self, pid: int) -> httpx.Response:
+        return await self.client.delete(f"/api/schedule/profiles/{pid}")
+
+    async def schedule_profiles(self) -> httpx.Response:
+        return await self.client.get("/api/schedule/profiles")
+
+    async def set_schedule_assign(self, body: dict[str, Any], user: str | None = None) -> httpx.Response:
+        return await self.client.put("/api/schedule/assign", json=body, headers=self._h(user))
+
+    async def schedule_devices(self, **params: Any) -> httpx.Response:
+        return await self.client.get("/api/schedule/devices", params={k: v for k, v in params.items() if v is not None})
+
+    async def device_schedule(self, uuid: str) -> httpx.Response:
+        return await self.client.get(f"/api/devices/{uuid}/schedule")
+
+    async def create_deploy(self, body: dict[str, Any], user: str | None = None) -> httpx.Response:
+        return await self.client.post("/api/schedule/deploy", json=body, headers=self._h(user))
+
+    async def deploy_job(self, job_id: int) -> httpx.Response:
+        return await self.client.get(f"/api/schedule/deploy/{job_id}")
+
+    async def retry_deploy(self, job_id: int, uuids: list[str] | None = None) -> httpx.Response:
+        return await self.client.post(f"/api/schedule/deploy/{job_id}/retry", json={"uuids": uuids})
+
+    async def cancel_deploy(self, job_id: int) -> httpx.Response:
+        return await self.client.post(f"/api/schedule/deploy/{job_id}/cancel")
 
 
 def error_code(response: httpx.Response) -> str:

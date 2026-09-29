@@ -73,6 +73,7 @@ from app.mqtt.command_retry import CommandRetrier
 from app.mqtt.config_decide import CONFIG_COLUMNS, DeviceConfigRow, decide_and_enqueue
 from app.mqtt.config_sync import ConfigSyncQueue, register_ack_job_for
 from app.mqtt.publisher import parse_kst_ts
+from app.mqtt.deploy_runner import DeployRunner
 from app.mqtt.settings_sync import SettingsSync
 from app.mqtt.telemetry_buffer import TelemetryBuffer
 from app.tasks.command_finisher import finish_due
@@ -192,11 +193,14 @@ class Dispatcher:
     def __init__(
         self, *, buffer: TelemetryBuffer | None, config_sync: ConfigSyncQueue | None,
         retrier: CommandRetrier | None = None, settings_sync: SettingsSync | None = None,
+        deploy_runner: DeployRunner | None = None,
     ) -> None:
         self._buffer = buffer
         self._config_sync = config_sync
         self._retrier = retrier
         self._settings_sync = settings_sync
+        #: S-25 배포 — REGISTER 직후 대기 항목, SETTINGS·SETTINGS_ACK 직후 다음 걸음(읽기 → 쓰기, 결과).
+        self._deploy_runner = deploy_runner
         #: `t` 키로 보고하는 단말. 로그는 uuid 당 한 번.
         self._legacy_t: set[str] = set()
 
@@ -254,6 +258,12 @@ class Dispatcher:
             # S-23 설정 요청도 같은 원리로 바로 재발송(5초 이상 지났으면, 새 seq).
             if self._settings_sync is not None:
                 await self._settings_sync.on_device_messages([uuid], reason="register")
+        if self._deploy_runner is not None and (
+            (kind is TopicKind.REGISTER and msg_type == MsgType.REGISTER.value)
+            or (kind is TopicKind.RESULT and msg_type in (MsgType.SETTINGS.value,
+                                                          MsgType.SETTINGS_ACK.value))
+        ):
+            await self._deploy_runner.on_device_messages([uuid], reason=msg_type.lower())
 
     # ── REGISTER ────────────────────────────────────────────────────────
     async def handle_register(

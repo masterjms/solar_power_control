@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, Device, DeviceCounts, DeviceList as DeviceListRes, EnergyToday, Health, MapPoint, STATES, errorText } from "./api";
+import { AlarmPage, AlarmTab, api, Device, DeviceCounts, DeviceList as DeviceListRes, EnergyToday, Health, MapPoint, STATES, errorText } from "./api";
 import { co2Text, localTime, relTime, str, volt1, watt1, wh1 } from "./format";
 import { Battery, Card, LampPair, OnlineMark, PlaceholderCard, StateBadge, nf, stateLabel } from "./ui";
 import { DeviceMap, PIN } from "./KakaoMap";
 import { Pager, RemoteBadge, shortPath } from "./DeviceList";
+import { TAB_LABEL, alarmValue } from "./Alarms";
 import { CommandForm, CommandResult, durText, lastKnownPwm } from "./Command";
 
 const REFRESH_MS = 30_000;
@@ -17,18 +18,8 @@ interface Props {
   onSelect: (uuid: string) => void;
 }
 
-type IssueKind = "pending" | "offline" | "mismatch";
-interface Issue {
-  kind: IssueKind;
-  d: Device;
-  title: string;
-  when: string | null;
-}
-const ISSUE: Record<IssueKind, [string, string]> = {
-  pending: ["승인 대기", "var(--blue)"],
-  offline: ["통신 두절", "var(--off)"],
-  mismatch: ["설정 불일치", "var(--warn)"],
-};
+/** 조치 필요 카드의 점 색 — 알람 등급. */
+const SEV_DOT: Record<string, string> = { warn: "var(--alarm)", caution: "var(--warn)", info: "var(--blue)" };
 
 /** 배터리 잔량 구간 — 목업의 5구간 대신 사양서 화면 기준 4구간. */
 const BUCKETS: [string, number, number, string][] = [
@@ -42,22 +33,34 @@ const BUCKETS: [string, number, number, string][] = [
 export default function Dashboard({ counts, total, health, tick, onSelect }: Props) {
   const [active, setActive] = useState<Device[]>([]);
   const [activeTotal, setActiveTotal] = useState<number | null>(null);
-  const [pending, setPending] = useState<Device[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"all" | IssueKind>("all");
+  const [tab, setTab] = useState<AlarmTab | "all">("all");
+  const [alarms, setAlarms] = useState<AlarmPage | null>(null);
+  const [alarmErr, setAlarmErr] = useState<string | null>(null);
+
+  // 조치 필요 = 서버 알람(S-24, ADR-009). 열린 알람을 등급 → 최신순으로 50건.
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      api.alarms({ status: "open", tab: tab === "all" ? undefined : tab, size: 50 })
+        .then((r) => alive && (setAlarms(r), setAlarmErr(null)))
+        .catch((e) => alive && setAlarmErr(errorText(e)));
+    load();
+    const id = setInterval(load, REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [tab, tick]);
 
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const [a, p] = await Promise.all([
-          api.listDevices({ page: 1, size: SAMPLE, state: "ACTIVE" }),
-          api.listDevices({ page: 1, size: SAMPLE, state: "PENDING" }),
-        ]);
+        const a = await api.listDevices({ page: 1, size: SAMPLE, state: "ACTIVE" });
         if (!alive) return;
         setActive(a.items);
         setActiveTotal(a.total);
-        setPending(p.items);
         setError(null);
       } catch (e) {
         if (alive) setError(errorText(e));
@@ -103,18 +106,6 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
     return { cnt, avg: n ? Math.round(sum / n) : null, n, max: Math.max(1, ...cnt) };
   }, [active]);
 
-  // 조치 필요
-  const issues = useMemo<Issue[]>(() => {
-    const list: Issue[] = [];
-    for (const d of pending) list.push({ kind: "pending", d, title: `승인 대기 — ${str(d.device_model)} F/W ${str(d.fw)}`, when: d.last_register_at ?? d.created_at });
-    for (const d of active) {
-      if (!d.is_online) list.push({ kind: "offline", d, title: `통신 두절 — 마지막 수신 ${relTime(d.last_seen_at)}`, when: d.offline_at ?? d.last_seen_at });
-      if (d.config_mismatch) list.push({ kind: "mismatch", d, title: `설정 불일치 — ti ${d.ti_effective}/${str(d.ti_device)} · ka ${d.ka_effective}/${str(d.ka_device)}`, when: d.last_telemetry_at });
-    }
-    return list;
-  }, [pending, active]);
-  const issueCount = (k: "all" | IssueKind) => (k === "all" ? issues.length : issues.filter((i) => i.kind === k).length);
-  const shown = issues.filter((i) => tab === "all" || i.kind === tab);
 
   const dotOf = (ok: boolean | undefined) => (ok === undefined ? "var(--off)" : ok ? "var(--ok)" : "var(--alarm)");
   const sampleNote = sampled ? `표본 ${SAMPLE}대` : `ACTIVE ${nf(activeTotal)}대`;
@@ -146,7 +137,7 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
             {health && <span>버퍼 {health.buffer_pending} · 등록 큐 {health.register_queue}</span>}
           </div>
         </Card>
-        <Card title="조명 상태" meta={sampleNote}>
+        <Card title="조명 상태" meta={error ? <span className="err">{error}</span> : sampleNote}>
           <div className="sbar">
             <i style={{ flex: lamp.on, background: "var(--lamp)" }} />
             <i style={{ flex: lamp.off, background: "var(--seg-off)" }} />
@@ -174,26 +165,26 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
 
       {/* 2행 */}
       <MapCard onSelect={onSelect} tick={tick} />
-      <Card title="조치 필요" className="h500" meta={error ? <span className="err">{error}</span> : <span>{sampled ? "표본 기준" : ""}</span>}>
+      <Card title="조치 필요" className="h500" meta={alarmErr ? <span className="err">{alarmErr}</span> : <a className="btn sm" href="#alarms">알람 화면</a>}>
         <div className="tabs">
-          {(["all", "pending", "offline", "mismatch"] as const).map((k) => (
+          {(["all", "fault", "comm", "pending", "config", "local"] as const).map((k) => (
             <button key={k} type="button" aria-pressed={tab === k} onClick={() => setTab(k)}>
-              {k === "all" ? "전체" : ISSUE[k][0]}<b>{issueCount(k)}</b>
+              {TAB_LABEL[k]}<b>{nf(alarms?.counts?.[k] ?? 0)}</b>
             </button>
           ))}
         </div>
         <ul className="queue">
-          {shown.map((i) => (
-            <li key={`${i.kind}-${i.d.uuid}`} tabIndex={0} onClick={() => onSelect(i.d.uuid)} onKeyDown={(e) => e.key === "Enter" && onSelect(i.d.uuid)}>
-              <span className="dot" style={{ background: ISSUE[i.kind][1] }} />
+          {(alarms?.items ?? []).map((a) => (
+            <li key={a.id} tabIndex={0} onClick={() => onSelect(a.uuid)} onKeyDown={(e) => e.key === "Enter" && onSelect(a.uuid)}>
+              <span className="dot" style={{ background: SEV_DOT[a.severity] ?? "var(--off)" }} />
               <div style={{ minWidth: 0 }}>
-                <div className="t">{i.title}</div>
-                <div className="d">{d_label(i.d)}</div>
+                <div className="t">{a.label}{alarmValue(a) ? ` — ${alarmValue(a)}` : ""}</div>
+                <div className="d">{`${a.site ?? "(장소 없음)"} · ${a.uuid}`}</div>
               </div>
-              <span className="w">{relTime(i.when)}</span>
+              <span className="w">{relTime(a.first_seen_at)}</span>
             </li>
           ))}
-          {shown.length === 0 && <li className="empty">조치할 단말이 없습니다.</li>}
+          {alarms && alarms.items.length === 0 && <li className="empty">조치할 단말이 없습니다.</li>}
         </ul>
       </Card>
 
@@ -210,9 +201,6 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
   );
 }
 
-function d_label(d: Device): string {
-  return `${d.site ?? "(장소 없음)"} · ${d.uuid}`;
-}
 
 /** 지도 — 좌표가 있는 단말 핀(KakaoMap PIN: 오프라인 회색·점등 녹색·소등 녹색 테두리·대기 파랑). 핀을 누르면 드로어. */
 function MapCard({ onSelect, tick }: { onSelect: (uuid: string) => void; tick: number }) {

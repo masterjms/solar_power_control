@@ -18,7 +18,7 @@ const LIST_SIZE = 500;
 
 // ---------------- 스키마(한 번만 읽는다) ----------------
 let schemaCache: SettingsSchema | null = null;
-function useSchema() {
+export function useSchema() {
   const [schema, setSchema] = useState<SettingsSchema | null>(schemaCache);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -147,7 +147,7 @@ function DevicePicker({ selected, tick }: { selected: string | null; tick: numbe
 }
 
 // ---------------- 입력 칸 ----------------
-interface FieldCtx {
+export interface FieldCtx {
   schema: SettingsSchema;
   edit: Record<string, string>;
   values: Record<string, number> | null; // null = 읽지 않음(기본값을 흐리게 참고로만)
@@ -248,7 +248,7 @@ function TimeField({ c, h, m, pwm }: { c: FieldCtx; h: SettingsItem; m: Settings
 
 /** 오늘 밤 주등 밝기 막대(문제점 #2 그림) — 점등 → 시작 밝기 → 1~4단계 → 소등.
  *  점등·소등 시각은 단말 표 조건으로 서버가 계산한 오늘 행 + 시작/종료 Offset. 표 조건을 모르면 그리지 않는다. */
-function StageBar({ schema, pv, tbl }: { schema: SettingsSchema; pv: (k: string) => number | null; tbl: SettingsTbl | null }) {
+export function StageBar({ schema, pv, tbl }: { schema: SettingsSchema; pv: (k: string) => number | null; tbl: SettingsTbl | null }) {
   const [today, setToday] = useState<{ on: string; off: string } | null>(null);
   const sig = tbl ? `${tbl.lat_e6}|${tbl.lon_e6}|${tbl.on}|${tbl.off}` : "";
   useEffect(() => {
@@ -314,7 +314,7 @@ function StageBar({ schema, pv, tbl }: { schema: SettingsSchema; pv: (k: string)
 }
 
 /** 그룹 항목을 widget 에 따라 줄로. time_h 다음 time_m (그 다음 같은 번호 slider) 는 한 줄. */
-function GroupFields({ c, items }: { c: FieldCtx; items: SettingsItem[] }) {
+export function GroupFields({ c, items }: { c: FieldCtx; items: SettingsItem[] }) {
   const rows: ReactNode[] = [];
   for (let i = 0; i < items.length; i++) {
     const it = items[i];

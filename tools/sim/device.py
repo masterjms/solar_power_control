@@ -86,6 +86,11 @@ _GRP_RE = re.compile(r"^\d{12}$")
 #: §3.10.7 COMMAND `ts` = 보낸 시각 `YYMMDDThhmmss` KST.
 CMD_TS_FORMAT = "%y%m%dT%H%M%S"
 _CMD_TS_RE = re.compile(r"^\d{6}T\d{6}$")
+#: §16.6.1 er 앞당김 — 모으기 1분, 10분 창에 5건. LTE_OFFLINE 은 앞당김 대상이 아니다.
+ER_MERGE_SEC = 60.0
+ER_WINDOW_SEC = 600.0
+ER_WINDOW_MAX = 5
+ER_LTE_OFFLINE = 0x0040
 #: Telemetry `er` 비트 0 = BATT_LOW(저전압 차단, §3.10.8 "순위 밖").
 ER_BATT_LOW = 0x0001
 #: §3.10.8 — 원격 OK·만료·현장 취소 뒤 추가 Telemetry 까지(초). UI 명세 8.4 SETTINGS_SET OK 도 같다.
@@ -450,6 +455,10 @@ class Stats:
     #: 추가 Telemetry(§3.10.8) — 보낸 건수와 2초 안에 겹쳐 합쳐진 요청 수.
     extra_tm: int = 0
     extra_tm_merged: int = 0
+    #: `er` 변화 앞당김(§16.6.1, F/W 2026-09-29-1) — 보냄 / 되돌아와 취소 / 10분 5건 넘어 주기로만.
+    er_early_tm: int = 0
+    er_early_cancelled: int = 0
+    er_early_suppressed: int = 0
     #: 단말 설정(S-23).
     settings_get_rx: int = 0
     settings_set_rx: int = 0
@@ -636,6 +645,14 @@ class SimDevice:
 
         self.sq = 0
         self.er = 0
+        #: §16.6.1 er 앞당김 — 마지막으로 보낸 Telemetry 의 er, 앞당김 보고 시각들, 예약 task.
+        self._er_reported = 0
+        self._er_early_times: list[float] = []
+        self._er_task: asyncio.Task | None = None
+        #: 1분 모으기·10분 창(초). 시나리오가 줄여 쓴다.
+        self.er_merge_sec = ER_MERGE_SEC
+        self.er_window_sec = ER_WINDOW_SEC
+        self.er_window_max = ER_WINDOW_MAX
         self._overrides: dict[int, OverrideSlot] = {}
         #: 최근 8개 seq → 첫 ACK(§3.10.7). 순서 = 받은 순.
         self._seq_memory: OrderedDict[int, dict[str, Any]] = OrderedDict()
@@ -759,22 +776,25 @@ class SimDevice:
         return n
 
     def start_local(self) -> int:
-        """현장 조작 시작(§3.10.8 2026-09-27 개정). 살아 있던 원격 슬롯을 **전부 취소**하고, 취소한 것이 있으면
-        약 2초 뒤 Telemetry(md 1)를 한 건 더 보낸다(§3.10.8 표 "현장 조작 시작으로 원격이 취소됨"). 취소한 슬롯 수."""
+        """현장 조작 시작(§3.10.8 2026-09-27 개정). 살아 있던 원격 슬롯을 **전부 취소**하고 약 2초 뒤 Telemetry(md 1)를
+        한 건 더 보낸다 — F/W 2026-09-27-8 부터 원격이 없었어도 운전 경로 `md` 가 바뀌면 보낸다. 취소한 슬롯 수."""
         if self._local_mode:
             return 0
         self._local_mode = True
         self.stats.local_started += 1
         n = self._cancel_all_slots()
         self.stats.local_cancelled_slots += n
-        if n:
-            self._schedule_extra_tm("local")
+        self._schedule_extra_tm("local")
         log.info("[%s] 현장 조작 시작 — 원격 슬롯 %d개 취소", self.uuid, n)
         return n
 
     def end_local(self) -> None:
-        """현장 조작 종료 → **스케줄**(md 0). 현장 중 받은 명령(`LOCAL`)과 그 전 원격은 되살리지 않는다(§3.10.8 개정)."""
+        """현장 조작 종료 → **스케줄**(md 0). 현장 중 받은 명령(`LOCAL`)과 그 전 원격은 되살리지 않는다(§3.10.8 개정).
+        `md` 가 1 → 0 으로 바뀌므로 약 2초 뒤 Telemetry(F/W 2026-09-27-8)."""
+        if not self._local_mode:
+            return
         self._local_mode = False
+        self._schedule_extra_tm("local_end")
 
     def _prune(self, now: float) -> None:
         for channel in list(self._overrides):
@@ -1258,9 +1278,50 @@ class SimDevice:
         payload = self.build_tm()
         self.last_tm = payload
         self.last_tm_sent_at = time.monotonic()
+        self._er_reported = int(payload.get("er") or 0)
         if await self._publish(self.topic("status"), payload, qos=0):
             self.stats.tm_sent += 1
         return payload
+
+    # ── er 변화 보고 (§16.6.1, F/W 2026-09-29-1) ─────────────────────────
+    def set_er(self, value: int) -> None:
+        """`er` 를 바꾼다. 마지막으로 보낸 값과 다르면 약 2초 뒤 Telemetry 를 앞당긴다.
+
+        · 직전 앞당김 보고 뒤 `er_merge_sec`(1분) 안이면 1분이 찰 때 한 번에.
+        · `er_window_sec`(10분) 안 앞당김이 `er_window_max`(5)건이면 주기 보고로만.
+        · 보내기 전 원래 값으로 돌아오면 보내지 않는다. LTE_OFFLINE(0x0040) 만의 변화는 앞당기지 않는다.
+        · ACTIVE·연결 중일 때만(게이트가 Telemetry 를 막으면 앞당김도 없다).
+        """
+        value = int(value)
+        if value == self.er:
+            return
+        self.er = value
+        if (value ^ self._er_reported) & ~ER_LTE_OFFLINE == 0:
+            return
+        if self._er_task is not None and not self._er_task.done():
+            return  # 이미 예약 — 보낼 때 그때 값을 본다
+        now = time.monotonic()
+        self._er_early_times = [t for t in self._er_early_times if now - t < self.er_window_sec]
+        if len(self._er_early_times) >= self.er_window_max:
+            self.stats.er_early_suppressed += 1
+            log.info("[%s] er changes too often, periodic Telemetry only", self.uuid)
+            return
+        delay = self.extra_tm_delay
+        if self._er_early_times and now - self._er_early_times[-1] < self.er_merge_sec:
+            delay = max(delay, self._er_early_times[-1] + self.er_merge_sec - now)
+        self._er_task = self._spawn(self._er_after(delay))
+
+    async def _er_after(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        if (self.er ^ self._er_reported) & ~ER_LTE_OFFLINE == 0:
+            self.stats.er_early_cancelled += 1   # 되돌아옴 — 원래 주기로
+            return
+        if not self.gate.telemetry_allowed or self._client is None:
+            return
+        log.info("[%s] er %04x -> %04x, TELEMETRY", self.uuid, self._er_reported, self.er)
+        self._er_early_times.append(time.monotonic())
+        self.stats.er_early_tm += 1
+        await self.send_tm_now()
 
     async def send_result(self, payload: dict[str, Any]) -> bool:
         if self.silent_results:

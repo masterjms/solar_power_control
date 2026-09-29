@@ -306,3 +306,40 @@ suntable 로 표 계산 → `{"crc":"69C1DF86","lat_e6","lon_e6","on","off","row
 
 ### DeviceOut 추가 (2026-09-28, 0005)
 - `override_ch`: `{"1": {"act","seq","level","remaining_sec"}, "2": {...}}` — 채널별 원격(끝난 채널은 빠진다). `override_*` 는 그 요약.
+
+## 알람 API (S-24, ADR-009)
+
+### `GET /api/alarms?status=open|closed&tab=&kind=&q=&page=&size=`
+열린 알람(기본) 또는 이력. 관찰 중(지속 기준 전)은 안 나온다. 정렬: 열림 = 등급(경고→주의→정보) → 발생 최신, 이력 = 해제 최신.
+`tab` = fault / comm / pending / config / local. `q` = 시설명·UUID·주소 부분 일치.
+```json
+{"items":[{"id":7,"uuid":"…","kind":"LED_FAULT","label":"LED FAULT","tab":"fault","severity":"warn",
+  "first_seen_at":"…","opened_at":"…","last_seen_at":"…","closed_at":null,"duration_sec":320,
+  "value":{"er":4},"site":"…","address":"…","node_path":"경기도 > 군포시 > 산본동","state":"ACTIVE"}],
+ "total":1,"page":1,"size":50,"counts":{"all":3,"fault":1,"comm":1,"pending":1,"config":0,"local":0}}
+```
+`counts` 는 필터와 무관한 열린 알람 탭별 수(대시보드·사이드바 배지).
+
+### `GET /api/devices/{uuid}/alarms?limit=30` → 그 단말의 열린 알람 전부 + 최근 이력 limit 건.
+
+## 스케줄 배포 API (S-25, ADR-010)
+
+| 메서드 · 경로 | 내용 |
+|---|---|
+| `GET /api/schedule/profile-keys` | `{keys:[15개], defaults:{…}}` |
+| `GET /api/schedule/profiles` | 프로필 + `assigned_nodes assigned_devices targets applied` |
+| `POST /api/schedule/profiles` | `{name, region, lat, lon, on, off, values(15), address?}` → 201. 409 `SCHEDULE_PROFILE_NAME_TAKEN`, 422 `SETTINGS_RANGE/RULE/INCOMPLETE`·`VALIDATION_FAILED`(region) |
+| `PATCH /api/schedule/profiles/{id}` | 보낸 것만. 조건·15개가 바뀌면 version +1 |
+| `DELETE /api/schedule/profiles/{id}` | 배정이 있으면 409 `SCHEDULE_PROFILE_IN_USE` |
+| `GET /api/schedule/assign` | `[{id, node_id, uuid, profile_id, profile_name, label, assigned_at, assigned_by}]` |
+| `PUT /api/schedule/assign` | `{node_id | uuid, profile_id | null}` — null = 해제. 배포는 따로 |
+| `GET /api/schedule/devices?node_id=&profile_id=&q=&page=&size=` | ACTIVE 단말별 `DeviceScheduleOut`(아래) |
+| `GET /api/devices/{uuid}/schedule` | 한 단말(단말 상세 스케줄 탭) |
+| `POST /api/schedule/deploy` | `{profile_id, scope: profile|node|device, scope_id?}` → 201 작업. 대상 = 범위 안 ACTIVE 이면서 지금 배정이 그 프로필. 없으면 409 `DEPLOY_NO_TARGETS` |
+| `GET /api/schedule/deploy?limit=&profile_id=&uuid=` | 작업 목록 + `counts`(상태별) |
+| `GET /api/schedule/deploy/{id}` | + `items:[{uuid, site, is_online, status, rounds, sent_at, acked_at, detail}]` |
+| `POST /api/schedule/deploy/{id}/retry` | `{uuids?}` — 실패 항목(NO_RESPONSE READ_FAILED FLASH CRC STATE RULE RANGE BAD)을 waiting 으로, 항목당 `DEPLOY_MAX_ROUNDS` 번까지 → `{retried, skipped}` |
+| `POST /api/schedule/deploy/{id}/cancel` | 열린 항목 CANCELLED |
+
+`DeviceScheduleOut`: `uuid site state is_online node_path profile_id profile_name profile_version profile_crc source(device|node:<id>)
+applied_profile_id applied_version applied_crc applied_at device_crc device_region device_src applied_ok deploy_status deploy_job_id dip4 today_on today_off`.

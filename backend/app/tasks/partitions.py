@@ -131,6 +131,17 @@ async def purge_device_events(conn: AsyncConnection, now: dt.datetime | None = N
     return int(result.rowcount or 0)
 
 
+async def purge_closed_alarms(conn: AsyncConnection, now: dt.datetime | None = None) -> int:
+    """닫힌 지 ALARM_RETENTION_DAYS 넘은 알람 이력 삭제(ADR-009)."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(days=settings.alarm_retention_days)
+    result = await conn.execute(
+        text("DELETE FROM alarm WHERE closed_at IS NOT NULL AND closed_at < :cutoff"),
+        {"cutoff": cutoff},
+    )
+    return int(result.rowcount or 0)
+
+
 async def run() -> None:
     """스케줄러·기동 진입점. 실패해도 예외를 올리지 않는다(다음 실행이 따라잡는다)."""
     from app.db import engine
@@ -140,6 +151,8 @@ async def run() -> None:
             created = await ensure_partitions(conn)
             dropped = await drop_expired_partitions(conn)
             purged = await purge_device_events(conn)
-        log.info("파티션 점검: 유지 %s, DROP %s, device_event 삭제 %d건", created, dropped, purged)
+            alarms = await purge_closed_alarms(conn)
+        log.info("파티션 점검: 유지 %s, DROP %s, device_event 삭제 %d건, 알람 이력 삭제 %d건",
+                 created, dropped, purged, alarms)
     except Exception:  # noqa: BLE001
         log.exception("파티션 점검 실패 (다음 주기에 재시도)")

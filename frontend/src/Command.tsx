@@ -211,7 +211,7 @@ export function CommandForm({ target, targetLabel, blocked, onSent, initialPwm, 
           )}
         </div>
       ) : (
-        <div className="cap" style={{ marginTop: 12 }}>스케줄 복귀(auto)는 유지시간 없이 그 계층의 원격 명령을 즉시 해제한다.</div>
+        <div className="cap" style={{ marginTop: 12 }}>스케줄 복귀(auto)는 유지시간 없이 고른 채널의 원격 명령을 즉시 해제한다(어느 경로로 왔든).</div>
       )}
       {dur === "tonight" && act !== "auto" && <div className="cap">오늘 밤 = 대상 좌표 기준 오늘 소등 시각까지 남은 초를 서버가 계산한다.</div>}
       <code className="payload">{JSON.stringify(shown)}</code>

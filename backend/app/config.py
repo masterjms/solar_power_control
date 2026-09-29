@@ -155,6 +155,25 @@ class Settings(BaseSettings):
     command_max_attempts: int = 3
     #: 같은 대상에 다시 보내기까지 최소 간격(초). 단말 송신 직후 재시도의 연타 방지.
     command_retry_min_sec: int = 20
+    # ── S-24 알람 (ADR-009) — 기준 시간은 [추천]이라 운영하며 조정 ──────────
+    #: 재조정 주기(초). 지금 DB 상태로 열린 알람을 맞춘다.
+    alarm_eval_sec: int = 30
+    #: CONFIG 불일치를 알람으로 여는 지속 시간(초). 사양서 추천 30분.
+    alarm_config_hold_sec: int = 1800
+    #: 현장 조작(md 1)을 알람으로 여는 지속 시간(초). 사양서 추천 1시간.
+    alarm_local_hold_sec: int = 3600
+    #: 오늘(KST) 재부팅이 이 횟수 이상이면 "재부팅 잦음".
+    alarm_reboot_per_day: int = 3
+    #: 닫힌 알람 이력 보존 일수.
+    alarm_retention_days: int = 365
+
+    # ── S-25 스케줄 배포 (ADR-010) ─────────────────────────────────────
+    #: 배포 진행 판정 주기(초).
+    deploy_tick_sec: int = 5
+    #: 초당 새로 시작하는 배포 수 상한(사양서 추천 10). 틱마다 tick_sec × 이 값까지.
+    deploy_rate_per_sec: int = 10
+    #: "응답 없는 단말만 다시" 포함 한 항목의 SETTINGS_SET 시작 횟수 상한(한 번마다 settings_sync 가 3회 재발송).
+    deploy_max_rounds: int = 3
     #: "오늘 밤" 유지시간 계산에 쓸 좌표가 없을 때의 기본값(서울시청).
     default_lat: float = 37.5665
     default_lon: float = 126.9780

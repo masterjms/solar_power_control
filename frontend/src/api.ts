@@ -474,6 +474,128 @@ export interface SchedulePreview {
   rows: SchedulePreviewRow[];
 }
 
+// ── S-24 알람 (ADR-009) ──────────────────────────────────────────────────
+export type AlarmTab = "fault" | "comm" | "pending" | "config" | "local";
+export type AlarmSeverity = "warn" | "caution" | "info";
+export interface Alarm {
+  id: number;
+  uuid: string;
+  kind: string;
+  label: string;
+  tab: AlarmTab | null;
+  severity: AlarmSeverity;
+  first_seen_at: string;
+  opened_at: string | null;
+  last_seen_at: string;
+  closed_at: string | null;
+  duration_sec: number;
+  value: Record<string, unknown> | null;
+  site: string | null;
+  address: string | null;
+  node_path: string | null;
+  state: DeviceState | null;
+}
+export interface AlarmPage {
+  items: Alarm[];
+  total: number;
+  page: number;
+  size: number;
+  counts: Record<AlarmTab | "all", number>;
+}
+
+// ── S-25 스케줄 배포 (ADR-010) ───────────────────────────────────────────
+export interface ScheduleProfile {
+  id: number;
+  name: string;
+  version: number;
+  region: string;
+  lat_e6: number;
+  lon_e6: number;
+  on: number;
+  off: number;
+  crc: string;
+  values: Record<string, number>;
+  address: string | null;
+  updated_at: string;
+  updated_by: string | null;
+  assigned_nodes: number;
+  assigned_devices: number;
+  targets: number;
+  applied: number;
+}
+export interface ScheduleProfileIn {
+  name: string;
+  region: string;
+  lat: number;
+  lon: number;
+  on: number;
+  off: number;
+  values: Record<string, number>;
+  address?: string | null;
+}
+export interface ScheduleAssign {
+  id: number;
+  node_id: number | null;
+  uuid: string | null;
+  profile_id: number;
+  profile_name: string;
+  label: string | null;
+  assigned_at: string;
+  assigned_by: string | null;
+}
+export interface DeviceSchedule {
+  uuid: string;
+  site: string | null;
+  state: DeviceState;
+  is_online: boolean;
+  node_path: string | null;
+  profile_id: number | null;
+  profile_name: string | null;
+  profile_version: number | null;
+  profile_crc: string | null;
+  source: string | null;
+  applied_profile_id: number | null;
+  applied_version: number | null;
+  applied_crc: string | null;
+  applied_at: string | null;
+  device_crc: string | null;
+  device_region: string | null;
+  device_src: number | null;
+  applied_ok: boolean;
+  deploy_status: string | null;
+  deploy_job_id: number | null;
+  dip4: boolean | null;
+  today_on: string | null;
+  today_off: string | null;
+}
+export interface DeployItem {
+  uuid: string;
+  site: string | null;
+  is_online: boolean;
+  status: string;
+  rounds: number;
+  sent_at: string | null;
+  acked_at: string | null;
+  detail: string | null;
+}
+export interface DeployJob {
+  id: number;
+  profile_id: number | null;
+  profile_name: string;
+  profile_version: number;
+  crc: string;
+  scope_kind: "profile" | "node" | "device";
+  scope_id: string | null;
+  scope_label: string | null;
+  total: number;
+  created_by: string | null;
+  created_at: string;
+  finished_at: string | null;
+  cancelled_at: string | null;
+  counts: Record<string, number>;
+  items: DeployItem[] | null;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const text = await res.text();
@@ -597,6 +719,53 @@ export const api = {
     request<SchedulePreview>(`/api/schedule/preview?${new URLSearchParams({
       lat: String(p.lat), lon: String(p.lon), on: String(p.on), off: String(p.off),
     })}`),
+
+  // S-24 알람
+  alarms: (p: { status?: "open" | "closed"; tab?: string; q?: string; page?: number; size?: number }) => {
+    const q = new URLSearchParams();
+    if (p.status) q.set("status", p.status);
+    if (p.tab) q.set("tab", p.tab);
+    if (p.q) q.set("q", p.q);
+    if (p.page) q.set("page", String(p.page));
+    if (p.size) q.set("size", String(p.size));
+    return request<AlarmPage>(`/api/alarms?${q}`);
+  },
+  deviceAlarms: (uuid: string, limit = 30) => request<Alarm[]>(`/api/devices/${uuid}/alarms?limit=${limit}`),
+
+  // S-25 스케줄 배포
+  scheduleKeys: () => request<{ keys: string[]; defaults: Record<string, number> }>("/api/schedule/profile-keys"),
+  scheduleProfiles: () => request<ScheduleProfile[]>("/api/schedule/profiles"),
+  createScheduleProfile: (body: ScheduleProfileIn) =>
+    request<ScheduleProfile>("/api/schedule/profiles", json("POST", body)),
+  patchScheduleProfile: (id: number, body: Partial<ScheduleProfileIn>) =>
+    request<ScheduleProfile>(`/api/schedule/profiles/${id}`, json("PATCH", body)),
+  deleteScheduleProfile: (id: number) => request<unknown>(`/api/schedule/profiles/${id}`, json("DELETE")),
+  scheduleAssigns: () => request<ScheduleAssign[]>("/api/schedule/assign"),
+  setScheduleAssign: (body: { node_id?: number; uuid?: string; profile_id: number | null }) =>
+    request<unknown>("/api/schedule/assign", json("PUT", body)),
+  scheduleDevices: (p: { node_id?: number; profile_id?: number; q?: string; page?: number; size?: number }) => {
+    const q = new URLSearchParams();
+    if (p.node_id !== undefined) q.set("node_id", String(p.node_id));
+    if (p.profile_id !== undefined) q.set("profile_id", String(p.profile_id));
+    if (p.q) q.set("q", p.q);
+    q.set("page", String(p.page ?? 1));
+    q.set("size", String(p.size ?? 200));
+    return request<{ items: DeviceSchedule[]; total: number; page: number; size: number }>(`/api/schedule/devices?${q}`);
+  },
+  deviceSchedule: (uuid: string) => request<DeviceSchedule>(`/api/devices/${uuid}/schedule`),
+  createDeploy: (body: { profile_id: number; scope: "profile" | "node" | "device"; scope_id?: string | null }) =>
+    request<DeployJob>("/api/schedule/deploy", json("POST", body)),
+  deployJobs: (p: { limit?: number; profile_id?: number; uuid?: string } = {}) => {
+    const q = new URLSearchParams();
+    q.set("limit", String(p.limit ?? 30));
+    if (p.profile_id !== undefined) q.set("profile_id", String(p.profile_id));
+    if (p.uuid) q.set("uuid", p.uuid);
+    return request<DeployJob[]>(`/api/schedule/deploy?${q}`);
+  },
+  deployJob: (id: number) => request<DeployJob>(`/api/schedule/deploy/${id}`),
+  retryDeploy: (id: number, uuids: string[] | null = null) =>
+    request<{ retried: number; skipped: number }>(`/api/schedule/deploy/${id}/retry`, json("POST", { uuids })),
+  cancelDeploy: (id: number) => request<DeployJob>(`/api/schedule/deploy/${id}/cancel`, json("POST")),
 };
 
 /** 5차 에러 코드 → 화면에 먼저 보일 한 줄(docs/05 "에러 코드 추가"). */
@@ -611,6 +780,9 @@ const ERROR_HINT: Record<string, string> = {
   COMMAND_FINISHED: "이미 끝난 명령이라 재시도할 수 없습니다",
   NO_TARGETS: "대상 범위에 운영(ACTIVE) 단말이 없습니다",
   NO_ONLINE_TARGETS: "대상 단말이 모두 오프라인이라 보내지 않았습니다",
+  SCHEDULE_PROFILE_NAME_TAKEN: "같은 이름의 스케줄 프로필이 있습니다",
+  SCHEDULE_PROFILE_IN_USE: "배정된 프로필은 지울 수 없습니다 — 배정을 먼저 푸세요",
+  DEPLOY_NO_TARGETS: "이 프로필이 배정된 운영(ACTIVE) 단말이 없습니다",
   MQTT_UNAVAILABLE: "브로커에 연결되어 있지 않아 보내지 못했습니다",
   INVALID_STATE: "이 승인 상태에서는 할 수 없습니다(읽기는 PENDING·ACTIVE, 쓰기는 ACTIVE 만)",
   SETTINGS_PENDING: "이미 단말 응답을 기다리는 요청이 있습니다",

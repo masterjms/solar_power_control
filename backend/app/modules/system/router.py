@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from typing import Any
 
@@ -37,7 +38,8 @@ async def health(
     DB 장애 때 백엔드까지 재시작되면 버퍼에 남은 것과 MQTT 세션을 같이 잃는다."""
     db_ok = True
     try:
-        await db.execute(text("SELECT 1"))
+        # DB 장애 때 연결·풀 대기로 /health 가 매달리지 않게 2초에서 끊는다 — 감시는 "빨리 db_ok=false" 가 필요하다.
+        await asyncio.wait_for(db.execute(text("SELECT 1")), timeout=2.0)
     except Exception:  # noqa: BLE001
         db_ok = False
     return {

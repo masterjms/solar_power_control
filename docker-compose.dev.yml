@@ -27,6 +27,10 @@ services:
       # 5차(ADR-005): 운영은 승인에 법정동 말단 배정이 필요하다(true). 3차 시나리오는 지역 없이
       # 승인하므로 개발 스택에서는 끈다.
       APPROVE_REQUIRES_NODE: "false"
+      # S-24 알람(ADR-009): 시나리오가 30분·1시간을 기다리지 않게 줄인다(S7-xx 가 같은 값을 쓴다).
+      ALARM_EVAL_SEC: "3"
+      ALARM_CONFIG_HOLD_SEC: "20"
+      ALARM_LOCAL_HOLD_SEC: "15"
 
   postgres:
     ports:

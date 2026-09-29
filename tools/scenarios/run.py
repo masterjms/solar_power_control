@@ -8,6 +8,7 @@
     python -m tools.scenarios.run --all --phase 5                       # 5차(트리·COMMAND·재시도·권한)까지 연다
     python -m tools.scenarios.run --all --phase-only 5 --phase 5        # 5차만
     python -m tools.scenarios.run --all --phase-only 6                  # 단말 설정(S-23)·5차 개정만(settings+group_cmd)
+    python -m tools.scenarios.run --all --phase-only 7                  # 알람(S-24)·스케줄 배포(S-25)만
 
 `--list` 는 서비스 없이 동작한다. 서비스가 내려가 있으면 시나리오는 SKIP(이유 표시)로 끝나고
 러너는 종료 코드 1 을 돌려준다(FAIL/ERROR 가 있어도 1).
@@ -22,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # 시나리오 모듈을 import 해야 REGISTRY 가 채워진다.
-from tools.scenarios import phase2, phase3, phase5, phase6  # noqa: F401
+from tools.scenarios import phase2, phase3, phase5, phase6, phase7  # noqa: F401
 from tools.scenarios.framework import REGISTRY, Result, Scenario, paint, run_one, write_report
 from tools.scenarios.services import Services, selector_loop_policy
 from tools.sim.env import ENV
@@ -140,6 +141,8 @@ def main(argv: list[str] | None = None) -> int:
             flags.add("group_cmd")
         if ph >= 6:
             flags.add("settings")   # 단말 설정 S-23(ADR-007) — S6-xx
+        if ph >= 7:
+            flags.add("alarm_schedule")   # 알람 S-24·스케줄 배포 S-25(ADR-009·010) — S7-xx
     if args.allow_docker:
         flags.add("docker")
     opt = Options(flags=flags, sim_mode=args.sim_mode, quiet=args.quiet, keep_rows=args.keep_rows,

@@ -104,6 +104,14 @@ def table_index(month: int, day: int) -> int:
     return (month - 1) * suntable.DAYS_PER_MONTH + (day - 1)
 
 
+def schedule_preview_day(
+    lat_e6: int, lon_e6: int, on: int, off: int, month: int, day: int
+) -> tuple[str, str]:
+    """그 날짜 칸의 (점등, 소등) "HH:MM" — 스케줄 탭 "오늘 점등·소등"(§13.1 ⑥)."""
+    on_h, on_m, off_h, off_m = _table(lat_e6, lon_e6, on, off)[table_index(month, day)]
+    return f"{on_h:02d}:{on_m:02d}", f"{off_h:02d}:{off_m:02d}"
+
+
 def schedule_preview(lat_e6: int, lon_e6: int, on: int, off: int) -> list[dict[str, Any]]:
     """매달 1일·15일 24행: 점등(on)·소등(off) "HH:MM", 점등 시간(hours, 소수 1자리).
 
@@ -236,7 +244,10 @@ class TableSpec:
 
 
 def validate_table(region: Any, lat: Any, lon: Any, on: Any, off: Any) -> TableSpec:
-    """PUT 의 tbl(실수 좌표) → TableSpec. lat/lon 은 round(x*1e6)."""
+    """PUT 의 tbl(실수 좌표) → TableSpec. lat/lon 은 round(x*1e6).
+    region 은 앞뒤 공백·BOM 을 지운 뒤 검사한다(사양서 §13.1 [필수])."""
+    if isinstance(region, str):
+        region = region.replace("﻿", "").strip()
     problem = region_problem(region)
     if problem:
         raise SettingsInvalid("VALIDATION_FAILED", f"region: {problem}", field="tbl.region")

@@ -127,14 +127,16 @@ async def get_settings(db: AsyncSession, uuid: str) -> SettingsOut:
 
 
 # ── 발송 공통 ────────────────────────────────────────────────────────────
-async def _send(
-    db: AsyncSession, uuid: str, kind: str, body: dict[str, Any] | None, me: Principal,
+async def send_request(
+    db: AsyncSession, uuid: str, kind: str, body: dict[str, Any] | None, by: str,
     publisher: MqttPublisher, ssync: SettingsSync | None, row: DeviceSettings,
 ) -> tuple[dict[str, Any], dt.datetime, int]:
+    """요청 하나 시작 — pending 기록·커밋 → 발행. 관리자 API 와 스케줄 배포(ADR-010, by="deploy#n")가 같이 쓴다.
+    발행이 실패하면 요청을 되돌리고 MqttUnavailable."""
     if not publisher.connection.is_connected:
         raise MqttUnavailable()
     now = _now()
-    payload = await ss.begin_request(db, row, kind, body, me.user, now)
+    payload = await ss.begin_request(db, row, kind, body, by, now)
     await db.commit()
     try:
         if kind == rules.KIND_SET:
@@ -155,12 +157,12 @@ async def _send(
     await db.execute(pg_insert(DeviceEvent).values(
         uuid=uuid, kind=EventKind.SETTINGS_SENT.value, received_at=now,
         payload={"topic": topics.device_cmd(uuid), "payload": payload, "attempt": 1,
-                 "by": me.user},
+                 "by": by},
     ))
     metrics.settings_sent += 1
     if ssync is not None:
         ssync.mark(uuid)
-    log.info("%s → %s seq=%d %dB (by %s)", kind, uuid, payload["seq"], size, me.user)
+    log.info("%s → %s seq=%d %dB (by %s)", kind, uuid, payload["seq"], size, by)
     return payload, now, size
 
 
@@ -182,7 +184,7 @@ async def read(
     if device.state not in READ_STATES:
         raise InvalidState(detail={"state": device.state, "allowed": sorted(READ_STATES)})
     row = await _locked_row(db, uuid)
-    payload, now, _ = await _send(db, uuid, rules.KIND_GET, None, me, publisher, ssync, row)
+    payload, now, _ = await send_request(db, uuid, rules.KIND_GET, None, me.user, publisher, ssync, row)
     return SentOut(seq=payload["seq"], sent_at=now)
 
 
@@ -204,7 +206,7 @@ async def _write(
     me: Principal, publisher: MqttPublisher, ssync: SettingsSync | None, row: DeviceSettings,
 ) -> WriteOut:
     body = rules.set_body(values, table)
-    payload, now, size = await _send(db, uuid, rules.KIND_SET, body, me, publisher, ssync, row)
+    payload, now, size = await send_request(db, uuid, rules.KIND_SET, body, me.user, publisher, ssync, row)
     return WriteOut(seq=payload["seq"], sent_at=now, sh_expected=rules.fingerprint(values),
                     payload_bytes=size)
 

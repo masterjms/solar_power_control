@@ -74,7 +74,7 @@ export default function GroupControl({ role, counts, tick, onSelect }: Props) {
           root={{ label: "전체", selectable: isSuper, note: isSuper ? "전체 단말 (iotlight/all/cmd)" : "전체 명령은 최고관리자만" }}
           empty={list ? "지역이 없습니다. '지역(법정동)'에서 추가한다." : "불러오는 중…"}
         />
-        <div className="cap">개별 &gt; 그룹 &gt; 전체 순으로 우선. 유지시간이 지나면 스케줄로 복귀한다. 개별 명령은 단말 상세(드로어)에서.</div>
+        <div className="cap">채널마다 마지막에 받은 명령 하나(개별·그룹·전체 경로 무관 — F/W 2026-09-27-9). 유지시간이 지나면 이전 명령으로 돌아가지 않고 스케줄로 복귀한다. 개별 명령은 단말 상세(드로어)에서.</div>
       </Card>
 
       <div className="col">

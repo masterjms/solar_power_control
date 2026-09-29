@@ -352,10 +352,11 @@ async def test_start_local_with_remote_sends_md1_extra_tm():
     await asyncio.sleep(0.15)
     assert d.extra_tm_log[-1][1] == "local" and fake.of("TELEMETRY")[-1]["md"] == 1
     n = d.stats.extra_tm
-    d.end_local()
-    assert d.start_local() == 0            # 취소할 원격이 없으면 추가 TM 없음(§3.10.8 표)
+    d.end_local()                          # md 1 → 0: 추가 TM 예약(F/W 2026-09-27-8 — md 가 바뀌면 보낸다)
+    assert d.start_local() == 0            # 원격이 없어도 md 0 → 1 이라 보낸다. 2초 안에 겹쳐 한 건으로
     await asyncio.sleep(0.15)
-    assert d.stats.extra_tm == n
+    assert d.stats.extra_tm == n + 1 and d.stats.extra_tm_merged >= 1
+    assert fake.of("TELEMETRY")[-1]["md"] == 1
 
 
 async def test_extra_tm_resets_periodic_timer():
@@ -371,3 +372,45 @@ async def test_extra_tm_resets_periodic_timer():
         assert len(fake.of("TELEMETRY")) == 3
     finally:
         loop_task.cancel()
+
+
+# ── er 변화 앞당김 (§16.6.1, F/W 2026-09-29-1) ───────────────────────────
+
+async def test_er_change_sends_early_tm_and_reverting_cancels():
+    d, fake = wired()
+    d.set_er(0x0004)
+    await asyncio.sleep(0.15)
+    tms = fake.of("TELEMETRY")
+    assert len(tms) == 1 and tms[0]["er"] == 0x0004 and d.stats.er_early_tm == 1
+    # 보내기 전에 되돌아오면 보내지 않는다
+    d.er_merge_sec = 0.0
+    d.set_er(0)
+    d.set_er(0x0004)
+    await asyncio.sleep(0.15)
+    assert len(fake.of("TELEMETRY")) == 1 and d.stats.er_early_cancelled == 1
+
+
+async def test_er_lte_offline_only_is_not_early_and_window_limit():
+    d, fake = wired()
+    d.set_er(0x0040)                     # LTE_OFFLINE 만 → 앞당김 없음
+    await asyncio.sleep(0.1)
+    assert fake.of("TELEMETRY") == []
+    d.er_merge_sec, d.er_window_max = 0.0, 2
+    for v in (0x0001, 0x0005, 0x0015):
+        d.set_er(v)
+        await asyncio.sleep(0.1)
+    # 10분 창 2건 뒤 3번째는 주기로만
+    assert d.stats.er_early_tm == 2 and d.stats.er_early_suppressed == 1
+
+
+async def test_er_changes_within_merge_window_are_merged():
+    d, fake = wired()
+    d.er_merge_sec = 0.3
+    d.set_er(0x0001)
+    await asyncio.sleep(0.1)             # 첫 보고(0.05s)
+    d.set_er(0x0011)                     # 1분(→0.3s) 안 — 창이 찰 때 한 번에
+    await asyncio.sleep(0.1)
+    assert len(fake.of("TELEMETRY")) == 1
+    await asyncio.sleep(0.3)
+    tms = fake.of("TELEMETRY")
+    assert len(tms) == 2 and tms[-1]["er"] == 0x0011

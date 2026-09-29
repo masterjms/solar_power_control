@@ -76,6 +76,7 @@ from app.mqtt.config_sync import ConfigSyncQueue
 
 if TYPE_CHECKING:
     from app.mqtt.command_retry import CommandRetrier
+    from app.mqtt.deploy_runner import DeployRunner
     from app.mqtt.settings_sync import SettingsSync
 
 log = logging.getLogger(__name__)
@@ -189,6 +190,7 @@ class TelemetryBuffer:
         config_sync: ConfigSyncQueue | None = None,
         retrier: CommandRetrier | None = None,
         settings_sync: SettingsSync | None = None,
+        deploy_runner: DeployRunner | None = None,
     ) -> None:
         self._interval = interval_sec if interval_sec is not None else settings.flush_interval
         self._max_pending = max_pending or settings.telemetry_flush_max_pending
@@ -197,6 +199,8 @@ class TelemetryBuffer:
         self._retrier = retrier
         #: S-23 설정 요청 재발송(단말 송신 직후). flush 커밋 뒤 부른다.
         self._settings_sync = settings_sync
+        #: S-25 스케줄 배포 — 오프라인이었던 단말이 보내면 대기 항목을 바로 진행(ADR-010).
+        self._deploy_runner = deploy_runner
         #: 이력 후보. (uuid, payload, received_at) 도착 순서대로.
         self._rows: list[tuple[str, dict[str, Any], dt.datetime]] = []
         #: uuid → 마지막 last_sq. 기동 시 warm() 으로 채운다.
@@ -409,6 +413,8 @@ class TelemetryBuffer:
             await self._retrier.on_device_messages(latest.keys(), reason="telemetry")
         if self._settings_sync is not None:
             await self._settings_sync.on_device_messages(latest.keys(), reason="telemetry")
+        if self._deploy_runner is not None:
+            await self._deploy_runner.on_device_messages(latest.keys(), reason="telemetry")
         if not_active:
             metrics.telemetry_not_active += not_active
             log.debug("ACTIVE 아닌 단말의 TELEMETRY %d대 (저장은 함)", not_active)

@@ -35,6 +35,7 @@ from app.config import settings
 from app.core import device_password
 from app.db import SessionFactory, engine, session_scope
 from app.errors import register_exception_handlers
+from app.modules.alarm.router import router as alarm_router
 from app.modules.command.router import router as command_router
 from app.modules.device import service as device_service
 from app.modules.device.router import router as device_router
@@ -42,6 +43,8 @@ from app.modules.mqtt_auth.router import router as mqtt_auth_router
 from app.modules.profile.router import router as profile_router
 from app.modules.region.router import geo_router
 from app.modules.region.router import router as region_router
+from app.modules.schedule.router import device_router as schedule_device_router
+from app.modules.schedule.router import router as schedule_router
 from app.modules.settings.router import router as settings_router
 from app.modules.system.router import router as system_router
 from app.mqtt.command_retry import CommandRetrier
@@ -49,9 +52,10 @@ from app.mqtt.config_sync import ConfigSyncQueue
 from app.mqtt.connection import MqttConnection
 from app.mqtt.handlers import Dispatcher
 from app.mqtt.publisher import MqttPublisher
+from app.mqtt.deploy_runner import DeployRunner
 from app.mqtt.settings_sync import SettingsSync
 from app.mqtt.telemetry_buffer import TelemetryBuffer
-from app.tasks import command_finisher, daily_rollup, partitions
+from app.tasks import alarm_eval, command_finisher, daily_rollup, partitions
 from app.tasks.broker_log import BrokerLogTail
 
 # ⚠ Windows 에서 `python -m uvicorn app.main:app` 로 띄우면 MQTT 가 죽는다.
@@ -116,10 +120,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     config_sync = ConfigSyncQueue(publisher)
     retrier = CommandRetrier(config_sync)
     settings_sync = SettingsSync(config_sync)
+    deploy_runner = DeployRunner(publisher, settings_sync)
     telemetry_buffer = TelemetryBuffer(config_sync=config_sync, retrier=retrier,
-                                       settings_sync=settings_sync)
+                                       settings_sync=settings_sync, deploy_runner=deploy_runner)
     dispatcher = Dispatcher(buffer=telemetry_buffer, config_sync=config_sync, retrier=retrier,
-                            settings_sync=settings_sync)
+                            settings_sync=settings_sync, deploy_runner=deploy_runner)
     broker_log = BrokerLogTail()
 
     app.state.mqtt = connection
@@ -127,6 +132,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.config_sync = config_sync
     app.state.command_retrier = retrier
     app.state.settings_sync = settings_sync
+    app.state.deploy_runner = deploy_runner
     app.state.telemetry_buffer = telemetry_buffer
     app.state.broker_log = broker_log
 
@@ -160,6 +166,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001
         log.exception("SETTINGS 대기 목록 적재 실패 — 1분 안에 재발송 타이머가 다시 채운다")
 
+    try:
+        async with SessionFactory() as db:
+            opened = await deploy_runner.rebuild(db)
+        log.info("스케줄 배포 진행 중: %d대", opened)
+    except Exception:  # noqa: BLE001
+        log.exception("배포 진행 목록 적재 실패 — 1분 안에 틱이 다시 채운다")
+
     await config_sync.start()
     await telemetry_buffer.start()
     await connection.start()
@@ -192,6 +205,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # S-23 설정 요청: 30초 무응답이면 새 seq 로 재발송, 3회면 TIMEOUT. 대기가 없으면 DB 를 안 본다.
     scheduler.add_job(
         settings_sync.tick, "interval", seconds=5, id="settings-resend",
+        coalesce=True, max_instances=1,
+    )
+    # S-25 스케줄 배포 진행(읽기 → 쓰기 → 결과, 초당 10대). 열린 항목이 없으면 DB 를 안 본다.
+    scheduler.add_job(
+        deploy_runner.tick, "interval", seconds=settings.deploy_tick_sec, id="deploy-runner",
+        coalesce=True, max_instances=1,
+    )
+    # S-24 알람 재조정(ADR-009): 지금 DB 상태로 열린 알람을 맞춘다(멱등).
+    scheduler.add_job(
+        alarm_eval.run, "interval", seconds=settings.alarm_eval_sec, id="alarm-eval",
         coalesce=True, max_instances=1,
     )
     scheduler.start()
@@ -251,6 +274,9 @@ if settings.cors_origins:
     )
 
 app.include_router(system_router)
+app.include_router(alarm_router)
+app.include_router(schedule_router)
+app.include_router(schedule_device_router)
 app.include_router(mqtt_auth_router)
 app.include_router(profile_router)
 app.include_router(device_router)

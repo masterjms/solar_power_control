@@ -28,6 +28,10 @@ engine = create_async_engine(
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=10,
+    # DB 가 멈추면 연결 시도가 20초 가까이 매달려 풀을 채운다(S2-12, 2026-09-29) — 그동안 /health 까지 풀을
+    # 기다렸다. 연결은 5초, 풀 대기는 10초에서 포기해 빨리 실패하고 다음 판에 다시 한다.
+    pool_timeout=10,
+    connect_args={"timeout": 5},
 )
 
 SessionFactory = async_sessionmaker(

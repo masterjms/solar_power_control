@@ -43,8 +43,7 @@ export function mdLabel(md: number | null | undefined): string {
 const ER_FLAGS: [number, string][] = [
   [0x0001, "BATT_LOW"],
   [0x0002, "RTC_INVALID"],
-  [0x0004, "LED_FAULT_M"],
-  [0x0008, "LED_FAULT_S"],
+  [0x0004, "LED_FAULT"], // 2026-09-28-2 부터 PWM 1·2·3 전체 하나(§16.2.2). 0x0008 은 예약
   [0x0010, "MPPT_OFFLINE"],
   [0x0020, "SCHEDULE_BAD"],
   [0x0040, "LTE_OFFLINE"],

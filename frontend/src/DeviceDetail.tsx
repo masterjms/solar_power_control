@@ -1,7 +1,9 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
-  api, ConfigPatchBody, ConfigPatchRes, Device, DeviceEvent, DeviceState, Profile, Telemetry, errorText,
+  Alarm, api, ConfigPatchBody, ConfigPatchRes, Device, DeviceEvent, DeviceSchedule, DeviceState, Profile, Telemetry,
+  errorText,
 } from "./api";
+import { SeverityBadge, alarmValue, durText as almDur } from "./Alarms";
 import { div100, erLabel, eventSummary, hex, localTime, mdLabel, pct, relTime, str } from "./format";
 import { Battery, Lamp, Met, OnlineMark, SiteHint, StateBadge, SyncBadge } from "./ui";
 import { CommandForm, CommandHistory, CommandResult, durText } from "./Command";
@@ -501,9 +503,15 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
           </div>
         </div>
 
+        {/* ---------- 알람 (S-24) ---------- */}
+        <DeviceAlarms uuid={uuid} />
+
+        {/* ---------- 스케줄 (S-25, §13.1 ⑥) ---------- */}
+        <DeviceScheduleSec uuid={uuid} />
+
         {/* ---------- 원격 제어 (5차 개별 COMMAND) ---------- */}
         <div className="sec">
-          <h4>원격 제어 <span>개별 COMMAND · device/…/cmd · 그룹·전체보다 우선</span></h4>
+          <h4>원격 제어 <span>개별 COMMAND · device/…/cmd · 채널마다 나중 명령이 이긴다(경로 무관)</span></h4>
           <div className="grid2">
             <Met l="운전 모드 md" v={mdLabel(lt?.md)} h={lt ? "Telemetry 기준" : "Telemetry 없음"} />
             <Met l="원격 override" v={dev.remote_active ? `원격 ${Math.max(1, Math.ceil((dev.remote_remaining_sec ?? 0) / 60))}분 남음` : "없음"}
@@ -592,5 +600,90 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
         </div>
       </div>
     </>
+  );
+}
+
+/** 이 단말의 열린 알람 + 최근 이력(ADR-009). */
+function DeviceAlarms({ uuid }: { uuid: string }) {
+  const [rows, setRows] = useState<Alarm[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.deviceAlarms(uuid, 10).then((r) => alive && setRows(r)).catch(() => alive && setRows([]));
+    load();
+    const t = setInterval(load, REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [uuid]);
+  const open = (rows ?? []).filter((a) => !a.closed_at);
+  return (
+    <div className="sec">
+      <h4>알람 <span>열림 {open.length}건 · 최근 이력</span></h4>
+      <table className="mini">
+        <tbody>
+          {(rows ?? []).map((a) => (
+            <tr key={a.id}>
+              <td><SeverityBadge s={a.severity} /></td>
+              <td>{a.label}</td>
+              <td className="mono">{alarmValue(a)}</td>
+              <td>{localTime(a.first_seen_at)}</td>
+              <td>{a.closed_at ? `해제 ${localTime(a.closed_at)}` : <b className="c-alarm">열림 · {almDur(a.duration_sec)}</b>}</td>
+            </tr>
+          ))}
+          {rows && rows.length === 0 && <tr><td className="muted">알람 없음</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** 스케줄 탭(§13.1 ⑥) — 배정 프로필·단말 표·일치·오늘 점등/소등·DIP4, [단말에서 읽기] [다시 배포]. */
+function DeviceScheduleSec({ uuid }: { uuid: string }) {
+  const [s, setS] = useState<DeviceSchedule | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const load = useCallback(() => api.deviceSchedule(uuid).then((r) => (setS(r), setErr(null))).catch((e) => setErr(errorText(e))), [uuid]);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, REFRESH_MS);
+    return () => clearInterval(t);
+  }, [load]);
+  async function act(fn: () => Promise<string>) {
+    setErr(null);
+    setMsg(null);
+    try {
+      setMsg(await fn());
+      load();
+    } catch (e) {
+      setErr(errorText(e));
+    }
+  }
+  if (!s) return <div className="sec"><h4>스케줄</h4><div className="muted">{err ?? "불러오는 중…"}</div></div>;
+  return (
+    <div className="sec">
+      <h4>스케줄 <span>배정·적용·단말 표</span></h4>
+      <div className="grid2">
+        <Met l="배정 프로필" v={s.profile_name ? `${s.profile_name} v${s.profile_version}` : "없음"} h={s.source === "device" ? "단말 예외" : s.source ? "노드에서 물려받음" : "스케줄 배포에서 배정"} />
+        <Met l="적용" v={s.profile_id ? (s.applied_ok ? "적용됨" : s.applied_crc ? `옛 판 v${s.applied_version}` : "미적용") : "-"}
+          h={s.applied_at ? localTime(s.applied_at) : ""} cls={s.profile_id && !s.applied_ok ? "w" : s.applied_ok ? "k" : ""} />
+        <Met l="단말 표 crc (단말 / 프로필)" v={<span className="mono">{s.device_crc ?? "모름"} / {s.profile_crc ?? "-"}</span>}
+          h={s.device_region ? `${s.device_region} · src ${s.device_src}` : "단말에서 읽으면 보인다"}
+          cls={s.device_crc && s.profile_crc && s.device_crc !== s.profile_crc ? "a" : ""} />
+        <Met l="오늘 점등 ~ 소등" v={s.today_on ? `${s.today_on} ~ ${s.today_off}` : "-"} h="배정 프로필 조건으로 서버 계산" />
+      </div>
+      {s.dip4 === false && <div className="cap c-warn">DIP4 OFF — 다단계를 무시하고 시작 밝기로만 운전한다.</div>}
+      {s.deploy_status && <div className="cap">진행 중인 배포 #{s.deploy_job_id}: {s.deploy_status}</div>}
+      <div className="bar2" style={{ marginTop: 8 }}>
+        <button type="button" className="btn" onClick={() => act(async () => { const r = await api.readSettings(uuid); return `단말에서 읽기 seq ${r.seq}`; })}>단말에서 읽기</button>
+        <button type="button" className="btn pri" disabled={!s.profile_id || s.state !== "ACTIVE"} onClick={() => act(async () => {
+          const j = await api.createDeploy({ profile_id: s.profile_id!, scope: "device", scope_id: uuid });
+          return `배포 #${j.id} 시작`;
+        })}>다시 배포</button>
+        <a className="btn" href="#schedule" style={{ display: "inline-flex", alignItems: "center", textDecoration: "none" }}>스케줄 배포 화면</a>
+      </div>
+      {msg && <div className="okl">{msg}</div>}
+      {err && <div className="err">{err}</div>}
+    </div>
   );
 }

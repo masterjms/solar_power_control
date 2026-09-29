@@ -1,6 +1,6 @@
 // 법정동 트리 — VS Code 탐색기처럼 왼쪽에 접고 펴는 트리(▸/▾, 들여쓰기, 노드마다 단말 수).
 // GET /api/regions 평면 목록을 화면에서 조립한다(docs/05 5차). 목업 v15 의 .tree/.tn 모양.
-import { KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { KeyboardEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { api, Region, errorText } from "./api";
 import { nf } from "./ui";
 
@@ -98,10 +98,12 @@ interface Props {
   filter?: string;
   className?: string;
   empty?: string;
+  /** 노드 이름 뒤에 붙일 표시(스케줄 배정 프로필 등). */
+  badge?: (n: TreeNode) => ReactNode;
 }
 
 /** 탐색기식 트리. 행 클릭 = 선택(+ 접힌 상위면 펼침), ▸/▾ = 펼치기만. 키보드 ↑↓ ←→ Enter. */
-export function RegionTree({ tree, selected, onSelect, canSelect, root, filter, className, empty }: Props) {
+export function RegionTree({ tree, selected, onSelect, canSelect, root, filter, className, empty, badge }: Props) {
   const [open, setOpen] = useState<Set<number>>(() => new Set());
   const [rootOpen, setRootOpen] = useState(true);
   const q = (filter ?? "").trim().toLowerCase();
@@ -234,6 +236,7 @@ export function RegionTree({ tree, selected, onSelect, canSelect, root, filter, 
             <span className="tnm">
               {n ? n.r.name : root?.label}
               {leaf && n?.r.bjd_code && <small>{n.r.bjd_code}</small>}
+              {n && badge?.(n)}
             </span>
             <span className="tct" title={`단말 ${cnt}대 · 운영(ACTIVE) ${act}대`}>
               {nf(cnt)}대{cnt !== act && <em>운영 {nf(act)}</em>}

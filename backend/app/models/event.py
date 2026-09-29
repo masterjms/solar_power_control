@@ -21,6 +21,8 @@ class DeviceEvent(Base):
     __tablename__ = "device_event"
     __table_args__ = (
         Index("ix_device_event_uuid_received_at", "uuid", "received_at"),
+        # 알람 "재부팅 잦음"(오늘 REBOOT 횟수) — 0007
+        Index("ix_device_event_kind_received_at", "kind", "received_at"),
         # QoS1 중복 배달 방어. NULL 은 비교 대상이 아니라 부분 인덱스로 건다.
         Index(
             "ux_device_event_dedup_key",
