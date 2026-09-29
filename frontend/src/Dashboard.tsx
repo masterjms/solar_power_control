@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, Device, DeviceCounts, DeviceList as DeviceListRes, EnergyToday, Health, MapPoint, STATES, errorText } from "./api";
 import { co2Text, localTime, relTime, str, volt1, watt1, wh1 } from "./format";
 import { Battery, Card, LampPair, OnlineMark, PlaceholderCard, StateBadge, nf, stateLabel } from "./ui";
-import { DeviceMap } from "./KakaoMap";
+import { DeviceMap, PIN } from "./KakaoMap";
 import { Pager, RemoteBadge, shortPath } from "./DeviceList";
-import { CommandForm, CommandResult, durText } from "./Command";
+import { CommandForm, CommandResult, durText, lastKnownPwm } from "./Command";
 
 const REFRESH_MS = 30_000;
 const SAMPLE = 500; // 목록 API 최대 size. ACTIVE 가 이보다 많으면 "표본 500대"
@@ -214,7 +214,7 @@ function d_label(d: Device): string {
   return `${d.site ?? "(장소 없음)"} · ${d.uuid}`;
 }
 
-/** 지도 — 좌표가 있는 단말 핀(점등 노랑·소등 초록·오프라인 회색·대기 파랑). 핀을 누르면 드로어. */
+/** 지도 — 좌표가 있는 단말 핀(KakaoMap PIN: 오프라인 회색·점등 녹색·소등 녹색 테두리·대기 파랑). 핀을 누르면 드로어. */
 function MapCard({ onSelect, tick }: { onSelect: (uuid: string) => void; tick: number }) {
   const [points, setPoints] = useState<MapPoint[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -233,10 +233,10 @@ function MapCard({ onSelect, tick }: { onSelect: (uuid: string) => void; tick: n
     <Card title="지도" className="h500" meta={err ? <span className="err">{err}</span> : <span>좌표 있는 단말 {nf(points.length)}대 · 핀 누르면 상세</span>}>
       <DeviceMap points={points} onSelect={pick} height={430} />
       <div className="keys-inline">
-        <span><span className="dot" style={{ background: "#f5b400" }} />점등</span>
-        <span><span className="dot" style={{ background: "#22a06b" }} />소등</span>
-        <span><span className="dot" style={{ background: "#8a94a6" }} />오프라인</span>
-        <span><span className="dot" style={{ background: "#3b82f6" }} />승인 대기</span>
+        {(["lit", "dark", "offline", "pending"] as const).map((k) => (
+          <span key={k}><span className="dot" style={{ background: PIN[k].fill, boxShadow: `inset 0 0 0 2px ${PIN[k].ring === "#ffffff" ? PIN[k].fill : PIN[k].ring}` }} />{PIN[k].label}</span>
+        ))}
+        <span>· 핀에 마우스를 올리면 시설명·배터리 전압</span>
       </div>
     </Card>
   );
@@ -349,6 +349,16 @@ function LedControl({ d, onClose, onDetail }: { d: Device; onClose: () => void; 
     return () => window.removeEventListener("keydown", k);
   }, [onClose]);
   const t = d.last_telemetry;
+  // 밝기 처음 값 = 서버가 마지막으로 안 밝기(문제점 12번). 설정 조회가 실패해도 Telemetry 만으로 채운다.
+  const [set, setSet] = useState<{ values: Record<string, number> | null; at: string | null } | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.getSettings(d.uuid)
+      .then((s) => live && setSet({ values: s.values, at: s.last_result === "OK" && s.last_result_at && (!s.read_at || s.last_result_at > s.read_at) ? s.last_result_at : s.read_at }))
+      .catch(() => live && setSet(null));
+    return () => { live = false; };
+  }, [d.uuid]);
+  const known = useMemo(() => lastKnownPwm(t, d.last_telemetry_at, set), [t, d.last_telemetry_at, set]);
   return (
     <div className="modal-ov" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal wide" role="dialog" aria-label="LED 제어">
@@ -369,6 +379,7 @@ function LedControl({ d, onClose, onDetail }: { d: Device; onClose: () => void; 
           <div className="cap">원격 명령 뒤 점등 상태는 단말이 2초 뒤 보내는 Telemetry 로 바뀐다. 단말은 송신 직후에만 명령을 받아 수십 초~최대 약 5분 걸릴 수 있다.</div>
           {msg && <div className="okl">{msg}</div>}
           <CommandForm target={{ kind: "device", id: d.uuid }} targetLabel={d.site ?? d.uuid}
+            initialPwm={known?.pwm ?? null} pwmSource={known?.source ?? null}
             blocked={d.state !== "ACTIVE" ? "운영(ACTIVE) 단말에만 보낼 수 있다" : null}
             onSent={(c) => (setSeq(c.seq), setMsg(`명령 #${c.seq} 발행함${c.payload.dur ? ` · 유지 ${durText(Number(c.payload.dur))}` : ""}`))} />
           {seq !== null && <CommandResult seq={seq} onClose={() => setSeq(null)} />}

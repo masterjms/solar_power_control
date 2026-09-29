@@ -13,6 +13,7 @@ from functools import lru_cache
 from typing import Any
 
 from app.constants import (
+    ACK_RESULTS,
     COMMAND_ACTS,
     COMMAND_CHANNELS,
     COMMAND_DEFAULT_CH,
@@ -21,6 +22,7 @@ from app.constants import (
     DUR_PRESET_TONIGHT,
     DUR_PRESETS,
     RETRYABLE_STATUSES,
+    SERVER_CLOSED_STATUSES,
     TERMINAL_STATUSES,
     OverrideLevel,
     TargetStatus,
@@ -226,16 +228,21 @@ def finish_result(
     """명령 결과. 아직 진행 중이면 None.
 
     counts = {status: n} (pending 포함). expired_exhausted = EXPIRED 이면서 시도를 다 쓴 수.
-    종결 = OK/LOCAL/BAD/STATE + 시도 소진 EXPIRED. LOCAL("받았지만 현장 조작 중")도 종결이다.
-      · 전부 종결          → 전부 OK 면 OK, 아니면 PARTIAL
-      · COMMAND_TIMEOUT 경과 → 응답 0(전부 pending) 이면 TIMEOUT, 아니면 PARTIAL
+    종결 = OK/LOCAL/BAD/STATE + 시도 소진 EXPIRED + 서버가 닫은 OFFLINE·NO_RESPONSE.
+    LOCAL("받았지만 현장 조작 중")도 종결이다.
+      · 전부 종결          → 전부 OK 면 OK, 단말 응답이 하나도 없으면 TIMEOUT, 아니면 PARTIAL
+      · COMMAND_TIMEOUT 경과 → 응답 0 이면 TIMEOUT, 아니면 PARTIAL
+    OFFLINE(안 보냄)은 응답으로 세지 않는다 — 온라인 1대 전부 무응답 + 오프라인 2대면 TIMEOUT.
     """
     ok = counts.get(TargetStatus.OK.value, 0)
-    terminal = sum(counts.get(s, 0) for s in TERMINAL_STATUSES) + expired_exhausted
+    terminal = (sum(counts.get(s, 0) for s in TERMINAL_STATUSES | SERVER_CLOSED_STATUSES)
+                + expired_exhausted)
+    responded = sum(counts.get(s, 0) for s in ACK_RESULTS)
     if total > 0 and terminal >= total:
-        return "OK" if ok >= total else "PARTIAL"
+        if ok >= total:
+            return "OK"
+        return "TIMEOUT" if responded <= 0 else "PARTIAL"
     if elapsed_sec >= timeout_sec:
-        responded = total - counts.get(TargetStatus.PENDING.value, 0)
         if total == 0 or responded <= 0:
             return "TIMEOUT"
         return "PARTIAL"

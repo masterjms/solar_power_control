@@ -228,6 +228,26 @@ def test_finish_result():
     assert _fin({}, 0, elapsed=900) == "TIMEOUT"
 
 
+def test_finish_result_offline_and_no_response():
+    """문제점 14번 — 오프라인(안 보냄)은 기다리지 않고, 서버가 닫은 무응답도 종결이다."""
+    # 온라인 2대 OK + 오프라인 1대 → 기다리지 않고 바로 끝, 전원이 받은 건 아니니 PARTIAL
+    assert _fin({"OK": 2, "OFFLINE": 1}, 3) == "PARTIAL"
+    # 온라인 1대 아직 무응답이면 오프라인과 상관없이 진행 중
+    assert _fin({"OK": 1, "pending": 1, "OFFLINE": 1}, 3) is None
+    # 응답은 하나도 없고 오프라인·무응답뿐 → TIMEOUT(오프라인을 응답으로 세지 않는다)
+    assert _fin({"NO_RESPONSE": 1, "OFFLINE": 2}, 3) == "TIMEOUT"
+    assert _fin({"pending": 1, "OFFLINE": 2}, 3, elapsed=900) == "TIMEOUT"
+    # 일부 응답 + 무응답 → PARTIAL
+    assert _fin({"OK": 2, "NO_RESPONSE": 1}, 3) == "PARTIAL"
+    assert _fin({"OK": 2, "pending": 1}, 3, elapsed=900) == "PARTIAL"
+
+
+def test_late_ack_reopens_server_closed_status():
+    """OFFLINE·NO_RESPONSE 뒤 뒤늦게 온 응답은 그 result 로 바뀐다(응답이 사실이다)."""
+    assert next_target_status("OFFLINE", "OK") == "OK"
+    assert next_target_status("NO_RESPONSE", "LOCAL") == "LOCAL"
+
+
 def test_next_target_status_never_downgrades_ok():
     assert next_target_status("pending", "EXPIRED") == "EXPIRED"
     assert next_target_status("EXPIRED", "OK") == "OK"

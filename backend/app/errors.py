@@ -148,6 +148,13 @@ class CommandFinished(Conflict):
     message = "이미 종료된 명령입니다."
 
 
+class NoOnlineTargets(Conflict):
+    """대상 ACTIVE 단말이 전부 오프라인 — 보내지도 기다리지도 않는다(문제점 14번)."""
+
+    code = "NO_ONLINE_TARGETS"
+    message = "대상 단말이 모두 오프라인이라 명령을 보내지 않았습니다."
+
+
 class NoTargets(Conflict):
     """대상 범위 안에 ACTIVE 단말이 없다 — 보내도 받을 단말이 없다(PENDING 등은 STATE 로 거부)."""
 

@@ -148,8 +148,9 @@ class Settings(BaseSettings):
     )
     #: COMMAND.exp 기본(초). 단말 RTC - ts 가 이보다 크면 EXPIRED(사양서 §3.10.7, 30 권장).
     command_exp_sec: int = 30
-    #: 명령 종료 판정 상한(초). 이 뒤로는 자동 재시도도 멈춘다(ADR-005).
-    command_timeout_sec: int = 900
+    #: 명령 종료 판정 상한(초). 이 안에 응답이 없는 대상은 NO_RESPONSE(실패)로 닫고 자동 재시도도
+    #: 멈춘다(ADR-005). 900 → 180 (문제점 14번 — 15분 동안 "진행 중"으로 남았다).
+    command_timeout_sec: int = 180
     #: 대상 단말 1대당 최대 발송 횟수(첫 발송 포함). 자동 재시도 상한.
     command_max_attempts: int = 3
     #: 같은 대상에 다시 보내기까지 최소 간격(초). 단말 송신 직후 재시도의 연타 방지.

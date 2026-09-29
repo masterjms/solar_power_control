@@ -222,7 +222,7 @@ def test_phase_only_5_opens_group_cmd(monkeypatch):
         return 0
     monkeypatch.setattr(run, "run_all", fake_run_all)
     assert run.main(["--all", "--phase-only", "5", "--storm5-count", "50", "--cmd-finish-timeout", "5"]) == 0
-    assert "group_cmd" in seen["flags"] and all(i.startswith("S5-") for i in seen["ids"]) and len(seen["ids"]) == 12
+    assert "group_cmd" in seen["flags"] and all(i.startswith("S5-") for i in seen["ids"]) and len(seen["ids"]) == 13  # S5-13 추가(문제점 14번)
     assert seen["opt"].storm5_count == 50 and seen["opt"].cmd_finish_timeout == 5
 
 

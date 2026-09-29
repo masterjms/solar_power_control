@@ -3,7 +3,10 @@
 발송 순서(POST /api/commands):
   1. 대상 해석 — device / node(말단·상위) / all(최고관리자만). topic 목록과 "오늘 밤" 좌표도 여기서.
   2. 검증(core/command_rules) → 유지시간 확정(tonight 은 suntable).
-  3. 범위 안 ACTIVE 단말 수. 0 이면 409 NO_TARGETS — seq 를 뽑기 전에 막는다.
+  3. 범위 안 ACTIVE 단말 수. 0 이면 409 NO_TARGETS, 전부 오프라인이면 409 NO_ONLINE_TARGETS —
+     seq 를 뽑기 전에 막는다. 오프라인 단말은 스냅숏에 OFFLINE 으로 남기고 보내지도 기다리지도
+     않는다(문제점 14번). 그룹 topic 은 붙어 있는 단말만 받으므로 따로 뺄 것이 없고, 개별 명령은
+     오프라인이면 위 409 로 막힌다.
   4. seq(DB 시퀀스 cmd_seq) → payload → command 행 + command_target 스냅숏(INSERT … SELECT 한 문장).
   5. **커밋한 뒤 발행**한다. 로컬 시뮬레이터는 수 ms 안에 COMMAND_ACK 를 돌려주는데, 발행을 먼저
      하고 응답 뒤(미들웨어)에서 커밋하면 ACK 핸들러가 아직 없는 대상 행을 보고 "모르는 seq" 로
@@ -40,6 +43,7 @@ from app.errors import (
     CommandNotFound,
     DeviceNotFound,
     MqttUnavailable,
+    NoOnlineTargets,
     NoTargets,
     RegionNotFound,
     ValidationFailed,
@@ -194,6 +198,9 @@ async def create(
     if stats["expected"] == 0 or not target.topics:
         raise NoTargets(detail={"target": {"kind": target.kind, "id": target.target_id},
                                 "not_active": stats["not_active"]})
+    if stats["online"] == 0:
+        raise NoOnlineTargets(detail={"target": {"kind": target.kind, "id": target.target_id},
+                                      "offline": stats["offline"]})
     if not publisher.connection.is_connected:
         raise MqttUnavailable()
 
@@ -205,19 +212,28 @@ async def create(
         created_by=me.user, topics=target.topics, exp=spec.exp,
     ))
     await db.flush()
+    # 오프라인이면 OFFLINE·attempts 0·보낸 시각 없음 — 기다리지도, 자동 재시도하지도 않는다.
+    online = presence.online_clause(now)
     snap = select(
-        literal(seq, BigInteger), Device.uuid, literal(TargetStatus.PENDING.value),
-        literal(1, Integer), literal(now),
+        literal(seq, BigInteger), Device.uuid,
+        case((online, literal(TargetStatus.PENDING.value)),
+             else_=literal(TargetStatus.OFFLINE.value)),
+        case((online, literal(1, Integer)), else_=literal(0, Integer)),
+        case((online, literal(now)), else_=None),
     ).where(target.scope, Device.state == DeviceState.ACTIVE.value)
     inserted = await db.execute(
         pg_insert(CommandTarget)
         .from_select(["seq", "uuid", "status", "attempts", "last_sent_at"], snap)
-        .returning(CommandTarget.uuid)
+        .returning(CommandTarget.uuid, CommandTarget.status)
     )
-    uuids = [r[0] for r in inserted.all()]
-    if not uuids:  # 3 과 4 사이에 승인이 풀렸다
-        raise NoTargets(detail={"target": {"kind": target.kind, "id": target.target_id}})
+    rows = inserted.all()
+    uuids = [u for u, st in rows if st == TargetStatus.PENDING.value]
+    skipped = len(rows) - len(uuids)
+    if not uuids:  # 3 과 4 사이에 승인이 풀렸거나 전부 끊겼다
+        raise NoOnlineTargets(detail={"target": {"kind": target.kind, "id": target.target_id},
+                                      "offline": skipped})
     cmd = await db.get(Command, seq)
+    # 기다릴 대수 = 실제로 보낸 대수. ACK 수신 쪽이 acked_count >= expected_count 로 조기 종료한다.
     cmd.expected_count = len(uuids)
     await db.commit()
 
@@ -242,12 +258,12 @@ async def create(
         ))
     if retrier is not None:
         retrier.mark(uuids)
-    log.info("COMMAND seq=%d %s %s act=%s → topic %d개, 대상 %d대 (by %s)",
+    log.info("COMMAND seq=%d %s %s act=%s → topic %d개, 대상 %d대 · 오프라인 제외 %d대 (by %s)",
              seq, target.kind, target.target_id, spec.act, len(target.topics), len(uuids),
-             me.user)
+             skipped, me.user)
     return CommandOut(
         seq=seq, target=TargetOut(kind=target.kind, id=target.target_id, label=target.label),
-        topics=target.topics, payload=payload, expected=len(uuids), sent_at=now,
+        topics=target.topics, payload=payload, expected=len(uuids), offline=skipped, sent_at=now,
         created_by=me.user,
     )
 

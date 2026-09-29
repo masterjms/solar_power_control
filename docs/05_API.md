@@ -75,7 +75,8 @@ ACTIVE 단말에는 즉시 CONFIG_SET 을 보내지 않는다 — 다음 송신 
 - `last_telemetry` 는 **목록에도 포함**(bv/sc 열 표시용. 2026-09-26 프론트 요청).
 
 ### `GET /api/devices/map?state=` → 지도 핀 (2026-09-28, 문제점 #3)
-좌표(lat·lon)가 있는 단말 전부. 필드 최소: `[{"uuid","site","lat","lon","state","is_online","on","node_name"}]`. `on` = 마지막 Telemetry on(없으면 null).
+좌표(lat·lon)가 있는 단말 전부. 필드 최소: `[{"uuid","site","lat","lon","state","is_online","on","lit","bv","node_name"}]`. `on` = 마지막 Telemetry on(없으면 null).
+`lit`(2026-09-29, 문제점 13번) = 점등 중인가 — 마지막 Telemetry `pw` 앞 두 채널(주등·입간판) 중 하나라도 > 0, `pw` 가 없으면 `on == 1`, Telemetry 없으면 null. `bv` = 마지막 배터리 전압(×100 V). 오프라인이어도 둘 다 마지막 값.
 `/{uuid}` 보다 먼저 선언(경로 충돌 방지).
 
 ### `GET /api/devices/energy?uuid=A&uuid=B…` (최대 500) → 오늘 누적 (문제점 #11)
@@ -232,10 +233,11 @@ PATCH → 목록 항목 모양, DELETE → `{"id","deleted":true}`. 없는 id 40
 ```json
 {"seq":57,"target":{"kind":"node","id":"3","label":"경기도 > 안양시 만안구"},"topics":[...],
  "payload":{"type":"COMMAND","seq":57,"ts":"260927T013512","exp":30,"act":"off","ch":[1,2],"dur":3600},
- "expected":120,"sent_at":"...","created_by":"admin"}
+ "expected":118,"offline":2,"sent_at":"...","created_by":"admin"}
 ```
 브로커 끊김이면 503 `MQTT_UNAVAILABLE`(명령 행 삭제 — 서버는 **발행 전에 커밋**하고 실패하면 보상 삭제한다. seq 는 되감지 않는다).
-대상 ACTIVE 0 → 409 `NO_TARGETS`. `label`: device = `"<site> (<uuid>)"`(site 없으면 uuid), node = 경로, all = `"전체"`.
+`expected` = 실제로 보내고 응답을 기다리는 온라인 대수, `offline` = 오프라인이라 보내지 않은 대수(대상에 `OFFLINE` 으로 남는다, 문제점 14번).
+대상 ACTIVE 0 → 409 `NO_TARGETS`, ACTIVE 가 있지만 전부 오프라인 → 409 `NO_ONLINE_TARGETS`(명령 행 없음). `label`: device = `"<site> (<uuid>)"`(site 없으면 uuid), node = 경로, all = `"전체"`.
 개별(device) 명령만 `device_event(COMMAND_SENT)` 를 남긴다.
 
 ### `GET /api/commands?limit=50&uuid=&node_id=`
@@ -252,7 +254,7 @@ PATCH → 목록 항목 모양, DELETE → `{"id","deleted":true}`. 없는 id 40
 (옛 명령이 새 명령을 덮지 않게). 발행은 응답 큐(토큰 버킷)로 수 초 안에 나간다. 브로커 끊김 503. 자동 재시도는 docs/02 §16.3.
 
 ### 에러 코드 추가
-`FORBIDDEN` 403 · `GEO_UNAVAILABLE` 503 · `REGION_IN_USE` 409 · `NODE_NOT_LEAF` 422 · `NODE_REQUIRED` 409 · `REGION_NOT_FOUND` 404 · `COMMAND_NOT_FOUND` 404 · `COMMAND_FINISHED` 409 · `NO_TARGETS` 409(대상 ACTIVE 단말 0)
+`FORBIDDEN` 403 · `GEO_UNAVAILABLE` 503 · `REGION_IN_USE` 409 · `NODE_NOT_LEAF` 422 · `NODE_REQUIRED` 409 · `REGION_NOT_FOUND` 404 · `COMMAND_NOT_FOUND` 404 · `COMMAND_FINISHED` 409 · `NO_TARGETS` 409(대상 ACTIVE 단말 0) · `NO_ONLINE_TARGETS` 409(대상 ACTIVE 전부 오프라인)
 
 ---
 

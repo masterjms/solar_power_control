@@ -54,7 +54,9 @@ export const ACK_VIEW: Record<AckStatus, [string, string, string]> = {
   EXPIRED: ["만료", "b-warn", "var(--warn)"],
   BAD: ["오류(형식)", "b-alarm", "var(--alarm)"],
   STATE: ["오류(승인 전)", "b-alarm", "var(--alarm)"],
-  pending: ["무응답", "b-off", "var(--line)"],
+  pending: ["응답 대기", "b-blue", "var(--line)"],
+  NO_RESPONSE: ["무응답(실패)", "b-alarm", "var(--alarm)"],
+  OFFLINE: ["오프라인 — 안 보냄", "b-off", "var(--off)"],
 };
 
 const cnt = (c: Partial<Record<AckStatus, number>>, k: AckStatus) => c[k] ?? 0;
@@ -67,13 +69,62 @@ interface FormProps {
   /** 보낼 수 없는 이유(권한·상태). 있으면 버튼을 막고 이유를 보인다. */
   blocked?: string | null;
   onSent: (c: CommandCreated) => void;
+  /** 밝기 슬라이더 처음 값 {채널: %}. 서버가 마지막으로 안 밝기(문제점 12번). 없으면 70/40. */
+  initialPwm?: Record<number, number> | null;
+  /** initialPwm 의 출처 설명(예: "단말 설정 동기화 09-29 14:02"). */
+  pwmSource?: string | null;
+}
+
+/** 채널 → 설정 항목(설치 기준 밝기). 사양서 UI 항목 명세 brightness. */
+const MANUAL_KEY: Record<number, string> = { 1: "manual_40w", 2: "manual_5w1", 3: "manual_5w2" };
+
+/**
+ * 서버가 마지막으로 안 채널별 밝기(문제점 12번). **채널마다** 후보 둘 중 더 최근 것:
+ *   ① 단말 설정 동기화 값(manual_*, 읽거나 쓴 시각)  ② 그 채널이 **켜져 있을 때** 받은 Telemetry `pw`.
+ * 꺼진 채널의 pw(0)는 밝기가 아니라 "꺼짐"이라 쓰지 않는다. 둘 다 없으면 null(폼 기본값).
+ */
+export function lastKnownPwm(
+  tele: { on?: number; pw?: number[] } | null | undefined, teleAt: string | null | undefined,
+  settings: { values: Record<string, number> | null; at: string | null } | null,
+): { pwm: Record<number, number>; source: string } | null {
+  const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(Number(n) || 0)));
+  const tAt = teleAt ? Date.parse(teleAt) : NaN;
+  const sAt = settings?.at ? Date.parse(settings.at) : NaN;
+  const v = settings?.values ?? null;
+  const out: Record<number, number> = {};
+  const used = new Map<string, number>(); // 출처 → 시각
+  for (const ch of [1, 2, 3]) {
+    const tv = tele?.pw?.[ch - 1];
+    const tele_ok = typeof tv === "number" && tv > 0 && !Number.isNaN(tAt);
+    const sv = v?.[MANUAL_KEY[ch]];
+    const set_ok = typeof sv === "number" && !Number.isNaN(sAt);
+    const shown = ch <= 2; // 출처 문구는 화면에 보이는 주등·입간판 것만
+    if (tele_ok && (!set_ok || tAt >= sAt)) {
+      out[ch] = clamp(tv as number);
+      if (shown) used.set("점등 중 보고", tAt);
+    } else if (set_ok) {
+      out[ch] = clamp(sv as number);
+      if (shown) used.set("단말 설정 동기화", sAt);
+    }
+  }
+  if (out[1] === undefined && out[2] === undefined) return null;
+  const when = (t: number) => new Date(t).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return {
+    pwm: { 1: out[1] ?? 70, 2: out[2] ?? 40, 3: out[3] ?? out[2] ?? 40 },
+    source: [...used].map(([s, t]) => `${s} ${when(t)}`).join(" · "),
+  };
 }
 
 /** 목업 #gBox — 명령(소등/점등/밝기/스케줄 복귀) · 채널 · 밝기 % · 유지시간 → "보내기 전 확인". */
-export function CommandForm({ target, targetLabel, blocked, onSent }: FormProps) {
+export function CommandForm({ target, targetLabel, blocked, onSent, initialPwm, pwmSource }: FormProps) {
   const [act, setAct] = useState<CmdAct>("off");
   const [ch, setCh] = useState<Record<number, boolean>>({ 1: true, 2: true });
-  const [pwm, setPwm] = useState<Record<number, number>>({ 1: 70, 2: 40 });
+  const [pwm, setPwm] = useState<Record<number, number>>(initialPwm ?? { 1: 70, 2: 40 });
+  // 마지막 값을 늦게 받아 오면(창을 연 뒤 설정 조회가 끝남) 그때 채운다. 사용자가 이미 움직였으면 두지 않는다.
+  const [touched, setTouched] = useState(false);
+  useEffect(() => {
+    if (initialPwm && !touched) setPwm(initialPwm);
+  }, [initialPwm, touched]);
   const [dur, setDur] = useState<DurSel>("1h");
   const [custom, setCustom] = useState("90");
   const [busy, setBusy] = useState(false);
@@ -141,11 +192,11 @@ export function CommandForm({ target, targetLabel, blocked, onSent }: FormProps)
         <div key={k} className="ctlrow">
           <span>{CH_LABEL[k]}</span>
           <input type="range" min={0} max={100} value={pwm[k]} aria-label={`${CH_LABEL[k]} 밝기`}
-            onChange={(e) => setPwm((p) => ({ ...p, [k]: Number(e.target.value) }))} />
+            onChange={(e) => (setTouched(true), setPwm((p) => ({ ...p, [k]: Number(e.target.value) })))} />
           <b>{pwm[k]}%</b>
         </div>
       ))}
-      {act === "pwm" && <div className="cap">설치 기준 밝기에 곱하는 % (0~100). 점등은 설치 기준 밝기 그대로.</div>}
+      {act === "pwm" && <div className="cap">{pwmSource ? `처음 값 = 서버가 마지막으로 안 밝기(${pwmSource}). ` : ""}단말은 이 %를 설치 기준 밝기에 곱한다(사양서 §3.10.7). 점등은 설치 기준 밝기 그대로.</div>}
       {act !== "auto" ? (
         <div className="dur">
           <span className="muted">유지</span>
@@ -227,9 +278,9 @@ function PreviewModal({ label, text, body, res, onCancel, onSent }: {
           <div className="sec">
             <h4>명령 <span>{text}</span></h4>
             <div className="grid2">
-              <div className="met"><div className="l">대상 (운영 단말)</div><div className="v">{nf(res.expected)}대</div><div className="h">이 수만큼 응답을 기다린다</div></div>
-              <div className="met k"><div className="l">온라인</div><div className="v">{nf(res.online)}대</div><div className="h">다음 송신 직후 받는다</div></div>
-              <div className={`met ${res.offline ? "o" : ""}`}><div className="l">오프라인</div><div className="v">{nf(res.offline)}대</div><div className="h">붙으면 서버가 자동 재시도(유효시간 안)</div></div>
+              <div className="met"><div className="l">대상 (운영 단말)</div><div className="v">{nf(res.expected)}대</div><div className="h">범위 안 승인(ACTIVE) 단말</div></div>
+              <div className="met k"><div className="l">온라인 — 보냄</div><div className="v">{nf(res.online)}대</div><div className="h">이 수만큼 응답을 기다린다(최대 3분, 없으면 실패)</div></div>
+              <div className={`met ${res.offline ? "o" : ""}`}><div className="l">오프라인 — 안 보냄</div><div className="v">{nf(res.offline)}대</div><div className="h">보내지도 기다리지도 않는다</div></div>
               <div className={`met ${lights && res.low_battery ? "a" : ""}`}><div className="l">저전압 (안 켜질 수)</div><div className="v">{nf(res.low_battery)}대</div><div className="h">{lights ? "BATT_LOW — 점등 명령이어도 켜지지 않는다" : "소등·복귀에는 영향 없음"}</div></div>
               <div className="met o"><div className="l">제외 (승인 안 됨)</div><div className="v">{nf(res.not_active)}대</div><div className="h">범위 안이지만 ACTIVE 가 아니라 보내지 않음</div></div>
               <div className="met"><div className="l">발행 topic</div><div className="v">{nf(tp)}개</div><div className="h">{res.dur !== null ? `유지 ${durText(res.dur)} (dur ${res.dur}초)` : "유지시간 없음(auto)"}</div></div>
@@ -239,6 +290,7 @@ function PreviewModal({ label, text, body, res, onCancel, onSent }: {
             <div className="cap" style={{ marginTop: 8 }}>seq 와 ts(보낸 시각)는 보낼 때 서버가 넣는다. 단말은 다음 송신 뒤 받을 수 있다(최대 약 5분).</div>
           </div>
           {res.expected === 0 && <div className="err">운영(ACTIVE) 단말이 없어 보낼 수 없다(NO_TARGETS).</div>}
+          {res.expected > 0 && res.online === 0 && <div className="err">대상 단말이 모두 오프라인이라 보낼 수 없다(NO_ONLINE_TARGETS).</div>}
           {isAll && step === 2 ? (
             <div className="confirm">
               <b>전체 단말</b>에 <b>{text}</b>을 보낸다. 되돌리려면 다시 스케줄 복귀를 보내야 한다.
@@ -360,15 +412,17 @@ export function CommandResult({ seq, onClose, onDevice }: { seq: number; onClose
         <span>현장 조작 중(LOCAL) <b>{nf(cnt(k, "LOCAL"))}</b></span>
         <span>만료(EXPIRED) <b>{nf(cnt(k, "EXPIRED"))}</b></span>
         <span>오류 <b>{nf(errN)}</b></span>
-        <span>무응답 <b>{nf(cnt(k, "pending"))}</b></span>
-        <span>대상 {nf(c.expected_count)}</span>
+        <span>{c.finished_at ? "무응답" : "응답 대기"} <b>{nf(cnt(k, "pending"))}</b></span>
+        <span>무응답(실패) <b>{nf(cnt(k, "NO_RESPONSE"))}</b></span>
+        <span>오프라인 — 안 보냄 <b>{nf(cnt(k, "OFFLINE"))}</b></span>
+        <span>보낸 대수 {nf(c.expected_count)}</span>
       </div>
       <div className="bar2">
         <button type="button" className="btn" disabled={busy || !!c.finished_at || retryable === 0} onClick={retry}
           title="무응답(pending)·만료(EXPIRED) 대상만 개별 topic 으로 같은 seq 재발송">
           무응답·만료 개별 재시도 ({nf(retryable)})
         </button>
-        <span className="cap">단말은 다음 송신 뒤 받을 수 있음(최대 약 5분). 서버가 자동 재시도함(단말이 보낸 직후, 최대 3회).</span>
+        <span className="cap">3분 안에 응답이 없으면 무응답(실패)으로 끝난다. 그 안에는 단말이 보낸 직후 서버가 자동 재시도(최대 3회). 오프라인 단말은 보내지 않는다.</span>
       </div>
       {msg && <div className="okl">{msg}</div>}
       {err && <div className="err">{err}</div>}
@@ -454,7 +508,9 @@ export function CommandHistory({ uuid, nodeId, tick, selected, onOpen, limit = 5
                     {cnt(k, "LOCAL") > 0 && <span className="md">LOCAL {nf(cnt(k, "LOCAL"))}</span>}
                     {cnt(k, "EXPIRED") > 0 && <span className="md c-warn">만료 {nf(cnt(k, "EXPIRED"))}</span>}
                     {errN > 0 && <span className="md c-alarm">오류 {nf(errN)}</span>}
-                    {cnt(k, "pending") > 0 && <span className="md">무응답 {nf(cnt(k, "pending"))}</span>}
+                    {cnt(k, "pending") > 0 && <span className="md">응답 대기 {nf(cnt(k, "pending"))}</span>}
+                    {cnt(k, "NO_RESPONSE") > 0 && <span className="md c-alarm">무응답 {nf(cnt(k, "NO_RESPONSE"))}</span>}
+                    {cnt(k, "OFFLINE") > 0 && <span className="md">오프라인 {nf(cnt(k, "OFFLINE"))}</span>}
                     <span className="md">/ {nf(c.expected_count)}</span>
                     {c.finished_at ? <span className="md">· {str(c.result)}</span> : <span className="md c-blue">· 진행 중</span>}
                   </td>

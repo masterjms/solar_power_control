@@ -322,3 +322,8 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .appr .step .no{display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; background:var(--blue); color:#fff; font-size:var(--f1); font-weight:600; flex:none}
 .appr .step .no.done{background:var(--ok)}
 .georesults{list-style:none; margin:var(--s2) 0 0; padding:0; display:grid; gap:4px; max-height:200px; overflow:auto}
+
+/* 지도 핀 말풍선(문제점 13번) — 시설명 · 배터리 전압 */
+.kpin-tip{display:flex; flex-direction:column; gap:2px; padding:6px 10px; border-radius:8px; background:#1f2733; color:#fff; font-size:12px; line-height:1.35; white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,.25); pointer-events:none}
+.kpin-tip b{font-size:13px}
+.kpin-tip span{color:#cfd6e0}

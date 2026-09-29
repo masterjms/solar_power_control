@@ -413,15 +413,16 @@ DB       ─ command(type=COMMAND, target_kind, target_id, created_by, topics, e
 2. seq 가 COMMAND 가 아니거나(모름·PING) 이 단말이 스냅숏에 없으면 경고 + `command_ack_mismatch`.
 3. `command_target.status = result`(단, **OK·LOCAL 은 바뀌지 않는다** — 늦은 EXPIRED 가 OK 를 덮지 않게.
    LOCAL 은 "현장 조작 중이라 버림"이고 현장이 끝나도 단말이 적용하지 않는다(§3.10.8·§3.10.11 2026-09-27 개정) — 종결),
-   `acked_at`, `ack`(원본). 첫 응답(pending 에서)이면 `command.acked_count + 1`. 모르는 result 값은 원본만 남긴다.
+   `acked_at`, `ack`(원본). 첫 응답(pending·OFFLINE·NO_RESPONSE 에서)이면 `command.acked_count + 1`. 모르는 result 값은 원본만 남긴다.
 4. **OK**(그리고 target 이 OK) → `device.override_*` (§16.6). LOCAL 은 override 를 남기지 않는다.
 5. 대상이 다 응답했으면 종료 판정을 그 seq 하나에 바로 돌린다(개별 명령이 30초 동안 "진행 중"으로 보이지 않게).
 
 ### 16.5 종료 (30초 타이머, `tasks/command_finisher`)
-미종료 COMMAND 마다 대상 상태를 센다. 종결 = OK/LOCAL/BAD/STATE + 시도를 다 쓴 EXPIRED.
-- 전부 종결 → `OK`(전부 OK) / `PARTIAL`
-- `COMMAND_TIMEOUT_SEC`(900) 경과 → 응답 0(전부 pending)이면 `TIMEOUT`, 아니면 `PARTIAL`
-끝난 명령은 재시도 대상에서 빠진다. 파이썬 판 `command_rules.finish_result`.
+미종료 COMMAND 마다 대상 상태를 센다. 종결 = OK/LOCAL/BAD/STATE + 시도를 다 쓴 EXPIRED + 서버가 닫은 OFFLINE·NO_RESPONSE.
+- 전부 종결 → `OK`(전부 OK) / 단말 응답 0 이면 `TIMEOUT` / 그 밖엔 `PARTIAL`
+- `COMMAND_TIMEOUT_SEC`(180, 2026-09-29 전 900) 경과 → 그때 `pending` 인 대상은 **`NO_RESPONSE`** 로 바꾸고, 응답 0 이면 `TIMEOUT`, 아니면 `PARTIAL`
+- 보낼 때 오프라인이던 대상은 처음부터 `OFFLINE`(보내지 않음·기다리지 않음·재시도 없음). 응답으로 세지 않는다.
+끝난 명령은 재시도 대상에서 빠진다. 파이썬 판 `command_rules.finish_result`. 문제점 14번·ADR-005 개정.
 
 ### 16.6 override 표시 (S-19, §3.10.8)
 - 계층: device 명령 → `device`, node → `group`, all → `all`.
@@ -445,7 +446,7 @@ DB       ─ command(type=COMMAND, target_kind, target_id, created_by, topics, e
 
 ### 16.8 설정 (`.env`)
 `KAKAO_REST_API_KEY`(""), `SUPER_ADMIN_USERS`(admin), `APPROVE_REQUIRES_NODE`(미설정 = prod true / dev false),
-`COMMAND_EXP_SEC`(30), `COMMAND_TIMEOUT_SEC`(900), `COMMAND_MAX_ATTEMPTS`(3), `COMMAND_RETRY_MIN_SEC`(20),
+`COMMAND_EXP_SEC`(30), `COMMAND_TIMEOUT_SEC`(180), `COMMAND_MAX_ATTEMPTS`(3), `COMMAND_RETRY_MIN_SEC`(20),
 `DEFAULT_LAT`/`DEFAULT_LON`(37.5665/126.9780).
 
 ## 17. S-23 단말 운전 설정 (ADR-007, `UI_항목_명세.md` 8장)

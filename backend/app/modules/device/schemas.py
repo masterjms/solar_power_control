@@ -255,6 +255,12 @@ class MapPoint(BaseModel):
     is_online: bool
     #: 마지막 Telemetry on (주등). 없으면 None.
     on: int | None
+    #: 마지막 Telemetry 기준 점등 중인가 — pw 앞 두 채널(주등·입간판) 중 하나라도 0 보다 크면,
+    #: pw 가 없으면 on==1.
+    #: Telemetry 가 없으면 None. 오프라인이면 마지막으로 안 값이다(문제점 13번).
+    lit: bool | None = None
+    #: 마지막 Telemetry 배터리 전압(x100 V, 2450 = 24.50 V). 오프라인이어도 마지막 값.
+    bv: int | None = None
     node_name: str | None
 
 

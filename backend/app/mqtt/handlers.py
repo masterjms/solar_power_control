@@ -48,12 +48,20 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import ACK_RESULTS, DeviceState, EventKind, MsgType, TargetStatus, TopicKind
+from app.constants import (
+    ACK_RESULTS,
+    SERVER_CLOSED_STATUSES,
+    DeviceState,
+    EventKind,
+    MsgType,
+    TargetStatus,
+    TopicKind,
+)
 from app.core import presence
 from app.core.command_rules import channels_after_ok, override_level_for
-from app.core.override import apply_channels
 from app.core.effective import effective_ka_sql, effective_ti_sql
 from app.core.metrics import metrics
+from app.core.override import apply_channels
 from app.db import session_scope
 from app.models.command import Command, CommandAck, CommandTarget
 from app.models.device import Device
@@ -475,7 +483,8 @@ class Dispatcher:
             target.ack = data
             return
 
-        first = target.status == TargetStatus.PENDING.value
+        # 서버가 닫은 상태(OFFLINE·NO_RESPONSE)에 뒤늦게 온 응답도 "첫 응답"이다 — 응답이 사실이다.
+        first = target.status in (TargetStatus.PENDING.value, *SERVER_CLOSED_STATUSES)
         target.status = next_target_status(target.status, result)
         target.acked_at = now
         target.ack = data

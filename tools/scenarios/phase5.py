@@ -1019,7 +1019,7 @@ async def s5_11(ctx: Ctx) -> None:
     """A: 개별 명령 전부 OK → 곧바로 finished·result OK → `POST /retry` 409 `COMMAND_FINISHED`, 없는 seq 404 `COMMAND_NOT_FOUND`.
     B: 3대 말단 명령, 1대는 영영 무응답 → OK 2·pending 1·미종료 → OK 단말 지정 재시도 `resent 0` → 무응답 단말이 계속 Telemetry →
     자동 재시도는 `COMMAND_MAX_ATTEMPTS`(3)까지만(개별 topic 2회, 이후 RETRY_MIN+6초 동안 없음, attempts 3·pending) → 수동 재시도
-    (참고) → `COMMAND_TIMEOUT_SEC` 이 `--cmd-finish-timeout` 안이면 PARTIAL·409, 아니면 참고 기록(개발 서버 기본 900초)."""
+    (참고) → `COMMAND_TIMEOUT_SEC` 이 `--cmd-finish-timeout` 안이면 PARTIAL·409, 아니면 참고 기록(서버 기본 180초 — 문제점 14번)."""
     tree = await make_tree(ctx, [1])
     leaf = tree.leaves[0]
     ok1, ok2, mute = await devices_in(ctx, 3, leaf, offset=0)
@@ -1068,7 +1068,7 @@ async def s5_11(ctx: Ctx) -> None:
     try:
         dt = await ctx.wait_until(finished, timeout=finish, interval=2, what="COMMAND_TIMEOUT_SEC 경과 → 종료")
     except Fail:
-        ctx.log(f"(참고) {finish:.0f}s 안에 종료되지 않음 — 서버 COMMAND_TIMEOUT_SEC 가 더 길다(기본 900). PARTIAL 판정 생략")
+        ctx.log(f"(참고) {finish:.0f}s 안에 종료되지 않음 — 서버 COMMAND_TIMEOUT_SEC 가 더 길다(기본 180). PARTIAL 판정 생략")
         return
     ctx.check_eq(dt.get("result"), "PARTIAL", "응답 일부 → result")
     r = await ctx.s.rest.retry_command(seq, None, _admin(ctx))
@@ -1139,3 +1139,60 @@ async def s5_12(ctx: Ctx) -> None:
     await stop_watch()
     ctx.check_eq(health_fail, 0, "/health 실패 횟수")
     ctx.check(await ctx.s.rest.health_ok(), "/health ok")
+
+
+# ── S5-13 오프라인 섞인 그룹 명령 (문제점 14번) ─────────────────────────
+
+@scenario("S5-13", "오프라인 섞인 그룹 명령 — 오프라인은 OFFLINE(안 보냄·안 기다림), 온라인 무응답은 시간 뒤 NO_RESPONSE, 전부 오프라인 409",
+          phase=5, requires="group_cmd", timeout=420)
+async def s5_13(ctx: Ctx) -> None:
+    """문제점 14번(2026-09-29): online 2대 + offline 1대 그룹에 명령하면 offline 응답을 기다렸다.
+    말단 A 3대 — ok(응답) · mute(온라인 무응답) · gone(접속 끊음, 서버 online=false 확인) / 말단 B 1대(끊음).
+    preview online 2·offline 1 → 보내면 expected 2·offline 1, 대상 스냅숏 gone = OFFLINE·attempts 0·보낸 시각 없음,
+    gone 은 아무것도 못 받음, 자동 재시도 대상 아님 → COMMAND_TIMEOUT_SEC(서버 기본 180) 뒤 mute = NO_RESPONSE, pending 0,
+    result PARTIAL. B(전부 오프라인) 명령은 409 NO_ONLINE_TARGETS·명령 행 없음."""
+    tree = await make_tree(ctx, [2])
+    a, b = tree.leaves
+    ok, mute, gone = await devices_in(ctx, 3, a, offset=0)
+    (b_only,) = await devices_in(ctx, 1, b, offset=3)
+    mute.silent_commands = 10**6
+
+    async def online_is(uuid: str, value: bool) -> bool:
+        r = await ctx.s.db.device(uuid)
+        return bool(r) and r.get("online") is value
+    for d in (gone, b_only):
+        await d.disconnect(hard=False, reconnect=False)
+    for d in (gone, b_only):
+        await ctx.wait_until(lambda d=d: online_is(d.uuid, False), timeout=25, interval=1,
+                             what=f"{d.uuid[-4:]} 끊은 뒤 online=false")
+
+    tgt = target("node", a.id)
+    pv = await preview(ctx, body_of(tgt, "off", dur=300))
+    ctx.check((pv.get("expected"), pv.get("online"), pv.get("offline")) == (3, 2, 1),
+              f"preview 대상 3 · 온라인 2 · 오프라인 1: {pv.get('expected')}/{pv.get('online')}/{pv.get('offline')}")
+
+    t0 = time.monotonic()
+    body = await send(ctx, tgt, "off", dur=300)
+    seq = body["seq"]
+    ctx.check_eq(body.get("expected"), 2, "응답 expected = 보낸 대수(온라인)")
+    ctx.check_eq(body.get("offline"), 1, "응답 offline = 안 보낸 대수")
+    await wait_acks(ctx, [ok], seq, "OK")
+    det = await wait_counts(ctx, seq, {"OK": 1, "pending": 1, "OFFLINE": 1}, finished=False)
+    tb = targets_by_uuid(det)
+    g = tb.get(gone.uuid, {})
+    ctx.check(g.get("status") == "OFFLINE" and g.get("attempts") == 0 and not g.get("last_sent_at"),
+              f"오프라인 대상 = OFFLINE·attempts 0·보낸 시각 없음: {g}")
+    ctx.check(not gone.commands_received(seq=seq), "끊긴 단말은 아무것도 못 받음")
+    ctx.check_eq(det.get("expected_count"), 2, "기다릴 대수(expected_count) = 2")
+
+    # 서버 기본 COMMAND_TIMEOUT_SEC 180 + 종료 타이머 주기 30 + 여유
+    det = await wait_counts(ctx, seq, {"OK": 1, "pending": 0, "NO_RESPONSE": 1, "OFFLINE": 1},
+                            timeout=260, finished=True)
+    ctx.log(f"종료까지 {time.monotonic() - t0:.0f}s (COMMAND_TIMEOUT_SEC)")
+    ctx.check_eq(det.get("result"), "PARTIAL", "온라인 1대 응답·1대 무응답 → result")
+    ctx.check_eq(targets_by_uuid(det).get(mute.uuid, {}).get("status"), "NO_RESPONSE", "온라인 무응답 = NO_RESPONSE")
+    ctx.check(not gone.commands_received(seq=seq), "끝날 때까지 끊긴 단말에 재발송 없음")
+
+    r = await ctx.s.rest.post_command(body_of(target("node", b.id), "off", dur=300), _admin(ctx))
+    ctx.check(r.status_code == 409 and error_code(r) == "NO_ONLINE_TARGETS", f"전부 오프라인 → 409: {_describe(r)}")
+    ctx.check(not r.json().get("seq"), "명령 행을 만들지 않음(seq 없음)")

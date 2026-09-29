@@ -199,26 +199,43 @@ async def list_devices(
     )
 
 
+def _int_or_none(v: object) -> int | None:
+    try:
+        return int(v) if v is not None else None  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _lit(pw: object, on: int | None) -> bool | None:
+    """점등 중인가. 주등·입간판(pw 앞 두 채널) 중 하나라도 0 보다 크면 점등.
+
+    화면의 주등·입간판 표시(LampPair)와 같은 규칙이다. 관리 화면이 다루지 않는 3번 채널(PWM3)은
+    보지 않는다 — 원격으로 1·2만 끈 뒤에도 PWM3 가 켜져 있으면 지도에만 "점등"으로 남았다."""
+    if isinstance(pw, list) and pw:
+        return any((_int_or_none(x) or 0) > 0 for x in pw[:2])
+    return None if on is None else on == 1
+
+
 async def map_points(db: AsyncSession, *, state: str | None) -> list[MapPoint]:
     """좌표가 있는 단말 전부(지도). 온라인 판정은 목록과 같은 SQL(presence.online_clause)."""
     now = _now()
     stmt = (
         select(Device.uuid, Device.site, Device.lat, Device.lon, Device.state,
                presence.online_clause(now).label("is_online"),
-               Device.last_telemetry["on"].astext.label("on"), Region.name)
+               Device.last_telemetry["on"].astext.label("on"),
+               Device.last_telemetry["pw"].label("pw"),
+               Device.last_telemetry["bv"].astext.label("bv"), Region.name)
         .join(Region, Region.id == Device.node_id, isouter=True)
         .where(Device.lat.is_not(None), Device.lon.is_not(None))
     )
     if state:
         stmt = stmt.where(Device.state == state.upper())
     out: list[MapPoint] = []
-    for uuid, site, lat, lon, st, online, on, node_name in await db.execute(stmt):
-        try:
-            on_v = int(on) if on is not None else None
-        except ValueError:
-            on_v = None
+    for uuid, site, lat, lon, st, online, on, pw, bv, node_name in await db.execute(stmt):
+        on_v = _int_or_none(on)
         out.append(MapPoint(uuid=uuid, site=site, lat=lat, lon=lon, state=st,
-                            is_online=bool(online), on=on_v, node_name=node_name))
+                            is_online=bool(online), on=on_v, lit=_lit(pw, on_v),
+                            bv=_int_or_none(bv), node_name=node_name))
     return out
 
 

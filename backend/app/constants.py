@@ -142,7 +142,14 @@ DUR_PRESET_TONIGHT = "tonight"
 
 
 class TargetStatus(str, Enum):
-    """command_target.status. pending 외에는 단말 COMMAND_ACK.result 그대로(§3.10.11)."""
+    """command_target.status. pending·OFFLINE·NO_RESPONSE 외에는 단말 COMMAND_ACK.result 그대로
+    (§3.10.11).
+
+    서버가 붙이는 둘(문제점 14번, 2026-09-29):
+      · OFFLINE     — 보낼 때 오프라인이라 **보내지 않았고 기다리지도 않는다**(재시도 없음).
+      · NO_RESPONSE — 보냈지만 COMMAND_TIMEOUT_SEC 안에 응답이 없어 실패로 닫았다.
+    둘 다 뒤늦게 COMMAND_ACK 가 오면 그 result 로 바뀐다(응답이 사실이다).
+    """
 
     PENDING = "pending"
     OK = "OK"
@@ -150,6 +157,8 @@ class TargetStatus(str, Enum):
     EXPIRED = "EXPIRED"
     BAD = "BAD"
     STATE = "STATE"
+    OFFLINE = "OFFLINE"
+    NO_RESPONSE = "NO_RESPONSE"
 
 
 #: 단말이 보낼 수 있는 result 값.
@@ -158,6 +167,8 @@ ACK_RESULTS = frozenset({"OK", "LOCAL", "EXPIRED", "BAD", "STATE"})
 RETRYABLE_STATUSES = frozenset({TargetStatus.PENDING.value, TargetStatus.EXPIRED.value})
 #: 받은 것으로 끝난 상태. EXPIRED 는 시도를 다 쓴 경우에만 종결로 본다.
 TERMINAL_STATUSES = frozenset({"OK", "LOCAL", "BAD", "STATE"})
+#: 서버가 닫은 상태 — 응답은 없지만 더 기다리지 않는다(종결).
+SERVER_CLOSED_STATUSES = frozenset({TargetStatus.OFFLINE.value, TargetStatus.NO_RESPONSE.value})
 
 
 class OverrideLevel(str, Enum):

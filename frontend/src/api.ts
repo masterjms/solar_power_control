@@ -111,6 +111,10 @@ export interface MapPoint {
   state: DeviceState;
   is_online: boolean;
   on: number | null;
+  /** 점등 중(주등·입간판 중 하나라도). Telemetry 없으면 null. 오프라인이면 마지막 값 */
+  lit?: boolean | null;
+  /** 마지막 배터리 전압 x100 V. 오프라인이어도 마지막 값 */
+  bv?: number | null;
   node_name: string | null;
 }
 
@@ -294,13 +298,17 @@ export interface CommandCreated {
   target: { kind: TargetKind; id: string | null; label: string };
   topics: string[];
   payload: Record<string, unknown>;
+  /** 실제로 보내고 응답을 기다리는 대수(온라인) */
   expected: number;
+  /** 오프라인이라 보내지 않은 대수 */
+  offline?: number;
   sent_at: string;
   created_by: string;
 }
 
-export type AckStatus = "OK" | "LOCAL" | "EXPIRED" | "BAD" | "STATE" | "pending";
-export const ACK_STATUSES: AckStatus[] = ["OK", "LOCAL", "EXPIRED", "BAD", "STATE", "pending"];
+/** OFFLINE = 보낼 때 오프라인이라 안 보냄 · NO_RESPONSE = 보냈지만 시간 안에 응답 없음(실패) — 문제점 14번 */
+export type AckStatus = "OK" | "LOCAL" | "EXPIRED" | "BAD" | "STATE" | "pending" | "NO_RESPONSE" | "OFFLINE";
+export const ACK_STATUSES: AckStatus[] = ["OK", "LOCAL", "EXPIRED", "BAD", "STATE", "pending", "NO_RESPONSE", "OFFLINE"];
 
 export interface CommandSummary {
   seq: number;
@@ -602,6 +610,7 @@ const ERROR_HINT: Record<string, string> = {
   COMMAND_NOT_FOUND: "명령이 없습니다",
   COMMAND_FINISHED: "이미 끝난 명령이라 재시도할 수 없습니다",
   NO_TARGETS: "대상 범위에 운영(ACTIVE) 단말이 없습니다",
+  NO_ONLINE_TARGETS: "대상 단말이 모두 오프라인이라 보내지 않았습니다",
   MQTT_UNAVAILABLE: "브로커에 연결되어 있지 않아 보내지 못했습니다",
   INVALID_STATE: "이 승인 상태에서는 할 수 없습니다(읽기는 PENDING·ACTIVE, 쓰기는 ACTIVE 만)",
   SETTINGS_PENDING: "이미 단말 응답을 기다리는 요청이 있습니다",

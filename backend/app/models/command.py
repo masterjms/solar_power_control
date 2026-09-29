@@ -73,7 +73,7 @@ class CommandTarget(Base):
     __tablename__ = "command_target"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending','OK','LOCAL','EXPIRED','BAD','STATE')",
+            "status IN ('pending','OK','LOCAL','EXPIRED','BAD','STATE','OFFLINE','NO_RESPONSE')",
             name="ck_command_target_status",
         ),
         # 단말 메시지 수신 직후 "이 단말에 다시 보낼 명령이 있나" 조회용(자동 재시도).
@@ -84,7 +84,7 @@ class CommandTarget(Base):
         BigInteger, ForeignKey("command.seq", ondelete="CASCADE"), primary_key=True
     )
     uuid: Mapped[str] = mapped_column(CHAR(UUID_LENGTH), primary_key=True)
-    #: pending / OK / LOCAL / EXPIRED / BAD / STATE
+    #: pending / OK / LOCAL / EXPIRED / BAD / STATE / OFFLINE(안 보냄) / NO_RESPONSE(시간 초과)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
     #: 발송 횟수(첫 발송 포함).
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")

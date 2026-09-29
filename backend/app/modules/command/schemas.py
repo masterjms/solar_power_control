@@ -53,7 +53,10 @@ class CommandOut(BaseModel):
     target: TargetOut
     topics: list[str]
     payload: dict[str, Any]
+    #: 실제로 보내고 응답을 기다리는 대수(온라인 ACTIVE).
     expected: int
+    #: 오프라인이라 보내지 않은 대수(대상 스냅숏에 OFFLINE 으로 남는다, 문제점 14번).
+    offline: int = 0
     sent_at: dt.datetime
     created_by: str | None
 

@@ -2,8 +2,10 @@
 
 미종료 COMMAND 마다 대상 상태를 세어 core/command_rules.finish_result 로 판정하고
 `finished_at`·`result` 를 채운다.
-  · 모든 대상이 종결(OK/LOCAL/BAD/STATE, 또는 시도를 다 쓴 EXPIRED) → OK(전부 OK) / PARTIAL
-  · COMMAND_TIMEOUT_SEC(900) 경과 → 응답 0 이면 TIMEOUT, 아니면 PARTIAL
+  · 모든 대상이 종결(OK/LOCAL/BAD/STATE, 시도를 다 쓴 EXPIRED, 안 보낸 OFFLINE)
+    → OK(전부 OK) / PARTIAL
+  · COMMAND_TIMEOUT_SEC(180) 경과 → 응답 0 이면 TIMEOUT, 아니면 PARTIAL. 그때까지 응답 없는 대상
+    (pending)은 NO_RESPONSE 로 닫는다 — 화면에 "무응답(실패)"로 남는다(문제점 14번).
 끝난 명령은 자동 재시도도 멈춘다(재시도 조건에 "미종료"가 있다).
 
 같은 판정을 COMMAND_ACK 수신 직후에도 그 seq 하나에 대해 돌린다(finish_if_done) — 개별 명령이
@@ -63,6 +65,11 @@ async def finish_due(
         )
         if result is None:
             continue
+        await db.execute(
+            update(t)
+            .where(t.seq == seq, t.status == TargetStatus.PENDING.value)
+            .values(status=TargetStatus.NO_RESPONSE.value)
+        )
         await db.execute(
             update(Command)
             .where(Command.seq == seq, Command.finished_at.is_(None))
