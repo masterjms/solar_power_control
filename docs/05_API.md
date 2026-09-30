@@ -149,14 +149,20 @@ REJECTED → PENDING(재검토) | RETIRED
 RETIRED  → PENDING(같은 보드 재설치. 빈 retain 상태에서 REGISTER 가 다시 오면 서버가 PENDING 으로 되돌리고 ACK)
 ```
 
-## 다음(4차 전)
-`POST /api/auth/login`, 모든 `/api/*` 인증. 주소 검색(법정동코드 자동) API 연동.
+## 로그인 (2026-09-30, 문제점 16번, ADR-011)
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| POST | `/api/auth/login` | `{"user","password"}` → 200 `{"user"}` + 쿠키 `iotl_session`(HttpOnly, 기본 7일). 실패 401 `LOGIN_FAILED`(1초 지연), nginx 제한 초과 429 |
+| POST | `/api/auth/logout` | 쿠키 지움 |
+| GET | `/api/auth/check` | nginx `auth_request` 전용. 쿠키 또는 `Authorization: Basic` 이 맞으면 200 + `X-Auth-User`, 아니면 401 |
+
+그 밖의 모든 `/api/*`·`/health` 는 nginx 에서 로그인 판정을 통과해야 한다(없으면 401 → 화면이 로그인 창으로).
 
 ---
 
 # 5차 API (2026-09-27, ADR-005)
 
-모든 `/api/*` 요청의 사용자 = 헤더 `X-Remote-User`(nginx Basic auth). 역할은 `SUPER_ADMIN_USERS` 로 판정.
+모든 `/api/*` 요청의 사용자 = 헤더 `X-Remote-User`(nginx 가 로그인 판정 결과로 채움, ADR-011). 역할은 `SUPER_ADMIN_USERS` 로 판정.
 최고관리자 전용 API 는 관리자에게 403 `FORBIDDEN`. 헤더가 없으면 `APP_ENV=dev` 만 최고관리자 `local`, 그 외는 관리자 `anonymous`.
 구현: `backend/app/modules/{region,command}/`, 규칙 `app/core/command_rules.py`, 처리 흐름 docs/02 §16.
 

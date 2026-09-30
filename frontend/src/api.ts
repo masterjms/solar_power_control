@@ -596,6 +596,9 @@ export interface DeployJob {
   items: DeployItem[] | null;
 }
 
+/** 401 을 받으면 발생 — main.tsx 의 AuthGate 가 로그인 화면으로 바꾼다. */
+export const AUTH_EVENT = "iotl-auth-required";
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const text = await res.text();
@@ -606,6 +609,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     body = null;
   }
   if (!res.ok) {
+    // 로그인이 없거나 끝남(nginx auth_request 401, 문제점 16번) → 로그인 화면으로. 로그인 요청 자체의 실패는 제외.
+    if (res.status === 401 && !url.startsWith("/api/auth/")) window.dispatchEvent(new Event(AUTH_EVENT));
     const e = (body as { error?: ApiError } | null)?.error;
     throw new ApiErrorException(
       res.status,
@@ -676,6 +681,8 @@ export const api = {
 
   // 5차: 권한
   me: () => request<Me>("/api/me"),
+  login: (user: string, password: string) => request<{ user: string }>("/api/auth/login", json("POST", { user, password })),
+  logout: () => request<{ ok: boolean }>("/api/auth/logout", json("POST")),
   uiConfig: () => request<UiConfig>("/api/ui-config"),
 
   // 5차: 법정동 트리

@@ -36,6 +36,7 @@ from app.core import device_password
 from app.db import SessionFactory, engine, session_scope
 from app.errors import register_exception_handlers
 from app.modules.alarm.router import router as alarm_router
+from app.modules.auth.router import router as auth_router
 from app.modules.command.router import router as command_router
 from app.modules.device import service as device_service
 from app.modules.device.router import router as device_router
@@ -274,6 +275,7 @@ if settings.cors_origins:
     )
 
 app.include_router(system_router)
+app.include_router(auth_router)
 app.include_router(alarm_router)
 app.include_router(schedule_router)
 app.include_router(schedule_device_router)

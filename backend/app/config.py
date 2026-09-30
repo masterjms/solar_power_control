@@ -139,7 +139,17 @@ class Settings(BaseSettings):
     kakao_js_key: str = ""
     #: 온실가스 감축량 = 발전량(kWh) × 이 값(kgCO2eq/kWh). 국가 전력 배출계수 — 확정값을 받으면 .env 로 바꾼다.
     ghg_kg_per_kwh: float = 0.4781
-    #: 최고관리자 사용자명(쉼표). nginx Basic auth 사용자명이 X-Remote-User 로 들어온다.
+    #: 관리 화면 계정(문제점 16번 로그인 화면). nginx 와 같은 .env 값 — 백엔드가 로그인·세션을 판정한다
+    #: (core/web_session). 비밀값 — 로그·응답에 내보내지 않는다.
+    admin_user: str = "admin"
+    admin_password: str = ""
+    operator_user: str = ""
+    operator_password: str = ""
+    #: 세션 쿠키 서명 키. 비우면 계정 비밀번호에서 유도(비밀번호를 바꾸면 세션이 모두 끊긴다).
+    session_secret: str = ""
+    #: 로그인 유지 시간(시간). 스마트폰에서 자주 다시 로그인하지 않게 기본 7일.
+    session_hours: int = 168
+    #: 최고관리자 사용자명(쉼표). 로그인한 사용자명이 nginx 에서 X-Remote-User 로 들어온다.
     super_admin_users_raw: str = Field(default="admin", validation_alias="SUPER_ADMIN_USERS")
     #: 승인(ACTIVE)에 말단 법정동 배정을 요구할지. **안 적으면** 운영 true, APP_ENV=dev 는 false
     #: — 개발 compose 로 도는 3차 시나리오는 노드 없이 승인한다(approve_requires_node 참고).

@@ -2,23 +2,24 @@
 # 공식 nginx 이미지 entrypoint 가 envsubst 로 /etc/nginx/conf.d/default.conf 를 만든다.
 # 정의된 환경 변수만 치환되므로 $uri 등 nginx 변수는 그대로 남는다.
 #
-# 실제 라우트(Basic auth, /api 프록시 + X-Remote-User, SPA)는 /etc/nginx/iotlight/routes.conf.
+# 실제 라우트(로그인 판정 auth_request, /api 프록시 + X-Remote-User, SPA)는 /etc/nginx/iotlight/routes.conf.
 # 이 server 가 그걸 직접 쓰는지(평문 모드), 443 으로 리다이렉트만 하는지(TLS 모드)는
 # 기동 때 40-tls.sh 가 /etc/nginx/iotlight/http80.conf 를 써서 정한다:
 #   /etc/nginx/certs/server.crt + server.key 없음 → http80.conf = routes.conf include (1차~3차)
 #   있음(4차, docker-compose.tls.yml 이 물림)     → http80.conf = 301 https,
 #                                                   conf.d/zz-tls.conf 에 443 server 생성
 
+# 로그인 시도 제한(문제점 16번) — IP 당 분당 10회(+순간 5). routes.conf 의 /api/auth/login 이 쓴다.
+limit_req_zone $binary_remote_addr zone=iotl_login:1m rate=10r/m;
+
 server {
     listen 80 default_server;
     server_name _;
 
     # Let's Encrypt HTTP-01 (certbot --webroot, infra/scripts/cert-issue.sh). 항상 켜 둔다 —
-    # 발급·갱신 확인은 평문 80 으로만 온다. auth_basic 을 끄는 경로는 이것 하나뿐이고,
-    # 여기에는 certbot 이 잠깐 놓는 토큰 파일만 있다(certbot-www 볼륨).
+    # 발급·갱신 확인은 평문 80 으로만 온다. 여기에는 certbot 이 잠깐 놓는 토큰 파일만 있다(certbot-www 볼륨).
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/certbot;
-        auth_basic off;
         default_type text/plain;
         try_files $uri =404;
     }

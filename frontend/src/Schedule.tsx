@@ -1,11 +1,12 @@
 // 스케줄 배포(#schedule) — S-25, 사양서 §13.1, ADR-010.
-// ① 프로필 등록(카카오 주소 → 지역·좌표, 보정, 운전 15개, 미리보기) ② 법정동 트리 배정(단말 예외) ③ 배포 진행 표
+// ① 프로필 등록(전국 시·군 → 지역·대표 좌표(문제점 18번), 보정, 운전 15개, 미리보기) ② 법정동 트리 배정(단말 예외) ③ 배포 진행 표
 // ④ ACK·crc 로 "적용됨". 메시지는 S-23 SETTINGS_SET(25개 + tbl) 그대로 — 25개 = 단말의 마지막 읽은 값 + 프로필 15개.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  api, DeployJob, DeviceSchedule, GeoResult, ScheduleAssign, ScheduleProfile, SchedulePreview, SettingsItem,
+  api, DeployJob, DeviceSchedule, ScheduleAssign, ScheduleProfile, SchedulePreview, SettingsItem,
   SettingsSchema, SettingsTbl, errorText,
 } from "./api";
+import { CitySelect } from "./CitySelect";
 import { FieldCtx, GroupFields, StageBar, useSchema } from "./DeviceConfig";
 import { localTime } from "./format";
 import { parseText, toText, rangeError, utf8Bytes, hoursText } from "./settingsLogic";
@@ -66,8 +67,6 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
   const groups = schema.groups.filter((g) => PROFILE_GROUPS.includes(g.id));
   const items = useMemo(() => groups.flatMap((g) => g.items), [groups]);
   const [f, setF] = useState<Form>(() => formOf(profile, items, defaults));
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<GeoResult[] | null>(null);
   const [prev, setPrev] = useState<SchedulePreview | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -97,27 +96,6 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
   const pseudoTbl: SettingsTbl | null = condOk
     ? { region: f.region, lat_e6: Math.round(lat * 1e6), lon_e6: Math.round(lon * 1e6), on, off, src: 2, ss: 0, crc: "", crc_expected: null, matches: null }
     : null;
-
-  async function search() {
-    setErr(null);
-    setResults(null);
-    if (query.trim().length < 2) return setErr("두 글자 이상");
-    try {
-      const r = await api.geoSearch(query.trim());
-      setResults(r);
-      if (r.length === 1) pick(r[0]);
-    } catch (e) {
-      setErr(errorText(e));
-    }
-  }
-  function pick(g: GeoResult) {
-    // 지역명은 단말 OLED·표에 쓰인다 — 한글 15자(47B) 안으로 "시군구 동", 넘으면 동만.
-    let region = `${g.sigungu} ${g.dong}`.trim();
-    if (utf8Bytes(region) > REGION_MAX) region = g.dong;
-    setF((x) => ({ ...x, region, lat: g.lat !== null ? String(g.lat) : x.lat, lon: g.lon !== null ? String(g.lon) : x.lon, address: g.address_name }));
-    setResults(null);
-    setPrev(null);
-  }
 
   async function preview() {
     setErr(null);
@@ -167,24 +145,13 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
       meta={profile ? <span className="mono">v{profile.version} · crc {profile.crc}</span> : "조건 + 운전 15개"}>
       <div className="form2">
         <label>이름<input value={f.name} maxLength={60} placeholder="예: 경기 남부 기본" onChange={(e) => setF({ ...f, name: e.target.value })} /></label>
-        <label>주소 검색 <small>카카오 → 지역·좌표</small>
-          <span className="bar2" style={{ flexWrap: "nowrap" }}>
-            <input value={query} placeholder="예: 경기도 군포시" style={{ flex: 1 }} onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), search())} />
-            <button type="button" className="btn" onClick={search}>검색</button>
-          </span>
+        <label>지역 <small>전국 시·군에서 고르면 대표 좌표가 채워진다</small>
+          <CitySelect value={f.region} onPick={(c) => (setF({ ...f, region: c.label, lat: String(c.lat), lon: String(c.lon), address: "" }), setPrev(null))} />
         </label>
       </div>
-      {results && results.length > 1 && (
-        <ul className="georesults">
-          {results.map((g) => (
-            <li key={g.bjd_code + g.address_name}><button type="button" className="btn sm" onClick={() => pick(g)}>{g.address_name}</button> <small className="muted">{g.sigungu} {g.dong}</small></li>
-          ))}
-        </ul>
-      )}
       <div className="form5">
         <label><span>지역명 · <b className={regionBytes > REGION_MAX ? "c-alarm" : ""}>{regionBytes}/{REGION_MAX}B</b></span>
-          <input className="inp" value={f.region} placeholder="예: 군포시 산본동" onChange={(e) => (setF({ ...f, region: e.target.value }), setPrev(null))} /></label>
+          <input className="inp" value={f.region} readOnly placeholder="위에서 고른다" /></label>
         <label><span>위도</span><input className="inp" value={f.lat} placeholder="37.36" onChange={(e) => (setF({ ...f, lat: e.target.value }), setPrev(null))} /></label>
         <label><span>경도</span><input className="inp" value={f.lon} placeholder="126.93" onChange={(e) => (setF({ ...f, lon: e.target.value }), setPrev(null))} /></label>
         <label><span>점등 보정 (분)</span><input className="inp" type="number" min={-180} max={180} value={f.on} onChange={(e) => (setF({ ...f, on: e.target.value }), setPrev(null))} /></label>

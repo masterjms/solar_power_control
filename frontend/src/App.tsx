@@ -12,6 +12,7 @@ import Regions from "./Regions";
 import GroupControl from "./GroupControl";
 import Alarms from "./Alarms";
 import Schedule from "./Schedule";
+import { logout } from "./Login";
 import { nf } from "./ui";
 
 const REFRESH_MS = 10_000;
@@ -175,9 +176,10 @@ export default function App() {
           <span className="pill" title="활성 HMAC 키(ADR-003)">
             HMAC {health ? (health.hmac_keys?.length ? health.hmac_keys.join(", ") : "없음") : "-"}
           </span>
-          <span className={`pill ${me?.role === "super_admin" ? "role" : ""}`} title={meErr ?? "nginx Basic auth 사용자 → X-Remote-User (ADR-005)"}>
+          <span className={`pill ${me?.role === "super_admin" ? "role" : ""}`} title={meErr ?? "로그인 사용자 → X-Remote-User (ADR-005)"}>
             {me ? `${me.user} · ${me.role === "super_admin" ? "최고관리자" : "관리자"}` : meErr ? "사용자 확인 실패 · 관리자로 표시" : "사용자 -"}
           </span>
+          <button className="btn" onClick={logout} title="로그아웃">로그아웃</button>
           <span className="pill clock">{now.toLocaleDateString("ko-KR")} {now.toTimeString().slice(0, 8)}</span>
           <button className="btn" onClick={() => setTick((t) => t + 1)} title="지금 다시 읽기(자동 10초)">새로고침</button>
           <button className="btn icon" onClick={toggleTheme} aria-label={theme === "dark" ? "밝은 화면으로" : "어두운 화면으로"}>

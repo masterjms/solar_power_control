@@ -237,7 +237,7 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .chk2:has(input:checked){border-color:var(--blue); background:var(--blue-soft); color:var(--blue)}
 .chk2 input{accent-color:var(--blue); margin:0}
 .chk2 b{font-weight:600}
-.ctlrow{display:grid; grid-template-columns:56px 1fr 40px; gap:var(--s3); align-items:center; margin-top:var(--s3); font-size:var(--f1)}
+.ctlrow{display:grid; grid-template-columns:56px 1fr 40px 64px; gap:var(--s3); align-items:center; margin-top:var(--s3); font-size:var(--f1)}
 .ctlrow input[type=range]{accent-color:var(--blue); width:100%}
 .dur{display:flex; gap:var(--s2); margin-top:var(--s3); flex-wrap:wrap; align-items:center; font-size:var(--f1)}
 .dur button{height:28px; border:1px solid var(--line); background:none; border-radius:999px; padding:0 var(--s3); font-size:var(--f1)}
@@ -273,14 +273,15 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .grid4{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--s2)}
 .grid5{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:var(--s2)}
 /* 한 줄 = 항목 이름 | 선택바(다단계는 시각 + 선택바) | 숫자 | 단위 — 모든 상자 같은 열(문제점 #2) */
-.fld{display:grid; grid-template-columns:120px minmax(0,1fr) 84px 56px; gap:var(--s1) var(--s3); align-items:center; min-height:40px}
+.fld{display:grid; grid-template-columns:104px minmax(0,1fr) 58px 46px; gap:var(--s1) var(--s2); align-items:center; min-height:40px}
+.fld.tfld{grid-template-columns:60px minmax(0,1fr) 58px 46px} /* 다단계: 이름이 짧아 선택바 자리를 더 준다(문제점 #2) */
 .fld > label{font-size:var(--f2); display:flex; align-items:center; gap:6px; min-width:0}
-.fld .in{display:flex; gap:var(--s2); align-items:center; min-width:0}
+.fld .in{display:flex; flex-wrap:wrap; gap:4px var(--s2); align-items:center; min-width:0} /* 좁으면 선택바가 시각 아래로 */
 .fld .unit{font-size:var(--f1); color:var(--muted)}
-.fld input[type=range]{flex:1; min-width:0; accent-color:var(--blue)}
+.fld input[type=range]{flex:1; min-width:44px; margin:0; accent-color:var(--blue)} /* 문제점 #2: 다단계에서도 선택바가 보이게 */
 .fld .help{grid-column:2 / -1; font-size:var(--f1); color:var(--muted2)}
-.fld .num{width:84px}
-.fld .tm{height:32px; border:1px solid var(--line); border-radius:var(--r1); background:var(--soft); padding:0 var(--s2); font-size:var(--f2); color:var(--text); width:124px; flex:none}
+.fld .num{width:58px; padding:0 6px} /* 문제점 #2: 숫자 칸 폭 줄임 */
+.fld .tm{height:32px; border:1px solid var(--line); border-radius:var(--r1); background:var(--soft); padding:0 2px 0 6px; font-size:var(--f2); color:var(--text); width:100px; flex:none} /* 시각 옆 시계 아이콘을 붙임 */
 .stbar{margin-top:var(--s3)}
 .stbar .bar{display:flex; height:30px; border-radius:var(--r1); overflow:hidden; border:1px solid var(--line)}
 .stbar .bar i{display:flex; align-items:center; justify-content:center; font-style:normal; font-size:var(--f1); color:var(--text); border-right:1px solid var(--panel); white-space:nowrap; overflow:hidden}
@@ -324,6 +325,41 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .georesults{list-style:none; margin:var(--s2) 0 0; padding:0; display:grid; gap:4px; max-height:200px; overflow:auto}
 
 /* 지도 핀 말풍선(문제점 13번) — 시설명 · 배터리 전압 */
-.kpin-tip{display:flex; flex-direction:column; gap:2px; padding:6px 10px; border-radius:8px; background:#1f2733; color:#fff; font-size:12px; line-height:1.35; white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,.25); pointer-events:none}
+.kpin-tip{margin-bottom:48px; display:flex; flex-direction:column; gap:2px; padding:6px 10px; border-radius:8px; background:#1f2733; color:#fff; font-size:12px; line-height:1.35; white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,.25); pointer-events:none}
 .kpin-tip b{font-size:13px}
 .kpin-tip span{color:#cfd6e0}
+.pinico{display:inline-flex; vertical-align:-5px; margin-right:4px}
+.pinico svg{display:block}
+.fld .tm::-webkit-calendar-picker-indicator{margin-left:2px; padding:0}
+.fld .tm::-webkit-datetime-edit{padding:0}
+/* 로그인(문제점 16번) — 폰에서도 한 화면 */
+.login{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px; background:var(--bg)}
+.login-box{width:100%; max-width:360px; display:flex; flex-direction:column; gap:var(--s3); background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:24px}
+.login-box .logo{display:flex; flex-direction:column; gap:2px; margin-bottom:var(--s2)}
+.login-box .logo b{font-size:18px}
+.login-box .logo span{font-size:var(--f1); color:var(--muted)}
+.login-box label{display:flex; flex-direction:column; gap:6px; font-size:var(--f1); color:var(--muted)}
+.login-box .inp{height:44px; font-size:16px; width:100%} /* 16px: iOS 가 입력 때 확대하지 않게 */
+.login-box .btn{height:44px; font-size:16px}
+/* ===== 스마트폰(문제점 16번) — 메뉴는 위쪽 가로 스크롤 줄, 카드는 한 줄로 ===== */
+@media (max-width:760px){
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .side{position:sticky; top:0; z-index:30; height:auto; padding:6px 8px; border-right:0; border-bottom:1px solid var(--line); flex-direction:row}
+  .side .logo,.side .foot,.nav .sep,.nav a.dis{display:none}
+  .nav{flex-direction:row; overflow-x:auto; gap:4px; scrollbar-width:none; width:100%}
+  .nav::-webkit-scrollbar{display:none}
+  .nav a{flex:none; height:34px; white-space:nowrap; padding:0 10px; gap:6px}
+  .nav .cnt{margin-left:4px}
+  .top{position:static; height:auto; flex-wrap:wrap; padding:8px 12px; row-gap:6px}
+  .top h1{font-size:var(--f3)}
+  .top .pill{display:none}
+  .top .sp{flex:1 0 0}
+  .content,.pair,.row3,.cfgr,.grp2,.explorer,.cfgx{grid-template-columns:minmax(0,1fr)}
+  .content{padding:12px; gap:12px}
+  .grid4,.grid5,.form5{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .form2{grid-template-columns:minmax(0,1fr)}
+  .drawer,.drawer.wide{width:100vw}
+  .modal-ov{padding:8px}
+  .fld{grid-template-columns:88px minmax(0,1fr) 58px 40px}
+  .fld.tfld{grid-template-columns:52px minmax(0,1fr) 58px 40px}
+}

@@ -78,8 +78,11 @@ export function Battery({ sc }: { sc: number | null | undefined }) {
   );
 }
 
-/** 점등 표시 — 목업의 .bulb */
-export function Lamp({ on }: { on: number | null | undefined }) {
+const OFF_TITLE = "통신 두절 — 마지막 보고와 관계없이 소등으로 본다(문제점 15번)";
+
+/** 점등 표시 — 목업의 .bulb. online=false(통신 두절)면 소등(문제점 15번). */
+export function Lamp({ on, online }: { on: number | null | undefined; online?: boolean }) {
+  if (online === false) return <span title={OFF_TITLE}><span className="bulb" /> 소등 <span className="muted">(두절)</span></span>;
   if (on === null || on === undefined) return <><span className="bulb" /> <span className="muted">알 수 없음</span></>;
   return on ? <><span className="bulb on" /> 점등</> : <><span className="bulb" /> 소등</>;
 }
@@ -90,8 +93,11 @@ export function ChLamp({ label, on }: { label: string; on: boolean | null }) {
   return <span className="chl"><small>{label}</small><span className={`bulb ${on ? "on" : ""}`} />{on ? "점등" : "소등"}</span>;
 }
 
-/** 주등(PWM1)·입간판(PWM2) 점등 — Telemetry pw 배열(%)이 0 보다 크면 점등. pw 가 없으면 on 으로 주등만. */
-export function LampPair({ t }: { t: { on?: number; pw?: number[] } | null | undefined }) {
+/** 주등(PWM1)·입간판(PWM2) 점등 — Telemetry pw 배열(%)이 0 보다 크면 점등. pw 가 없으면 on 으로 주등만.
+ *  online=false(통신 두절)면 마지막 보고가 점등이어도 둘 다 소등(문제점 15번). */
+export function LampPair({ t, online }: { t: { on?: number; pw?: number[] } | null | undefined; online?: boolean }) {
+  if (online === false)
+    return <span className="chp" title={OFF_TITLE}><ChLamp label="주등" on={false} /><ChLamp label="입간판" on={false} /></span>;
   const pw = t?.pw;
   const main = pw && pw.length > 0 ? pw[0] > 0 : t?.on === undefined || t?.on === null ? null : t.on === 1;
   const sign = pw && pw.length > 1 ? pw[1] > 0 : null;

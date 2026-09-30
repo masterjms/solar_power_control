@@ -439,7 +439,7 @@ DB       ─ command(type=COMMAND, target_kind, target_id, created_by, topics, e
   남은 초(미래일 때만. md 와 무관 — OK 직후 md 를 실은 TM 전에도 보인다). 목록 `?remote=true` 는 SQL 판.
 
 ### 16.7 권한 (§3.9.3 #9)
-- 사용자 = `X-Remote-User`(nginx Basic auth 사용자명). `SUPER_ADMIN_USERS`(쉼표, 기본 `admin`) = super_admin.
+- 사용자 = `X-Remote-User`(nginx 가 로그인 판정 결과로 채운 사용자명, ADR-011). `SUPER_ADMIN_USERS`(쉼표, 기본 `admin`) = super_admin.
 - 헤더 없음: `APP_ENV=dev` 면 super_admin `local`, 아니면 admin `anonymous`.
 - super_admin 전용: 전체(all) 명령, 트리 편집(from-address·PATCH·DELETE). 그 외 403 `FORBIDDEN`.
 - `command.created_by` = 사용자명. `GET /api/me` → `{"user","role"}`.

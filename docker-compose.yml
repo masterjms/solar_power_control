@@ -103,8 +103,9 @@ services:
       start_period: 20s
 
   # 관리 화면: Vite 빌드 결과를 nginx 가 서빙하고 /api, /health 를 backend 로 프록시한다.
-  # /api 에 아직 로그인이 없어서 전 경로에 HTTP Basic auth 를 건다(.env ADMIN_USER/ADMIN_PASSWORD,
-  # 선택 OPERATOR_USER/OPERATOR_PASSWORD). 인증된 사용자명은 X-Remote-User 로 backend 에 간다
+  # /api·/health 는 로그인(세션 쿠키)이 있어야 통과한다 — nginx auth_request 가 backend /api/auth/check 에
+  # 묻는다(문제점 16번, 예전 Basic auth 창 대체). 계정은 .env ADMIN_USER/ADMIN_PASSWORD(선택 OPERATOR_*),
+  # 스크립트용 Basic 헤더도 계속 받는다. 통과한 사용자명은 X-Remote-User 로 backend 에 간다
   # (클라이언트가 보낸 같은 헤더는 덮어쓴다 — ADR-005 권한).
   # 견본 비밀번호(change-me-admin)면 컨테이너가 기동을 거부한다. backend 8000 은 여전히
   # 호스트에 열지 않는다 — 밖에서 백엔드에 닿는 길은 이 nginx 뿐이다. HTTPS(443)는
@@ -131,9 +132,9 @@ services:
       backend:
         condition: service_started
     healthcheck:
-      # 인증 없이 요청하면 401 이 와야 정상 — nginx 와 htpasswd 가 모두 준비된 상태.
-      # 127.0.0.1 로 — 컨테이너 안 localhost 는 ::1 로 풀리는데 nginx 는 IPv4 만 듣는다.
-      test: ["CMD-SHELL", "wget -S --spider http://127.0.0.1/ 2>&1 | grep -q ' 401 '"]
+      # 화면(정적 파일)이 200 이면 정상. 로그인 판정은 backend 몫이라 여기서 보지 않는다(backend 가 잠시 죽어도
+      # web 은 살아 있어야 한다). 127.0.0.1 로 — 컨테이너 안 localhost 는 ::1 로 풀리는데 nginx 는 IPv4 만 듣는다.
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

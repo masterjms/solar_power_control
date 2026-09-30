@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlarmPage, AlarmTab, api, Device, DeviceCounts, DeviceList as DeviceListRes, EnergyToday, Health, MapPoint, STATES, errorText } from "./api";
 import { co2Text, localTime, relTime, str, volt1, watt1, wh1 } from "./format";
 import { Battery, Card, LampPair, OnlineMark, PlaceholderCard, StateBadge, nf, stateLabel } from "./ui";
-import { DeviceMap, PIN } from "./KakaoMap";
+import { DeviceMap, PIN, PinIcon } from "./KakaoMap";
 import { Pager, RemoteBadge, shortPath } from "./DeviceList";
 import { TAB_LABEL, alarmValue } from "./Alarms";
-import { CommandForm, CommandResult, durText, lastKnownPwm } from "./Command";
+import { CommandForm, CommandResult, durText, useLedBasis } from "./Command";
 
 const REFRESH_MS = 30_000;
 const SAMPLE = 500; // 목록 API 최대 size. ACTIVE 가 이보다 많으면 "표본 500대"
@@ -79,10 +79,11 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
   const offline = total !== null && online !== null ? total - online : null;
   const stopped = counts ? counts.SUSPENDED + counts.REJECTED : null;
 
-  // 조명 상태: last_telemetry.on
+  // 조명 상태: last_telemetry.on. 통신 두절은 마지막 보고와 관계없이 소등(문제점 15번).
   const lamp = useMemo(() => {
     let on = 0, off = 0, unknown = 0;
     for (const d of active) {
+      if (!d.is_online) { off++; continue; }
       const v = d.last_telemetry?.on;
       if (v === 1) on++;
       else if (v === 0) off++;
@@ -144,8 +145,8 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
             <i style={{ flex: lamp.unknown, background: "var(--line)" }} />
           </div>
           <div className="keys k3">
-            <div className="key"><span className="l"><span className="bulb on" />점등</span><span className="v">{nf(lamp.on)}</span><span className="m">Telemetry on=1</span></div>
-            <div className="key"><span className="l"><span className="bulb" />소등</span><span className="v">{nf(lamp.off)}</span><span className="m">on=0</span></div>
+            <div className="key"><span className="l"><span className="bulb on" />점등</span><span className="v">{nf(lamp.on)}</span><span className="m">온라인 · on=1</span></div>
+            <div className="key"><span className="l"><span className="bulb" />소등</span><span className="v">{nf(lamp.off)}</span><span className="m">on=0 · 통신 두절</span></div>
             <div className="key"><span className="l"><span className="dot" style={{ background: "var(--line)" }} />미수신</span><span className="v c-off">{nf(lamp.unknown)}</span><span className="m">Telemetry 없음</span></div>
           </div>
         </Card>
@@ -202,7 +203,7 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
 }
 
 
-/** 지도 — 좌표가 있는 단말 핀(KakaoMap PIN: 오프라인 회색·점등 녹색·소등 녹색 테두리·대기 파랑). 핀을 누르면 드로어. */
+/** 지도 — 좌표가 있는 단말 핀(KakaoMap PIN: 물방울 핀, 몸통 = 통신, 속 = 조명). 핀을 누르면 드로어. */
 function MapCard({ onSelect, tick }: { onSelect: (uuid: string) => void; tick: number }) {
   const [points, setPoints] = useState<MapPoint[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -222,7 +223,7 @@ function MapCard({ onSelect, tick }: { onSelect: (uuid: string) => void; tick: n
       <DeviceMap points={points} onSelect={pick} height={430} />
       <div className="keys-inline">
         {(["lit", "dark", "offline", "pending"] as const).map((k) => (
-          <span key={k}><span className="dot" style={{ background: PIN[k].fill, boxShadow: `inset 0 0 0 2px ${PIN[k].ring === "#ffffff" ? PIN[k].fill : PIN[k].ring}` }} />{PIN[k].label}</span>
+          <span key={k}><PinIcon kind={k} />{PIN[k].label}</span>
         ))}
         <span>· 핀에 마우스를 올리면 시설명·배터리 전압</span>
       </div>
@@ -305,7 +306,7 @@ function DashDevices({ tick, onSelect }: { tick: number; onSelect: (uuid: string
                   <td>{str(d.site)}</td>
                   <td title={d.node_path ?? ""}>{d.node_id ? shortPath(d) : ""}</td>
                   <td><OnlineMark on={d.is_online} /></td>
-                  <td><LampPair t={d.last_telemetry} /></td>
+                  <td><LampPair t={d.last_telemetry} online={d.is_online} /></td>
                   <td><RemoteBadge d={d} onReleased={setNote} /></td>
                   <td><Battery sc={d.last_telemetry?.sc} /></td>
                   <td>{volt1(d.last_telemetry?.bv)}</td>
@@ -337,16 +338,8 @@ function LedControl({ d, onClose, onDetail }: { d: Device; onClose: () => void; 
     return () => window.removeEventListener("keydown", k);
   }, [onClose]);
   const t = d.last_telemetry;
-  // 밝기 처음 값 = 서버가 마지막으로 안 밝기(문제점 12번). 설정 조회가 실패해도 Telemetry 만으로 채운다.
-  const [set, setSet] = useState<{ values: Record<string, number> | null; at: string | null } | null>(null);
-  useEffect(() => {
-    let live = true;
-    api.getSettings(d.uuid)
-      .then((s) => live && setSet({ values: s.values, at: s.last_result === "OK" && s.last_result_at && (!s.read_at || s.last_result_at > s.read_at) ? s.last_result_at : s.read_at }))
-      .catch(() => live && setSet(null));
-    return () => { live = false; };
-  }, [d.uuid]);
-  const known = useMemo(() => lastKnownPwm(t, d.last_telemetry_at, set), [t, d.last_telemetry_at, set]);
+  // 밝기 = 설치 기준 대비 비율, 처음 값 = 지금 비율(문제점 12·19번).
+  const basis = useLedBasis(d.uuid, d.is_online ? t : null, d.last_telemetry_at);
   return (
     <div className="modal-ov" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal wide" role="dialog" aria-label="LED 제어">
@@ -359,7 +352,7 @@ function LedControl({ d, onClose, onDetail }: { d: Device; onClose: () => void; 
         </div>
         <div className="db">
           <div className="bar2">
-            <LampPair t={t} />
+            <LampPair t={t} online={d.is_online} />
             <RemoteBadge d={d} onReleased={setMsg} />
             <span className="sp" />
             <span className="cap">마지막 수신 {localTime(d.last_telemetry_at)}</span>
@@ -367,7 +360,7 @@ function LedControl({ d, onClose, onDetail }: { d: Device; onClose: () => void; 
           <div className="cap">원격 명령 뒤 점등 상태는 단말이 2초 뒤 보내는 Telemetry 로 바뀐다. 단말은 송신 직후에만 명령을 받아 수십 초~최대 약 5분 걸릴 수 있다.</div>
           {msg && <div className="okl">{msg}</div>}
           <CommandForm target={{ kind: "device", id: d.uuid }} targetLabel={d.site ?? d.uuid}
-            initialPwm={known?.pwm ?? null} pwmSource={known?.source ?? null}
+            basis={basis}
             blocked={d.state !== "ACTIVE" ? "운영(ACTIVE) 단말에만 보낼 수 있다" : null}
             onSent={(c) => (setSeq(c.seq), setMsg(`명령 #${c.seq} 발행함${c.payload.dur ? ` · 유지 ${durText(Number(c.payload.dur))}` : ""}`))} />
           {seq !== null && <CommandResult seq={seq} onClose={() => setSeq(null)} />}

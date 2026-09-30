@@ -6,7 +6,7 @@ import {
 import { SeverityBadge, alarmValue, durText as almDur } from "./Alarms";
 import { div100, erLabel, eventSummary, hex, localTime, mdLabel, pct, relTime, str } from "./format";
 import { Battery, Lamp, Met, OnlineMark, SiteHint, StateBadge, SyncBadge } from "./ui";
-import { CommandForm, CommandHistory, CommandResult, durText } from "./Command";
+import { CommandForm, CommandHistory, CommandResult, durText, useLedBasis } from "./Command";
 import { RemoteBadge } from "./DeviceList";
 import { RegionTree, isLeaf, pathOf, useRegions } from "./Tree";
 
@@ -346,6 +346,9 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
     }
   }
 
+  // LED 제어 밝기 = 설치 기준 대비 비율(문제점 19번). 조기 return 전에 부른다(훅 순서).
+  const basis = useLedBasis(uuid, dev?.is_online ? dev.last_telemetry : null, dev?.last_telemetry_at);
+
   const header = (
     <div className="dh">
       <div style={{ minWidth: 0 }}>
@@ -377,7 +380,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
         <div className="sec">
           <h4>현재 상태 <span>마지막 수신 {relTime(dev.last_seen_at)}</span></h4>
           <div className="grid2">
-            <Met l="조명" v={<Lamp on={lt?.on} />} h={lt ? mdLabel(lt.md) : "Telemetry 없음"} />
+            <Met l="조명" v={<Lamp on={lt?.on} online={dev.is_online} />} h={lt ? mdLabel(lt.md) : "Telemetry 없음"} />
             <Met l="배터리" v={<Battery sc={lt?.sc} />} h={lt ? `${div100(lt.bv, "V")} · ${div100(lt.bi, "A", true)}` : ""} cls={lt && lt.sc !== undefined && lt.sc < 20 ? "a" : ""} />
             <Met l="패널 출력 / 부하 전류" v={lt ? `${div100(lt.pp, "W")} / ${div100(lt.li, "A")}` : "-"} />
             <Met l="오류 er" v={erLabel(lt?.er)} cls={lt?.er ? "a" : ""} />
@@ -521,7 +524,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
           {dev.remote_active && <div style={{ marginTop: 8 }}><RemoteBadge d={dev} onReleased={(m) => (setCmdNote(m), load())} /></div>}
           {cmdNote && <div className="okl" style={{ marginTop: 8 }}>{cmdNote}</div>}
           <div style={{ marginTop: 12 }}>
-            <CommandForm target={{ kind: "device", id: uuid }} targetLabel={dev.site ?? uuid}
+            <CommandForm target={{ kind: "device", id: uuid }} targetLabel={dev.site ?? uuid} basis={basis}
               blocked={dev.state !== "ACTIVE" ? "운영(ACTIVE) 단말에만 보낼 수 있다" : null}
               onSent={(c) => (setCmdSeq(c.seq), setCmdNote(`명령 #${c.seq} 발행함 ${localTime(c.sent_at)}${c.payload.dur ? ` · 유지 ${durText(Number(c.payload.dur))}` : ""}`))} />
           </div>

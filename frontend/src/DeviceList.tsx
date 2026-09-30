@@ -153,7 +153,7 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
 last_seen_at ${d.last_seen_at ?? "-"}`}>
                   <OnlineMark on={d.is_online} /> <span className="md">{relTime(d.last_seen_at)}</span>
                 </td>
-                <td><LampPair t={d.last_telemetry} /></td>
+                <td><LampPair t={d.last_telemetry} online={d.is_online} /></td>
                 <td><RemoteBadge d={d} onReleased={setNote} /></td>
                 <td><Battery sc={d.last_telemetry?.sc} /></td>
                 <td>{volt1(d.last_telemetry?.bv)}</td>

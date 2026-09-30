@@ -106,6 +106,14 @@ class Forbidden(ApiError):
     message = "최고관리자만 할 수 있습니다."
 
 
+class LoginFailed(ApiError):
+    """관리 화면 로그인 실패(문제점 16번). 사용자 유무를 구분하지 않는다."""
+
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "LOGIN_FAILED"
+    message = "사용자 이름 또는 비밀번호가 맞지 않습니다."
+
+
 class GeoUnavailable(ServiceUnavailable):
     """카카오 키 없음·카카오 오류·시간 초과. 운영자가 코드를 손으로 치게 두지 않는다(§3.10.5)."""
 

@@ -1,6 +1,6 @@
 // 5차 원격 제어 — 명령 폼 · 보내기 전 확인 · 결과(응답 집계) · 명령 이력.
 // 그룹 제어 화면과 단말 드로어(개별 명령)가 같이 쓴다. docs/05 "5차 API · 명령", 사양서 §3.9.3 #3~#8, §3.10.7, §3.10.11.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ACK_STATUSES, AckStatus, CmdAct, CommandBody, CommandCreated, CommandDetail, CommandPreview,
   CommandSummary, CommandTargetRef, DurPreset, api, errorText,
@@ -69,62 +69,85 @@ interface FormProps {
   /** 보낼 수 없는 이유(권한·상태). 있으면 버튼을 막고 이유를 보인다. */
   blocked?: string | null;
   onSent: (c: CommandCreated) => void;
-  /** 밝기 슬라이더 처음 값 {채널: %}. 서버가 마지막으로 안 밝기(문제점 12번). 없으면 70/40. */
-  initialPwm?: Record<number, number> | null;
-  /** initialPwm 의 출처 설명(예: "단말 설정 동기화 09-29 14:02"). */
-  pwmSource?: string | null;
+  /** 단말 하나일 때 채널별 설치 기준 밝기·지금 비율(ledBasis). 없으면(그룹) 비율 100%, 실제 출력 표시 없음. */
+  basis?: LedBasis | null;
 }
 
 /** 채널 → 설정 항목(설치 기준 밝기). 사양서 UI 항목 명세 brightness. */
 const MANUAL_KEY: Record<number, string> = { 1: "manual_40w", 2: "manual_5w1", 3: "manual_5w2" };
 
+export interface LedBasis {
+  /** 채널별 설치 기준 밝기 %(단말 설정 manual_*). 모르면 없음. */
+  base: Record<number, number>;
+  /** 밝기 슬라이더 처음 값 = 설치 기준 밝기 대비 %(원격 pwm). */
+  ratio: Record<number, number>;
+  /** 처음 값·기준의 출처 설명. */
+  source: string;
+}
+
 /**
- * 서버가 마지막으로 안 채널별 밝기(문제점 12번). **채널마다** 후보 둘 중 더 최근 것:
- *   ① 단말 설정 동기화 값(manual_*, 읽거나 쓴 시각)  ② 그 채널이 **켜져 있을 때** 받은 Telemetry `pw`.
- * 꺼진 채널의 pw(0)는 밝기가 아니라 "꺼짐"이라 쓰지 않는다. 둘 다 없으면 null(폼 기본값).
+ * LED 제어 밝기 = **설치 기준 밝기에 곱하는 비율**(사양서 §3.10.7, 문제점 19번 단말측 회신).
+ * 처음 값(문제점 12번 "서버가 마지막으로 안 밝기"): 채널이 **켜져 있을 때** 받은 Telemetry `pw`(실제 출력)가
+ * 기준 밝기 뒤에 왔으면 pw ÷ 기준 = 지금 비율. 아니면 100%(= 설치 기준 그대로).
+ * 꺼진 채널의 pw(0)는 밝기가 아니라 "꺼짐"이라 쓰지 않는다.
  */
-export function lastKnownPwm(
+export function ledBasis(
   tele: { on?: number; pw?: number[] } | null | undefined, teleAt: string | null | undefined,
   settings: { values: Record<string, number> | null; at: string | null } | null,
-): { pwm: Record<number, number>; source: string } | null {
+): LedBasis {
   const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(Number(n) || 0)));
   const tAt = teleAt ? Date.parse(teleAt) : NaN;
   const sAt = settings?.at ? Date.parse(settings.at) : NaN;
   const v = settings?.values ?? null;
-  const out: Record<number, number> = {};
+  const base: Record<number, number> = {};
+  const ratio: Record<number, number> = {};
   const used = new Map<string, number>(); // 출처 → 시각
   for (const ch of [1, 2, 3]) {
-    const tv = tele?.pw?.[ch - 1];
-    const tele_ok = typeof tv === "number" && tv > 0 && !Number.isNaN(tAt);
     const sv = v?.[MANUAL_KEY[ch]];
-    const set_ok = typeof sv === "number" && !Number.isNaN(sAt);
-    const shown = ch <= 2; // 출처 문구는 화면에 보이는 주등·입간판 것만
-    if (tele_ok && (!set_ok || tAt >= sAt)) {
-      out[ch] = clamp(tv as number);
+    if (typeof sv === "number") base[ch] = clamp(sv);
+    const tv = tele?.pw?.[ch - 1];
+    const lit = typeof tv === "number" && tv > 0 && !Number.isNaN(tAt);
+    const shown = UI_CH.includes(ch); // 출처 문구는 화면에 보이는 주등·입간판 것만
+    if (lit && base[ch] > 0 && (Number.isNaN(sAt) || tAt >= sAt)) {
+      ratio[ch] = clamp(((tv as number) / base[ch]) * 100);
       if (shown) used.set("점등 중 보고", tAt);
-    } else if (set_ok) {
-      out[ch] = clamp(sv as number);
-      if (shown) used.set("단말 설정 동기화", sAt);
+    } else {
+      ratio[ch] = 100;
     }
+    if (shown && base[ch] !== undefined && !Number.isNaN(sAt)) used.set("기준 = 단말 설정 동기화", sAt);
   }
-  if (out[1] === undefined && out[2] === undefined) return null;
   const when = (t: number) => new Date(t).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-  return {
-    pwm: { 1: out[1] ?? 70, 2: out[2] ?? 40, 3: out[3] ?? out[2] ?? 40 },
-    source: [...used].map(([s, t]) => `${s} ${when(t)}`).join(" · "),
-  };
+  return { base, ratio, source: [...used].map(([s, t]) => `${s} ${when(t)}`).join(" · ") };
 }
 
+/** 단말 하나의 ledBasis — 설정 조회(기준 밝기)가 실패해도 비율 100% 로 연다. */
+export function useLedBasis(
+  uuid: string, tele: { on?: number; pw?: number[] } | null | undefined, teleAt: string | null | undefined,
+): LedBasis {
+  const [set, setSet] = useState<{ values: Record<string, number> | null; at: string | null } | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.getSettings(uuid)
+      .then((s) => live && setSet({ values: s.values, at: s.last_result === "OK" && s.last_result_at && (!s.read_at || s.last_result_at > s.read_at) ? s.last_result_at : s.read_at }))
+      .catch(() => live && setSet(null));
+    return () => { live = false; };
+  }, [uuid]);
+  return useMemo(() => ledBasis(tele, teleAt, set), [tele, teleAt, set]);
+}
+
+const FULL: Record<number, number> = { 1: 100, 2: 100, 3: 100 };
+
 /** 목업 #gBox — 명령(소등/점등/밝기/스케줄 복귀) · 채널 · 밝기 % · 유지시간 → "보내기 전 확인". */
-export function CommandForm({ target, targetLabel, blocked, onSent, initialPwm, pwmSource }: FormProps) {
+export function CommandForm({ target, targetLabel, blocked, onSent, basis }: FormProps) {
   const [act, setAct] = useState<CmdAct>("off");
   const [ch, setCh] = useState<Record<number, boolean>>({ 1: true, 2: true });
-  const [pwm, setPwm] = useState<Record<number, number>>(initialPwm ?? { 1: 70, 2: 40 });
-  // 마지막 값을 늦게 받아 오면(창을 연 뒤 설정 조회가 끝남) 그때 채운다. 사용자가 이미 움직였으면 두지 않는다.
+  const [pwm, setPwm] = useState<Record<number, number>>(basis?.ratio ?? FULL);
+  // 기준을 늦게 받아 오면(창을 연 뒤 설정 조회가 끝남) 그때 채운다. 사용자가 이미 움직였으면 두지 않는다.
   const [touched, setTouched] = useState(false);
+  const ratio = basis?.ratio;
   useEffect(() => {
-    if (initialPwm && !touched) setPwm(initialPwm);
-  }, [initialPwm, touched]);
+    if (ratio && !touched) setPwm(ratio);
+  }, [ratio, touched]);
   const [dur, setDur] = useState<DurSel>("1h");
   const [custom, setCustom] = useState("90");
   const [busy, setBusy] = useState(false);
@@ -188,15 +211,25 @@ export function CommandForm({ target, targetLabel, blocked, onSent, initialPwm, 
           </label>
         ))}
       </div>
-      {act === "pwm" && chs.map((k) => (
-        <div key={k} className="ctlrow">
-          <span>{CH_LABEL[k]}</span>
-          <input type="range" min={0} max={100} value={pwm[k]} aria-label={`${CH_LABEL[k]} 밝기`}
-            onChange={(e) => (setTouched(true), setPwm((p) => ({ ...p, [k]: Number(e.target.value) })))} />
-          <b>{pwm[k]}%</b>
+      {act === "pwm" && chs.map((k) => {
+        const b = basis?.base[k];
+        return (
+          <div key={k} className="ctlrow">
+            <span>{CH_LABEL[k]}</span>
+            <input type="range" min={0} max={100} value={pwm[k]} aria-label={`${CH_LABEL[k]} 설치 기준 밝기 대비 %`}
+              onChange={(e) => (setTouched(true), setPwm((p) => ({ ...p, [k]: Number(e.target.value) })))} />
+            <b>{pwm[k]}%</b>
+            <span className="cap out">{b !== undefined ? `실제 ${Math.round((b * pwm[k]) / 100)}%` : ""}</span>
+          </div>
+        );
+      })}
+      {act === "pwm" && (
+        <div className="cap">
+          설치 기준 밝기 대비 % — 단말이 설치 기준 밝기에 곱한다(사양서 §3.10.7). 100% = 설치 기준 그대로.
+          {chs.some((k) => basis?.base[k] !== undefined) ? ` 실제 = 설치 기준(${chs.filter((k) => basis?.base[k] !== undefined).map((k) => `${CH_LABEL[k]} ${basis!.base[k]}%`).join(", ")}) × 비율.` : ""}
+          {basis?.source ? ` (${basis.source})` : ""}
         </div>
-      ))}
-      {act === "pwm" && <div className="cap">{pwmSource ? `처음 값 = 서버가 마지막으로 안 밝기(${pwmSource}). ` : ""}단말은 이 %를 설치 기준 밝기에 곱한다(사양서 §3.10.7). 점등은 설치 기준 밝기 그대로.</div>}
+      )}
       {act !== "auto" ? (
         <div className="dur">
           <span className="muted">유지</span>

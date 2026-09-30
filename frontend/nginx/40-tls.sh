@@ -49,7 +49,6 @@ server {
 
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/certbot;
-        auth_basic off;
         default_type text/plain;
         try_files $uri =404;
     }

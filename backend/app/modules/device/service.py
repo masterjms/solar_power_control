@@ -206,11 +206,15 @@ def _int_or_none(v: object) -> int | None:
         return None
 
 
-def _lit(pw: object, on: int | None) -> bool | None:
+def _lit(pw: object, on: int | None, online: bool = True) -> bool | None:
     """점등 중인가. 주등·입간판(pw 앞 두 채널) 중 하나라도 0 보다 크면 점등.
+
+    통신 두절(online=False)이면 마지막 보고와 관계없이 소등(False) — 문제점 15번.
 
     화면의 주등·입간판 표시(LampPair)와 같은 규칙이다. 관리 화면이 다루지 않는 3번 채널(PWM3)은
     보지 않는다 — 원격으로 1·2만 끈 뒤에도 PWM3 가 켜져 있으면 지도에만 "점등"으로 남았다."""
+    if not online:
+        return False
     if isinstance(pw, list) and pw:
         return any((_int_or_none(x) or 0) > 0 for x in pw[:2])
     return None if on is None else on == 1
@@ -234,7 +238,7 @@ async def map_points(db: AsyncSession, *, state: str | None) -> list[MapPoint]:
     for uuid, site, lat, lon, st, online, on, pw, bv, node_name in await db.execute(stmt):
         on_v = _int_or_none(on)
         out.append(MapPoint(uuid=uuid, site=site, lat=lat, lon=lon, state=st,
-                            is_online=bool(online), on=on_v, lit=_lit(pw, on_v),
+                            is_online=bool(online), on=on_v, lit=_lit(pw, on_v, bool(online)),
                             bv=_int_or_none(bv), node_name=node_name))
     return out
 

@@ -1,5 +1,6 @@
 // 단말 설정(#config, S-23) — 왼쪽 단말 탐색기(지역별로 접고 펴기), 오른쪽 선택 단말의 운전 설정.
 // 항목·범위·배율·도움말은 GET /api/settings/schema(= ui_items.json)에서만 온다. 흐름은 "읽고 나서 쓴다"(ADR-007, 명세 §8.5).
+import { CitySelect } from "./CitySelect";
 import { Fragment, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api, ApiErrorException, Device, DeviceEvent, DeviceSettings, SchedulePreview, SettingsHistoryRow, SettingsItem,
@@ -227,7 +228,7 @@ function TimeField({ c, h, m, pwm }: { c: FieldCtx; h: SettingsItem; m: Settings
   const mv = parseText(m, shownText(c, m));
   const time = hv === null || mv === null ? "" : `${pad2(hv)}:${pad2(mv)}`;
   return (
-    <div className={`fld ${bad ? "bad" : ""} ${c.values ? "" : "ref"}`.trim()} title={its.map((i) => i.key).join(" · ")}>
+    <div className={`fld tfld ${bad ? "bad" : ""} ${c.values ? "" : "ref"}`.trim()} title={its.map((i) => i.key).join(" · ")}>
       <label>{dirty && <span className="mk edit" title="편집함, 아직 안 보냄" />}{label}</label>
       <div className="in">
         <input type="time" className="tm" value={time} disabled={c.disabled} aria-label={`${label} 시각`} step={60}
@@ -746,7 +747,12 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
 
         <div className="form5">
           <label><span>지역 · <b className={utf8Bytes(tbl.region) > regionMax ? "c-alarm" : ""}>{utf8Bytes(tbl.region)}/{regionMax}B</b></span>
-            <input className="inp" value={tbl.region} placeholder="예: 서울" disabled={!values} onChange={(e) => setTblField("region", e.target.value)} />
+            <CitySelect value={tbl.region} disabled={!values} onPick={(c) => {
+              // 시·군을 고르면 지역명 + 대표 좌표(시청·군청). 좌표는 아래에서 고칠 수 있다(문제점 18번).
+              tblTouched.current = true;
+              setPrev(null);
+              setTbl((t) => ({ ...t, region: c.label, lat: String(c.lat), lon: String(c.lon) }));
+            }} />
             {tblErrs.region && (withTbl || tbl.region) && <small className="c-alarm">{tblErrs.region}</small>}
             {serverErr.region && <small className="c-alarm">{serverErr.region}</small>}</label>
           <label><span>위도</span>
