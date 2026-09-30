@@ -120,12 +120,6 @@ function hoverEl(p: MapPoint): HTMLElement {
   return el;
 }
 
-/** 말풍선을 보이는 동안 핀 위를 덮는 틀(카카오가 감싸는 div 포함)이 마우스를 가로채지 않게 한다.
- *  가로채면 핀 mouseout → 숨김 → 다시 mouseover → 보임이 되풀이돼 아주 빠르게 깜빡였다(문제점 20번). */
-function passThrough(el: HTMLElement) {
-  for (let n: HTMLElement | null = el, i = 0; n && i < 3; n = n.parentElement, i++) n.style.pointerEvents = "none";
-}
-
 /** 단말 핀 지도 — 색은 PIN. 가까운 핀은 묶는다. 핀에 마우스를 올리면 시설명·배터리 전압. */
 export function DeviceMap({ points, onSelect, height = 420 }: { points: MapPoint[]; onSelect: (uuid: string) => void; height?: number }) {
   const { kakao, error } = useKakao();
@@ -142,7 +136,11 @@ export function DeviceMap({ points, onSelect, height = 420 }: { points: MapPoint
     map.current = new kakao.maps.Map(box.current, { center: new kakao.maps.LatLng(SEOUL.lat, SEOUL.lon), level: 9 });
     map.current.addControl(new kakao.maps.ZoomControl(), kakao.maps.ControlPosition.RIGHT);
     cluster.current = new kakao.maps.MarkerClusterer({ map: map.current, averageCenter: true, minLevel: 7 });
-    tip.current = new kakao.maps.CustomOverlay({ yAnchor: 1, zIndex: 3 }); // 말풍선 아래 여백(.kpin-tip)이 핀 높이만큼 — 틀은 passThrough
+    // 말풍선은 핀(42px) 위로 완전히 띄운다(문제점 20번). 겹치면 말풍선 틀이 핀 위의 마우스를 가로채
+    // mouseout → 숨김 → mouseover 가 되풀이돼 깜빡였다. 카카오가 만든 DOM 은 건드리지 않는다
+    // (9/30 첫 수정에서 조상 div 의 pointer-events 를 껐다가 핀까지 마우스를 못 받게 됐다).
+    // yAnchor = 말풍선 높이(약 40px)의 배수: 2.3 이면 바닥이 핀 끝에서 약 52px 위.
+    tip.current = new kakao.maps.CustomOverlay({ yAnchor: 2.3, zIndex: 3 });
   }, [kakao]);
 
   useEffect(() => {
@@ -161,7 +159,6 @@ export function DeviceMap({ points, onSelect, height = 420 }: { points: MapPoint
         tip.current.setContent(el);
         tip.current.setPosition(pos);
         tip.current.setMap(map.current);
-        passThrough(el);
       };
       kakao.maps.event.addListener(m, "mouseover", show);
       // 핀 가장자리에서 들락날락해도 깜빡이지 않게 조금 늦게 숨긴다.
