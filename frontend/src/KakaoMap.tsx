@@ -107,13 +107,23 @@ export function PinIcon({ kind }: { kind: PinKind }) {
   return <span className="pinico" dangerouslySetInnerHTML={{ __html: pinSvg(kind, 15, 21) }} />;
 }
 
-const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-
 /** 마우스를 올리면 뜨는 말풍선 — 시설명, 배터리 전압. 오프라인이면 "마지막 값"이라고 적는다. */
-function hoverHtml(p: MapPoint): string {
+function hoverEl(p: MapPoint): HTMLElement {
   const v = volt1(p.bv);
-  const volt = v ? `${v}${p.is_online ? "" : " (마지막 값)"}` : "배터리 전압 없음";
-  return `<div class="kpin-tip"><b>${esc(p.site ?? p.uuid)}</b><span>${esc(volt)}</span></div>`;
+  const el = document.createElement("div");
+  el.className = "kpin-tip";
+  const b = document.createElement("b");
+  b.textContent = p.site ?? p.uuid;
+  const s = document.createElement("span");
+  s.textContent = v ? `${v}${p.is_online ? "" : " (마지막 값)"}` : "배터리 전압 없음";
+  el.append(b, s);
+  return el;
+}
+
+/** 말풍선을 보이는 동안 핀 위를 덮는 틀(카카오가 감싸는 div 포함)이 마우스를 가로채지 않게 한다.
+ *  가로채면 핀 mouseout → 숨김 → 다시 mouseover → 보임이 되풀이돼 아주 빠르게 깜빡였다(문제점 20번). */
+function passThrough(el: HTMLElement) {
+  for (let n: HTMLElement | null = el, i = 0; n && i < 3; n = n.parentElement, i++) n.style.pointerEvents = "none";
 }
 
 /** 단말 핀 지도 — 색은 PIN. 가까운 핀은 묶는다. 핀에 마우스를 올리면 시설명·배터리 전압. */
@@ -123,6 +133,8 @@ export function DeviceMap({ points, onSelect, height = 420 }: { points: MapPoint
   const map = useRef<any>(null);
   const cluster = useRef<any>(null);
   const tip = useRef<any>(null);
+  const hovered = useRef<string | null>(null); // 말풍선을 띄운 단말 — 10초 갱신 뒤에도 유지
+  const hideTimer = useRef<number | undefined>(undefined);
   const fitted = useRef(false);
 
   useEffect(() => {
@@ -130,7 +142,7 @@ export function DeviceMap({ points, onSelect, height = 420 }: { points: MapPoint
     map.current = new kakao.maps.Map(box.current, { center: new kakao.maps.LatLng(SEOUL.lat, SEOUL.lon), level: 9 });
     map.current.addControl(new kakao.maps.ZoomControl(), kakao.maps.ControlPosition.RIGHT);
     cluster.current = new kakao.maps.MarkerClusterer({ map: map.current, averageCenter: true, minLevel: 7 });
-    tip.current = new kakao.maps.CustomOverlay({ yAnchor: 1, zIndex: 3 }); // 말풍선 아래 여백(.kpin-tip)이 핀 높이만큼
+    tip.current = new kakao.maps.CustomOverlay({ yAnchor: 1, zIndex: 3 }); // 말풍선 아래 여백(.kpin-tip)이 핀 높이만큼 — 틀은 passThrough
   }, [kakao]);
 
   useEffect(() => {
@@ -142,17 +154,32 @@ export function DeviceMap({ points, onSelect, height = 420 }: { points: MapPoint
       const pos = new kakao.maps.LatLng(p.lat, p.lon);
       const m = new kakao.maps.Marker({ position: pos, image: images.get(k), zIndex: k === "offline" ? 1 : 2 });
       kakao.maps.event.addListener(m, "click", () => onSelect(p.uuid));
-      kakao.maps.event.addListener(m, "mouseover", () => {
-        tip.current.setContent(hoverHtml(p));
+      const show = () => {
+        window.clearTimeout(hideTimer.current);
+        hovered.current = p.uuid;
+        const el = hoverEl(p);
+        tip.current.setContent(el);
         tip.current.setPosition(pos);
         tip.current.setMap(map.current);
+        passThrough(el);
+      };
+      kakao.maps.event.addListener(m, "mouseover", show);
+      // 핀 가장자리에서 들락날락해도 깜빡이지 않게 조금 늦게 숨긴다.
+      kakao.maps.event.addListener(m, "mouseout", () => {
+        window.clearTimeout(hideTimer.current);
+        hideTimer.current = window.setTimeout(() => {
+          hovered.current = null;
+          tip.current.setMap(null);
+        }, 150);
       });
-      kakao.maps.event.addListener(m, "mouseout", () => tip.current.setMap(null));
-      return m;
+      return { m, p, show };
     });
-    tip.current?.setMap(null);
+    // 10초 갱신으로 핀을 다시 만들어도, 올려 둔 단말의 말풍선은 새 값으로 계속 보인다.
+    const keep = markers.find((x) => x.p.uuid === hovered.current);
+    if (keep) keep.show();
+    else tip.current?.setMap(null);
     cluster.current.clear();
-    cluster.current.addMarkers(markers);
+    cluster.current.addMarkers(markers.map((x) => x.m));
     if (!fitted.current && points.length) {
       const b = new kakao.maps.LatLngBounds();
       points.forEach((p) => b.extend(new kakao.maps.LatLng(p.lat, p.lon)));
@@ -160,6 +187,8 @@ export function DeviceMap({ points, onSelect, height = 420 }: { points: MapPoint
       fitted.current = true;
     }
   }, [kakao, points, onSelect]);
+
+  useEffect(() => () => window.clearTimeout(hideTimer.current), []);
 
   if (error) return <MapNote text={error} />;
   return <div ref={box} className="kmap" style={{ height }}>{!kakao && <div className="muted" style={{ padding: 12 }}>지도 불러오는 중…</div>}</div>;
