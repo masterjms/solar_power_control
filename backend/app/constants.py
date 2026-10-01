@@ -147,7 +147,7 @@ class TargetStatus(str, Enum):
 
     서버가 붙이는 둘(문제점 14번, 2026-09-29):
       · OFFLINE     — 보낼 때 오프라인이라 **보내지 않았고 기다리지도 않는다**(재시도 없음).
-      · NO_RESPONSE — 보냈지만 COMMAND_TIMEOUT_SEC 안에 응답이 없어 실패로 닫았다.
+      · NO_RESPONSE — 보냈지만 종료 시간(서버 설정: 기다리는 시간 × 보내는 횟수) 안에 응답이 없어 실패로 닫았다.
     둘 다 뒤늦게 COMMAND_ACK 가 오면 그 result 로 바뀐다(응답이 사실이다).
     """
 

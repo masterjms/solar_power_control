@@ -61,6 +61,27 @@ export const ACK_VIEW: Record<AckStatus, [string, string, string]> = {
 
 const cnt = (c: Partial<Record<AckStatus, number>>, k: AckStatus) => c[k] ?? 0;
 
+/** 원격 명령 응답 대기 — 서버 설정(문제점 14번)을 한 번 읽어 안내 문구에 쓴다. 못 읽으면 기본 30초 × 2회. */
+let waitCache: { sec: number; n: number; total: number } | null = null;
+/** 서버 설정을 저장한 뒤 부른다 — 다음에 여는 명령 창이 새 값을 읽는다. */
+export function resetCommandWait() {
+  waitCache = null;
+}
+function useCommandWait() {
+  const [w, setW] = useState(waitCache ?? { sec: 30, n: 2, total: 60 });
+  useEffect(() => {
+    if (waitCache) return;
+    let live = true;
+    api.uiConfig().then((c) => {
+      const sec = c.command_wait_sec ?? 30, n = c.command_attempts ?? 2;
+      waitCache = { sec, n, total: sec * n };
+      if (live) setW(waitCache);
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, []);
+  return w;
+}
+
 // ---------------------------------------------------------------- 명령 폼
 
 interface FormProps {
@@ -276,6 +297,7 @@ function PreviewModal({ label, text, body, res, onCancel, onSent }: {
   onCancel: () => void; onSent: (c: CommandCreated) => void;
 }) {
   const isAll = body.target.kind === "all";
+  const wait = useCommandWait();
   const [step, setStep] = useState<1 | 2>(1);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -312,7 +334,7 @@ function PreviewModal({ label, text, body, res, onCancel, onSent }: {
             <h4>명령 <span>{text}</span></h4>
             <div className="grid2">
               <div className="met"><div className="l">대상 (운영 단말)</div><div className="v">{nf(res.expected)}대</div><div className="h">범위 안 승인(ACTIVE) 단말</div></div>
-              <div className="met k"><div className="l">온라인 — 보냄</div><div className="v">{nf(res.online)}대</div><div className="h">이 수만큼 응답을 기다린다(최대 3분, 없으면 실패)</div></div>
+              <div className="met k"><div className="l">온라인 — 보냄</div><div className="v">{nf(res.online)}대</div><div className="h">이 수만큼 응답을 기다린다(최대 {wait.total}초, 없으면 실패)</div></div>
               <div className={`met ${res.offline ? "o" : ""}`}><div className="l">오프라인 — 안 보냄</div><div className="v">{nf(res.offline)}대</div><div className="h">보내지도 기다리지도 않는다</div></div>
               <div className={`met ${lights && res.low_battery ? "a" : ""}`}><div className="l">저전압 (안 켜질 수)</div><div className="v">{nf(res.low_battery)}대</div><div className="h">{lights ? "BATT_LOW — 점등 명령이어도 켜지지 않는다" : "소등·복귀에는 영향 없음"}</div></div>
               <div className="met o"><div className="l">제외 (승인 안 됨)</div><div className="v">{nf(res.not_active)}대</div><div className="h">범위 안이지만 ACTIVE 가 아니라 보내지 않음</div></div>
@@ -354,6 +376,7 @@ function PreviewModal({ label, text, body, res, onCancel, onSent }: {
 /** 목업 #gProg — 발행함 시각 + COMMAND_ACK 집계 + 대상 표 + 개별 재시도. 3초 폴링, 끝나면 멈춘다. */
 export function CommandResult({ seq, onClose, onDevice }: { seq: number; onClose?: () => void; onDevice?: (uuid: string) => void }) {
   const [c, setC] = useState<CommandDetail | null>(null);
+  const wait = useCommandWait();
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -455,7 +478,7 @@ export function CommandResult({ seq, onClose, onDevice }: { seq: number; onClose
           title="무응답(pending)·만료(EXPIRED) 대상만 개별 topic 으로 같은 seq 재발송">
           무응답·만료 개별 재시도 ({nf(retryable)})
         </button>
-        <span className="cap">3분 안에 응답이 없으면 무응답(실패)으로 끝난다. 그 안에는 단말이 보낸 직후 서버가 자동 재시도(최대 3회). 오프라인 단말은 보내지 않는다.</span>
+        <span className="cap">{wait.sec}초 동안 응답이 없으면 다시 보내고(모두 {wait.n}회), 그래도 없으면 {wait.total}초 뒤 무응답(실패)으로 끝난다. 오프라인 단말은 보내지 않는다.</span>
       </div>
       {msg && <div className="okl">{msg}</div>}
       {err && <div className="err">{err}</div>}

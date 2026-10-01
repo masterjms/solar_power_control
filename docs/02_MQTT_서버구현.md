@@ -399,8 +399,11 @@ DB       ─ command(type=COMMAND, target_kind, target_id, created_by, topics, e
 - **평소 비용 0**: 메모리 집합(재시도 후보가 있는 uuid)에 없으면 쿼리를 안 한다. 기동 시 DB 로 채우고, 발송 때
   넣고, 30초 종료 타이머가 DB 기준으로 다시 맞춘다(ACK 로 끝난 uuid 가 빠진다).
 - 후보면 `UPDATE command_target … FROM command … RETURNING` 한 문장으로 **선점**(attempts+1, last_sent_at=now).
-  조건: status ∈ {pending, EXPIRED} · 명령 미종료 · now < sent_at + dur(auto 는 + COMMAND_TIMEOUT_SEC)
-  · attempts < COMMAND_MAX_ATTEMPTS(3) · last_sent_at < now − COMMAND_RETRY_MIN_SEC(20)
+  조건: status ∈ {pending, EXPIRED} · 명령 미종료 · now < sent_at + dur(auto 는 + 종료 시간)
+  · attempts < 보내는 횟수(서버 설정, 기본 2) · last_sent_at < now − min(COMMAND_RETRY_MIN_SEC(20), 기다리는 시간)
+- **무응답 타이머 재발송(2026-10-01 문제점 14번, ADR-012)**: 5초 타이머(`tasks/command_finisher`)가 마지막 발송에서
+  "기다리는 시간"(서버 설정, 기본 30초)이 지나도록 응답 없는 대상을 같은 식으로 선점해 개별 topic 으로 다시 보낸다
+  (`claim_targets(timer=True)`). 단말이 조용해도 보내는 횟수까지는 다시 간다.
   · **그 단말에 더 새 명령(seq 큰 대상 행)이 없다** — 옛 소등이 새 점등 뒤에 도착하면 옛 것이 적용된다.
   인덱스 `(uuid, status)`. 파이썬 판 `command_rules.retry_eligible` 과 같은 규칙.
 - 선점한 것만 응답 큐(§7, 토큰 버킷·FIFO)에 `CommandRetryJob` → **개별 topic, 같은 seq, 새 ts**(발행 순간 시각 —
@@ -420,7 +423,7 @@ DB       ─ command(type=COMMAND, target_kind, target_id, created_by, topics, e
 ### 16.5 종료 (30초 타이머, `tasks/command_finisher`)
 미종료 COMMAND 마다 대상 상태를 센다. 종결 = OK/LOCAL/BAD/STATE + 시도를 다 쓴 EXPIRED + 서버가 닫은 OFFLINE·NO_RESPONSE.
 - 전부 종결 → `OK`(전부 OK) / 단말 응답 0 이면 `TIMEOUT` / 그 밖엔 `PARTIAL`
-- `COMMAND_TIMEOUT_SEC`(180, 2026-09-29 전 900) 경과 → 그때 `pending` 인 대상은 **`NO_RESPONSE`** 로 바꾸고, 응답 0 이면 `TIMEOUT`, 아니면 `PARTIAL`
+- 종료 시간 = **기다리는 시간 × 보내는 횟수**(서버 설정, 기본 30 × 2 = 60초 — 2026-10-01 전 `COMMAND_TIMEOUT_SEC` 180, 09-29 전 900) 경과 → 그때 `pending` 인 대상은 **`NO_RESPONSE`** 로 바꾸고, 응답 0 이면 `TIMEOUT`, 아니면 `PARTIAL`
 - 보낼 때 오프라인이던 대상은 처음부터 `OFFLINE`(보내지 않음·기다리지 않음·재시도 없음). 응답으로 세지 않는다.
 끝난 명령은 재시도 대상에서 빠진다. 파이썬 판 `command_rules.finish_result`. 문제점 14번·ADR-005 개정.
 
@@ -446,7 +449,7 @@ DB       ─ command(type=COMMAND, target_kind, target_id, created_by, topics, e
 
 ### 16.8 설정 (`.env`)
 `KAKAO_REST_API_KEY`(""), `SUPER_ADMIN_USERS`(admin), `APPROVE_REQUIRES_NODE`(미설정 = prod true / dev false),
-`COMMAND_EXP_SEC`(30), `COMMAND_TIMEOUT_SEC`(180), `COMMAND_MAX_ATTEMPTS`(3), `COMMAND_RETRY_MIN_SEC`(20),
+`COMMAND_EXP_SEC`(30), `COMMAND_RETRY_MIN_SEC`(20) — 응답 기다리는 시간·보내는 횟수는 `.env` 가 아니라 서버 설정(`server_setting`, ADR-012),
 `DEFAULT_LAT`/`DEFAULT_LON`(37.5665/126.9780).
 
 ## 17. S-23 단말 운전 설정 (ADR-007, `UI_항목_명세.md` 8장)

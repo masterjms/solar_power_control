@@ -363,3 +363,5 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
   .fld{grid-template-columns:88px minmax(0,1fr) 58px 40px}
   .fld.tfld{grid-template-columns:52px minmax(0,1fr) 58px 40px}
 }
+.fld.srv{grid-template-columns:150px minmax(0,360px) 58px 46px} /* 서버 설정: 이름이 길다 */
+@media (max-width:760px){ .fld.srv{grid-template-columns:110px minmax(0,1fr) 58px 40px} }

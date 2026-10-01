@@ -54,6 +54,11 @@ def select(args: argparse.Namespace) -> list[Scenario]:
     return items
 
 
+#: 시험 동안의 원격 명령 서버 설정 / 운영 기본값(backend core/server_settings.ITEMS 와 같게).
+CMD_TEST_SETTINGS = {"command_wait_sec": 180, "command_attempts": 3}
+CMD_DEFAULT_SETTINGS = {"command_wait_sec": 30, "command_attempts": 2}
+
+
 def print_list() -> None:
     print(f"{'ID':7} {'단계':4} {'필요':20} {'제목'}")
     for s in sorted(REGISTRY.values(), key=lambda s: (s.phase, s.id)):
@@ -68,6 +73,13 @@ async def run_all(scenarios: list[Scenario], opt: Options, report: Path | None) 
     print("서비스:", ", ".join(f"{k}={paint(v, 'green' if v == 'ok' else 'red')}" for k, v in status.items()))
     print(f"브로커 {ENV.mqtt_host}:{ENV.mqtt_port}  백엔드 {ENV.backend_url}  DB {ENV.database_url.split('@')[-1]}")
     results: list[Result] = []
+    # 원격 명령 시나리오(5차~)는 "단말 송신 직후 재시도·시도 3회"를 본다. 서버 설정(문제점 14번)의 운영 기본값
+    # (30초 × 2회, 무응답이면 타이머 재발송)으로는 그 시험 시간 안에 타이머가 끼어든다 → 시험 동안만
+    # 기다리는 시간 180초 × 3회로 두고, 끝나면 기본값으로 되돌린다. S5-13 은 스스로 10초 × 2회로 바꿔 타이머를 본다.
+    cmd_settings = services.all_ok() and any("group_cmd" in s.requires for s in scenarios)
+    if cmd_settings:
+        r = await services.rest.put_server_settings(CMD_TEST_SETTINGS, ENV.admin_user)
+        print(f"서버 설정(시험용) {CMD_TEST_SETTINGS}: {r.status_code}")
     try:
         for scn in scenarios:
             if not services.all_ok():
@@ -77,6 +89,9 @@ async def run_all(scenarios: list[Scenario], opt: Options, report: Path | None) 
                 continue
             results.append(await run_one(scn, services, opt))
     finally:
+        if cmd_settings:
+            r = await services.rest.put_server_settings(CMD_DEFAULT_SETTINGS, ENV.admin_user)
+            print(f"서버 설정 되돌림 {CMD_DEFAULT_SETTINGS}: {r.status_code}")
         await services.close()
 
     counts = {k: sum(1 for r in results if r.status == k) for k in ("PASS", "FAIL", "ERROR", "SKIP")}

@@ -297,6 +297,13 @@ class Rest:
     async def command(self, seq: int, user: str | None = None) -> httpx.Response:
         return await self.client.get(f"/api/commands/{seq}", headers=self._h(user))
 
+    # ── 서버 설정 (문제점 14번, ADR-012) ────────────────────────────────
+    async def server_settings(self, user: str | None = None) -> httpx.Response:
+        return await self.client.get("/api/server-settings", headers=self._h(user))
+
+    async def put_server_settings(self, values: dict[str, int], user: str | None = None) -> httpx.Response:
+        return await self.client.put("/api/server-settings", json={"values": values}, headers=self._h(user))
+
     async def retry_command(self, seq: int, uuids: list[str] | None, user: str | None = None) -> httpx.Response:
         return await self.client.post(f"/api/commands/{seq}/retry", json={"uuids": uuids}, headers=self._h(user))
 

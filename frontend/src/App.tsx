@@ -8,6 +8,7 @@ import Pending from "./Pending";
 import DeviceConfig from "./DeviceConfig";
 import Profiles from "./Profiles";
 import System from "./System";
+import ServerSettings from "./ServerSettings";
 import Regions from "./Regions";
 import GroupControl from "./GroupControl";
 import Alarms from "./Alarms";
@@ -17,9 +18,9 @@ import { nf } from "./ui";
 
 const REFRESH_MS = 10_000;
 
-type Page = "dash" | "alarms" | "devices" | "pending" | "group" | "regions" | "config" | "schedule" | "profiles" | "system";
+type Page = "dash" | "alarms" | "devices" | "pending" | "group" | "regions" | "config" | "schedule" | "profiles" | "server" | "system";
 
-const PAGES: { id: Page; ico: string; label: string; title: string }[] = [
+const PAGES: { id: Page; ico: string; label: string; title: string; superOnly?: boolean }[] = [
   { id: "dash", ico: "▦", label: "대시보드", title: "통합 관제 대시보드" },
   { id: "alarms", ico: "!", label: "알람", title: "알람 (조치 필요)" },
   { id: "devices", ico: "≡", label: "단말 목록", title: "단말 목록" },
@@ -29,6 +30,7 @@ const PAGES: { id: Page; ico: string; label: string; title: string }[] = [
   { id: "config", ico: "≣", label: "단말 설정", title: "단말 설정" },
   { id: "schedule", ico: "◷", label: "스케줄 배포", title: "스케줄 배포" },
   { id: "profiles", ico: "◫", label: "프로필(설정)", title: "설정 프로필" },
+  { id: "server", ico: "☰", label: "서버 설정", title: "서버 설정", superOnly: true },
   { id: "system", ico: "⚙", label: "시스템", title: "시스템" },
 ];
 /** 아직 백엔드가 없는 메뉴 — 회색으로만 보인다(docs/00 §2 단계). */
@@ -129,7 +131,7 @@ export default function App() {
       <aside className="side">
         <div className="logo"><b>Solar Light Control</b><span>태양광 조명 통합관제</span></div>
         <nav className="nav">
-          {PAGES.map((p) => (
+          {PAGES.filter((p) => !p.superOnly || me?.role === "super_admin").map((p) => (
             <a key={p.id} href={`#${p.id}`} className={page === p.id ? "on" : ""}>
               <span className="ico">{p.ico}</span>{p.label}
               {p.id === "pending" && pending > 0 && <span className="cnt b">{nf(pending)}</span>}
@@ -204,6 +206,7 @@ export default function App() {
             <Profiles onChanged={refresh} />
           </div>
         )}
+        {page === "server" && <ServerSettings role={me?.role ?? null} />}
         {page === "system" && <System />}
       </main>
 

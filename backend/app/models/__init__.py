@@ -17,7 +17,7 @@ from app.models.schedule import (
     ScheduleProfile,
 )
 from app.models.settings import DeviceSettings, DeviceSettingsHistory
-from app.models.system import AdminUser, MqttAccountExport
+from app.models.system import AdminUser, MqttAccountExport, ServerSetting
 from app.models.telemetry import Telemetry, TelemetryDaily
 
 __all__ = [

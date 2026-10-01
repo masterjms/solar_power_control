@@ -14,6 +14,7 @@ from app.config import settings
 from app.core import ids
 from app.core.auth import Principal, current_user
 from app.core.metrics import metrics
+from app.core.server_settings import runtime
 from app.db import get_db
 from app.modules.deps import get_broker_log, get_buffer, get_config_sync, get_connection
 from app.modules.mqtt_auth.router import active_key_ids
@@ -66,6 +67,9 @@ async def ui_config() -> dict[str, Any]:
     return {
         "kakao_js_key": settings.kakao_js_key or None,
         "ghg_kg_per_kwh": settings.ghg_kg_per_kwh,
+        #: 원격 명령 응답 대기(서버 설정, ADR-012) — 화면 안내 문구가 지금 값을 따라간다.
+        "command_wait_sec": runtime.command_wait_sec,
+        "command_attempts": runtime.command_attempts,
     }
 
 

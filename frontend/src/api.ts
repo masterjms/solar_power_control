@@ -130,6 +130,25 @@ export interface EnergyToday {
 export interface UiConfig {
   kakao_js_key: string | null;
   ghg_kg_per_kwh: number;
+  /** 원격 명령 응답 기다리는 시간(초)·보내는 횟수 — 서버 설정(문제점 14번). */
+  command_wait_sec?: number;
+  command_attempts?: number;
+}
+
+export interface ServerSettingItem {
+  key: string;
+  label: string;
+  help: string;
+  unit: string;
+  min: number;
+  max: number;
+  default: number;
+  value: number;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+export interface ServerSettings {
+  groups: { id: string; title: string; items: ServerSettingItem[] }[];
 }
 
 export interface DeviceCounts {
@@ -684,6 +703,9 @@ export const api = {
   login: (user: string, password: string) => request<{ user: string }>("/api/auth/login", json("POST", { user, password })),
   logout: () => request<{ ok: boolean }>("/api/auth/logout", json("POST")),
   uiConfig: () => request<UiConfig>("/api/ui-config"),
+  serverSettings: () => request<ServerSettings>("/api/server-settings"),
+  putServerSettings: (values: Record<string, number>) =>
+    request<ServerSettings>("/api/server-settings", json("PUT", { values })),
 
   // 5차: 법정동 트리
   listRegions: () => request<Region[]>("/api/regions"),

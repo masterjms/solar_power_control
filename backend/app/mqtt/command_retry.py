@@ -14,8 +14,12 @@ TELEMETRY 를 보낸 **직후**는 모뎀이 깨어 있어 바로 받을 확률�
   3. 선점한 것만 응답 큐(ConfigSyncQueue — 토큰 버킷)에 CommandRetryJob 으로 넣는다.
 
 자격(core/command_rules.retry_eligible 과 같은 규칙):
-  status ∈ {pending, EXPIRED} · 명령 미종료 · now < sent_at + dur(auto 는 + COMMAND_TIMEOUT)
-  · attempts < COMMAND_MAX_ATTEMPTS · last_sent_at < now - COMMAND_RETRY_MIN_SEC
+  status ∈ {pending, EXPIRED} · 명령 미종료 · now < sent_at + dur(auto 는 + 종료 시간)
+  · attempts < 보내는 횟수 · last_sent_at < now - min(COMMAND_RETRY_MIN_SEC, 기다리는 시간)
+
+2026-10-01(문제점 14번): "보내는 횟수"·"기다리는 시간"은 서버 설정(화면, core/server_settings)이다 — 기본 2회·30초.
+단말 송신 직후 말고도, **기다리는 시간이 지나도록 응답이 없으면 타이머가 다시 보낸다**(claim_targets timer=True,
+tasks/command_finisher 가 5초마다). 종료 = 기다리는 시간 × 보내는 횟수.
   · 그 단말에 **더 새 명령(seq 큰 대상 행)이 없다** — 옛 소등을 새 점등 뒤에 다시 보내면
     단말은 옛 명령을 마지막으로 적용한다(같은 계층은 나중 것이 덮는다, §3.10.8).
 """
@@ -33,6 +37,7 @@ from sqlalchemy.orm import aliased
 
 from app.config import settings
 from app.constants import RETRYABLE_STATUSES, MsgType
+from app.core.server_settings import runtime
 from app.db import session_scope
 from app.models.command import Command, CommandTarget
 from app.mqtt.config_sync import CommandRetryJob, ConfigSyncQueue
@@ -42,7 +47,7 @@ log = logging.getLogger(__name__)
 
 def _valid_until_sql():
     """command_rules.command_valid_until 의 SQL 판."""
-    dur = func.coalesce(Command.payload["dur"].astext.cast(Integer), settings.command_timeout_sec)
+    dur = func.coalesce(Command.payload["dur"].astext.cast(Integer), runtime.command_timeout_sec)
     return Command.sent_at + dur * text("interval '1 second'")
 
 
@@ -53,12 +58,13 @@ def _not_superseded_sql():
 
 async def claim_targets(
     db: AsyncSession, *, now: dt.datetime, uuids: Iterable[str] | None = None,
-    seq: int | None = None, manual: bool = False,
+    seq: int | None = None, manual: bool = False, timer: bool = False,
 ) -> list[tuple[int, str, int, dict[str, Any]]]:
     """재발송할 대상을 선점하고 (seq, uuid, 새 attempts, command.payload) 목록을 돌려준다.
 
     manual=True(관리자 재시도 버튼)는 시도 상한·RETRY_MIN 을 보지 않는다 — 사람이 직접 누른 것.
     나머지 조건(미종료·유효·pending/EXPIRED·더 새 명령 없음)은 같다.
+    timer=True(5초 타이머)는 마지막 발송 뒤 "기다리는 시간"이 지난 대상만 — 단말이 조용해도 다시 보낸다.
     """
     conds = [
         CommandTarget.seq == Command.seq,
@@ -73,8 +79,10 @@ async def claim_targets(
     if seq is not None:
         conds.append(CommandTarget.seq == seq)
     if not manual:
-        conds.append(CommandTarget.attempts < settings.command_max_attempts)
-        retry_min = dt.timedelta(seconds=settings.command_retry_min_sec)
+        conds.append(CommandTarget.attempts < runtime.command_attempts)
+        wait = runtime.command_wait_sec
+        retry_min = dt.timedelta(
+            seconds=wait if timer else min(settings.command_retry_min_sec, wait))
         conds.append(
             (CommandTarget.last_sent_at.is_(None)) | (CommandTarget.last_sent_at < now - retry_min)
         )
@@ -99,7 +107,7 @@ async def pending_uuids(db: AsyncSession) -> set[str]:
             Command.finished_at.is_(None),
             Command.type == MsgType.COMMAND.value,
             CommandTarget.status.in_(sorted(RETRYABLE_STATUSES)),
-            CommandTarget.attempts < settings.command_max_attempts,
+            CommandTarget.attempts < runtime.command_attempts,
         )
     )
     return {row[0] for row in await db.execute(stmt)}

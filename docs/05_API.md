@@ -349,3 +349,11 @@ suntable 로 표 계산 → `{"crc":"69C1DF86","lat_e6","lon_e6","on","off","row
 
 `DeviceScheduleOut`: `uuid site state is_online node_path profile_id profile_name profile_version profile_crc source(device|node:<id>)
 applied_profile_id applied_version applied_crc applied_at device_crc device_region device_src applied_ok deploy_status deploy_job_id dip4 today_on today_off`.
+
+## 서버 설정 API (2026-10-01, 문제점 14번, ADR-012) — 최고관리자 전용
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| GET | `/api/server-settings` | `{"groups":[{"id","title","items":[{"key","label","help","unit","min","max","default","value","updated_by","updated_at"}]}]}`. 관리자는 403 |
+| PUT | `/api/server-settings` | `{"values":{"command_wait_sec":30,"command_attempts":2}}` — 보낸 항목만. 하나라도 범위 밖·모르는 key 면 아무것도 안 바꾸고 422 `VALIDATION_FAILED`(`detail.fields`). 저장 즉시 적용 |
+
+`GET /api/ui-config` 에 `command_wait_sec`·`command_attempts` 추가(모든 사용자 — 명령 창 안내 문구용).

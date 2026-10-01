@@ -38,9 +38,10 @@ ACK_WAIT = 5.0
 SERVER_WAIT = 10.0
 #: 재시도를 유도하려고 Telemetry 를 보내는 간격(초). 서버는 "단말이 뭔가 보낸 직후" 재시도한다(ADR-005).
 KICK_EVERY = 3.0
-#: 백엔드 COMMAND_RETRY_MIN_SEC / COMMAND_MAX_ATTEMPTS 와 같게(docs/06 §1 환경 변수).
+#: 백엔드 COMMAND_RETRY_MIN_SEC 와 같게(docs/06 §1 환경 변수). 시도 상한은 서버 설정 "보내는 횟수" —
+#: 시험 동안 run.py 가 3회(기다리는 시간 180초)로 맞춘다(CMD_TEST_SETTINGS).
 RETRY_MIN_SEC = float(os.environ.get("COMMAND_RETRY_MIN_SEC") or 20)
-MAX_ATTEMPTS = int(os.environ.get("COMMAND_MAX_ATTEMPTS") or 3)
+MAX_ATTEMPTS = 3
 #: 이 이름으로 시작하는 404 코드는 "기능 없음"이 아니라 정상 응답이다.
 _REAL_404 = {"DEVICE_NOT_FOUND", "REGION_NOT_FOUND", "COMMAND_NOT_FOUND"}
 
@@ -1143,14 +1144,29 @@ async def s5_12(ctx: Ctx) -> None:
 
 # ── S5-13 오프라인 섞인 그룹 명령 (문제점 14번) ─────────────────────────
 
-@scenario("S5-13", "오프라인 섞인 그룹 명령 — 오프라인은 OFFLINE(안 보냄·안 기다림), 온라인 무응답은 시간 뒤 NO_RESPONSE, 전부 오프라인 409",
-          phase=5, requires="group_cmd", timeout=420)
+@scenario("S5-13", "오프라인 섞인 그룹 명령 — 오프라인은 OFFLINE(안 보냄·안 기다림), 온라인 무응답은 10초 뒤 재발송·20초 뒤 NO_RESPONSE(서버 설정), 전부 오프라인 409",
+          phase=5, requires="group_cmd", timeout=240)
 async def s5_13(ctx: Ctx) -> None:
     """문제점 14번(2026-09-29): online 2대 + offline 1대 그룹에 명령하면 offline 응답을 기다렸다.
     말단 A 3대 — ok(응답) · mute(온라인 무응답) · gone(접속 끊음, 서버 online=false 확인) / 말단 B 1대(끊음).
     preview online 2·offline 1 → 보내면 expected 2·offline 1, 대상 스냅숏 gone = OFFLINE·attempts 0·보낸 시각 없음,
-    gone 은 아무것도 못 받음, 자동 재시도 대상 아님 → COMMAND_TIMEOUT_SEC(서버 기본 180) 뒤 mute = NO_RESPONSE, pending 0,
-    result PARTIAL. B(전부 오프라인) 명령은 409 NO_ONLINE_TARGETS·명령 행 없음."""
+    gone 은 아무것도 못 받음, 자동 재시도 대상 아님.
+    서버 설정(문제점 14번 10/1, ADR-012)을 **기다리는 시간 10초 × 보내는 횟수 2회**로 바꾸고 본다: mute 는 조용해도
+    약 10초 뒤 타이머가 개별 topic 으로 한 번 더 보내고(attempts 2), 약 20초 뒤 NO_RESPONSE·pending 0·result PARTIAL.
+    범위 밖 값은 422, 관리자(최고관리자 아님)는 403. B(전부 오프라인) 명령은 409 NO_ONLINE_TARGETS·명령 행 없음."""
+    r = await ctx.s.rest.put_server_settings({"command_wait_sec": 9}, _admin(ctx))
+    ctx.check(r.status_code == 422, f"기다리는 시간 9초(범위 밖) → 422: {_describe(r)}")
+    r = await ctx.s.rest.put_server_settings({"command_wait_sec": 10}, _operator(ctx))
+    ctx.check(r.status_code == 403, f"관리자는 서버 설정을 못 바꾼다 → 403: {_describe(r)}")
+    r = await ctx.s.rest.put_server_settings({"command_wait_sec": 10, "command_attempts": 2}, _admin(ctx))
+    ctx.check(r.status_code == 200, f"서버 설정 10초 × 2회: {_describe(r)}")
+    try:
+        await _s5_13_body(ctx)
+    finally:
+        await ctx.s.rest.put_server_settings({"command_wait_sec": 180, "command_attempts": 3}, _admin(ctx))
+
+
+async def _s5_13_body(ctx: Ctx) -> None:
     tree = await make_tree(ctx, [2])
     a, b = tree.leaves
     ok, mute, gone = await devices_in(ctx, 3, a, offset=0)
@@ -1185,10 +1201,16 @@ async def s5_13(ctx: Ctx) -> None:
     ctx.check(not gone.commands_received(seq=seq), "끊긴 단말은 아무것도 못 받음")
     ctx.check_eq(det.get("expected_count"), 2, "기다릴 대수(expected_count) = 2")
 
-    # 서버 기본 COMMAND_TIMEOUT_SEC 180 + 종료 타이머 주기 30 + 여유
+    # 기다리는 시간 10초 × 2회 = 20초 + 종료 타이머 주기 5초 + 여유
     det = await wait_counts(ctx, seq, {"OK": 1, "pending": 0, "NO_RESPONSE": 1, "OFFLINE": 1},
-                            timeout=260, finished=True)
-    ctx.log(f"종료까지 {time.monotonic() - t0:.0f}s (COMMAND_TIMEOUT_SEC)")
+                            timeout=45, finished=True)
+    took = time.monotonic() - t0
+    ctx.log(f"종료까지 {took:.0f}s (서버 설정 10초 × 2회)")
+    ctx.check(18 <= took <= 40, f"종료 시각이 20초 근처: {took:.0f}s")
+    m = targets_by_uuid(det).get(mute.uuid, {})
+    ctx.check_eq(m.get("attempts"), 2, "무응답 단말에 타이머 재발송 1회 → attempts 2")
+    ctx.check(len(mute.commands_received(seq=seq)) >= 2, f"무응답 단말이 받은 횟수 ≥ 2: {len(mute.commands_received(seq=seq))}")
+    ctx.check_eq(targets_by_uuid(det).get(ok.uuid, {}).get("attempts"), 1, "응답한 단말에는 재발송 없음")
     ctx.check_eq(det.get("result"), "PARTIAL", "온라인 1대 응답·1대 무응답 → result")
     ctx.check_eq(targets_by_uuid(det).get(mute.uuid, {}).get("status"), "NO_RESPONSE", "온라인 무응답 = NO_RESPONSE")
     ctx.check(not gone.commands_received(seq=seq), "끝날 때까지 끊긴 단말에 재발송 없음")

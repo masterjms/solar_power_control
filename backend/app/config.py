@@ -158,12 +158,10 @@ class Settings(BaseSettings):
     )
     #: COMMAND.exp 기본(초). 단말 RTC - ts 가 이보다 크면 EXPIRED(사양서 §3.10.7, 30 권장).
     command_exp_sec: int = 30
-    #: 명령 종료 판정 상한(초). 이 안에 응답이 없는 대상은 NO_RESPONSE(실패)로 닫고 자동 재시도도
-    #: 멈춘다(ADR-005). 900 → 180 (문제점 14번 — 15분 동안 "진행 중"으로 남았다).
-    command_timeout_sec: int = 180
-    #: 대상 단말 1대당 최대 발송 횟수(첫 발송 포함). 자동 재시도 상한.
-    command_max_attempts: int = 3
+    # 명령 응답 대기 시간·보내는 횟수는 화면의 서버 설정으로 옮겼다(문제점 14번, core/server_settings —
+    # 기본 30초 × 2회). 옛 COMMAND_TIMEOUT_SEC / COMMAND_MAX_ATTEMPTS 는 .env 에 남아 있어도 읽지 않는다.
     #: 같은 대상에 다시 보내기까지 최소 간격(초). 단말 송신 직후 재시도의 연타 방지.
+    #: "기다리는 시간"이 이보다 짧으면 그 값을 쓴다.
     command_retry_min_sec: int = 20
     # ── S-24 알람 (ADR-009) — 기준 시간은 [추천]이라 운영하며 조정 ──────────
     #: 재조정 주기(초). 지금 DB 상태로 열린 알람을 맞춘다.

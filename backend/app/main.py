@@ -33,6 +33,7 @@ from fastapi.responses import Response
 
 from app.config import settings
 from app.core import device_password
+from app.core.server_settings import runtime as runtime_settings
 from app.db import SessionFactory, engine, session_scope
 from app.errors import register_exception_handlers
 from app.modules.alarm.router import router as alarm_router
@@ -46,14 +47,16 @@ from app.modules.region.router import geo_router
 from app.modules.region.router import router as region_router
 from app.modules.schedule.router import device_router as schedule_device_router
 from app.modules.schedule.router import router as schedule_router
+from app.modules.server_settings.router import load as server_settings_load
+from app.modules.server_settings.router import router as server_settings_router
 from app.modules.settings.router import router as settings_router
 from app.modules.system.router import router as system_router
 from app.mqtt.command_retry import CommandRetrier
 from app.mqtt.config_sync import ConfigSyncQueue
 from app.mqtt.connection import MqttConnection
+from app.mqtt.deploy_runner import DeployRunner
 from app.mqtt.handlers import Dispatcher
 from app.mqtt.publisher import MqttPublisher
-from app.mqtt.deploy_runner import DeployRunner
 from app.mqtt.settings_sync import SettingsSync
 from app.mqtt.telemetry_buffer import TelemetryBuffer
 from app.tasks import alarm_eval, command_finisher, daily_rollup, partitions
@@ -152,6 +155,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001
         log.exception("last_sq 캐시 적재 실패 — 첫 TM 의 유실/재부팅 판정을 건너뛴다")
 
+    # 서버 설정(화면에서 바꾸는 값, ADR-012)을 DB 에서 읽는다. 실패하면 기본값으로 돈다.
+    try:
+        async with SessionFactory() as db:
+            n = await server_settings_load(db)
+        log.info("서버 설정: 저장된 항목 %d개 (명령 응답 대기 %d초 × %d회)", n,
+                 runtime_settings.command_wait_sec, runtime_settings.command_attempts)
+    except Exception:  # noqa: BLE001
+        log.exception("서버 설정 적재 실패 — 기본값으로 돈다")
+
     # 5차: 재시도 후보 uuid 집합을 DB 에서 채운다. 비어 있으면 단말 송신마다 쿼리가 0 번이다.
     try:
         async with SessionFactory() as db:
@@ -198,9 +210,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _reconcile_accounts, "interval", minutes=5, id="accounts-reconcile",
         coalesce=True, max_instances=1,
     )
-    # 5차 COMMAND 종료 판정(OK/PARTIAL/TIMEOUT) + 재시도 후보 집합 재조정.
+    # 5차 COMMAND 종료 판정(OK/PARTIAL/TIMEOUT) + 무응답 재발송 + 재시도 후보 집합 재조정.
+    # 5초: 서버 설정의 "기다리는 시간"(기본 30초)을 제때 지키려는 것. 미종료 명령이 없으면 쿼리 한두 개.
     scheduler.add_job(
-        command_finisher.run, "interval", seconds=30, id="command-finisher",
+        command_finisher.run, "interval", seconds=5, id="command-finisher",
         kwargs={"retrier": retrier}, coalesce=True, max_instances=1,
     )
     # S-23 설정 요청: 30초 무응답이면 새 seq 로 재발송, 3회면 TIMEOUT. 대기가 없으면 DB 를 안 본다.
@@ -276,6 +289,7 @@ if settings.cors_origins:
 
 app.include_router(system_router)
 app.include_router(auth_router)
+app.include_router(server_settings_router)
 app.include_router(alarm_router)
 app.include_router(schedule_router)
 app.include_router(schedule_device_router)

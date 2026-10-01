@@ -42,3 +42,19 @@ class AdminUser(Base):
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class ServerSetting(Base):
+    """운영 중 화면에서 바꾸는 서버 설정(문제점 14번, ADR-012). 항목 정의는 core/server_settings.ITEMS.
+
+    행이 없는 항목은 기본값이다. 값은 정수(jsonb 가 아니라 integer — 지금 항목이 모두 정수)."""
+
+    __tablename__ = "server_setting"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 바꾼 관리자(X-Remote-User)
+    updated_by: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

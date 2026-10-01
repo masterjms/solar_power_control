@@ -107,7 +107,8 @@ export function PinIcon({ kind }: { kind: PinKind }) {
   return <span className="pinico" dangerouslySetInnerHTML={{ __html: pinSvg(kind, 15, 21) }} />;
 }
 
-/** 마우스를 올리면 뜨는 말풍선 — 시설명, 배터리 전압. 오프라인이면 "마지막 값"이라고 적는다. */
+/** 마우스를 올리면 뜨는 말풍선 — 시설명, 배터리 전압. 오프라인이어도 서버가 마지막으로 아는 전압을
+ *  그대로 적고("마지막 값" 꼬리표 없음), 한 번도 받은 적이 없으면 0.0 V(문제점 13번 10/1 추가). */
 function hoverEl(p: MapPoint): HTMLElement {
   const v = volt1(p.bv);
   const el = document.createElement("div");
@@ -115,7 +116,7 @@ function hoverEl(p: MapPoint): HTMLElement {
   const b = document.createElement("b");
   b.textContent = p.site ?? p.uuid;
   const s = document.createElement("span");
-  s.textContent = v ? `${v}${p.is_online ? "" : " (마지막 값)"}` : "배터리 전압 없음";
+  s.textContent = v || "0.0 V";
   el.append(b, s);
   return el;
 }
