@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlarmPage, AlarmTab, api, Device, DeviceCounts, DeviceList as DeviceListRes, EnergyToday, Health, MapPoint, STATES, errorText } from "./api";
-import { co2Text, localTime, relTime, str, volt1, watt1, wh1 } from "./format";
+import { co2Text, kwh2, localTime, relTime, str, volt1, watt1 } from "./format";
 import { Battery, Card, LampPair, OnlineMark, PlaceholderCard, StateBadge, nf, stateLabel } from "./ui";
 import { DeviceMap, PIN, PinIcon } from "./KakaoMap";
 import { Pager, RemoteBadge, shortPath } from "./DeviceList";
@@ -311,9 +311,10 @@ function DashDevices({ tick, onSelect }: { tick: number; onSelect: (uuid: string
                   <td><Battery sc={d.last_telemetry?.sc} /></td>
                   <td>{volt1(d.last_telemetry?.bv)}</td>
                   <td className="n">{watt1(d.last_telemetry?.pp)}</td>
-                  <td className="n">{wh1(e?.gen_wh)}</td>
-                  <td className="n">{wh1(e?.use_wh)}</td>
-                  <td className="n">{co2Text(e?.co2_g)}</td>
+                  {/* 단말이 보낸 금일 발전·사용(eg·eu, 문제점 23번). MPPT 무응답이면 "값 없음", 모르면 공백. */}
+                  <td className="n" title={e?.source === "server" ? "옛 펌웨어 — 서버가 계산한 값" : undefined}>{e?.no_value ? <span className="muted">값 없음</span> : kwh2(e?.gen_wh)}</td>
+                  <td className="n">{e?.no_value ? <span className="muted">값 없음</span> : kwh2(e?.use_wh)}</td>
+                  <td className="n">{e?.no_value ? <span className="muted">값 없음</span> : co2Text(e?.co2_g)}</td>
                   <td><button type="button" className="btn sm" onClick={(x) => (x.stopPropagation(), onSelect(d.uuid))}>상세</button></td>
                 </tr>
               );

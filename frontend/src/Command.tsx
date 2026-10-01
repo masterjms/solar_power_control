@@ -268,7 +268,7 @@ export function CommandForm({ target, targetLabel, blocked, onSent, basis }: For
         <div className="cap" style={{ marginTop: 12 }}>스케줄 복귀(auto)는 유지시간 없이 고른 채널의 원격 명령을 즉시 해제한다(어느 경로로 왔든).</div>
       )}
       {dur === "tonight" && act !== "auto" && <div className="cap">오늘 밤 = 대상 좌표 기준 오늘 소등 시각까지 남은 초를 서버가 계산한다.</div>}
-      <code className="payload">{JSON.stringify(shown)}</code>
+      <details><summary>자세히</summary><code className="payload">{JSON.stringify(shown)}</code></details>
       <button type="button" className="btn pri send" disabled={!!reason || busy} onClick={doPreview}>
         {reason ?? (busy ? "확인 중…" : `${targetLabel}에 ${cmdText({ act, ch: chs, pwm: chs.map((k) => pwm[k]) }, act === "auto" ? undefined : durLabel)} — 보내기 전 확인`)}
       </button>
@@ -338,11 +338,14 @@ function PreviewModal({ label, text, body, res, onCancel, onSent }: {
               <div className={`met ${res.offline ? "o" : ""}`}><div className="l">오프라인 — 안 보냄</div><div className="v">{nf(res.offline)}대</div><div className="h">보내지도 기다리지도 않는다</div></div>
               <div className={`met ${lights && res.low_battery ? "a" : ""}`}><div className="l">저전압 (안 켜질 수)</div><div className="v">{nf(res.low_battery)}대</div><div className="h">{lights ? "BATT_LOW — 점등 명령이어도 켜지지 않는다" : "소등·복귀에는 영향 없음"}</div></div>
               <div className="met o"><div className="l">제외 (승인 안 됨)</div><div className="v">{nf(res.not_active)}대</div><div className="h">범위 안이지만 ACTIVE 가 아니라 보내지 않음</div></div>
-              <div className="met"><div className="l">발행 topic</div><div className="v">{nf(tp)}개</div><div className="h">{res.dur !== null ? `유지 ${durText(res.dur)} (dur ${res.dur}초)` : "유지시간 없음(auto)"}</div></div>
+              <div className="met"><div className="l">보낼 주소</div><div className="v">{nf(tp)}개</div><div className="h">{res.dur !== null ? `유지 ${durText(res.dur)} (dur ${res.dur}초)` : "유지시간 없음(auto)"}</div></div>
             </div>
-            <div className="topic">발행: <code>{res.topics[0] ?? "-"}</code>{tp > 1 ? ` 외 ${nf(tp - 1)}개 — 법정동마다 1회, seq 는 하나` : tp === 1 ? " 1회" : ""}</div>
-            <code className="payload">{JSON.stringify(res.payload)}</code>
-            <div className="cap" style={{ marginTop: 8 }}>seq 와 ts(보낸 시각)는 보낼 때 서버가 넣는다. 단말은 다음 송신 뒤 받을 수 있다(최대 약 5분).</div>
+            <details>
+              <summary>자세히</summary>
+              <div className="topic">보낼 주소: <code>{res.topics[0] ?? "-"}</code>{tp > 1 ? ` 외 ${nf(tp - 1)}개 — 법정동마다 1회, 명령 번호는 하나` : tp === 1 ? " 1회" : ""}</div>
+              <code className="payload">{JSON.stringify(res.payload)}</code>
+            </details>
+            <div className="cap" style={{ marginTop: 8 }}>명령 번호와 보낸 시각(ts)은 보낼 때 서버가 넣는다. 단말은 다음 송신 뒤 받을 수 있다(최대 약 5분).</div>
           </div>
           {res.expected === 0 && <div className="err">운영(ACTIVE) 단말이 없어 보낼 수 없다(NO_TARGETS).</div>}
           {res.expected > 0 && res.online === 0 && <div className="err">대상 단말이 모두 오프라인이라 보낼 수 없다(NO_ONLINE_TARGETS).</div>}
@@ -422,7 +425,7 @@ export function CommandResult({ seq, onClose, onDevice }: { seq: number; onClose
     setErr(null);
     try {
       const r = await api.retryCommand(seq, null);
-      setMsg(`개별 topic 으로 ${nf(r.resent)}대 다시 보냄 (같은 seq, 새 ts)`);
+      setMsg(`단말별 주소로 ${nf(r.resent)}대 다시 보냄 (같은 명령 번호, 새 ts)`);
       setN((x) => x + 1);
     } catch (e) {
       setErr(errorText(e));
@@ -458,7 +461,7 @@ export function CommandResult({ seq, onClose, onDevice }: { seq: number; onClose
       </h4>
       <div className="recv">
         <div>발행함 <b>{hms(c.sent_at)}</b> · {c.created_by} · {str(c.target_label)} · {cmdText(c)}</div>
-        <div>단말 응답: {c.finished_at ? `끝남 ${hms(c.finished_at)}` : "COMMAND_ACK 수신 중"}</div>
+        <div>단말 응답: {c.finished_at ? `끝남 ${hms(c.finished_at)}` : "응답 받는 중"}</div>
       </div>
       <div className="pbar">
         {segs.map(([s, v]) => v > 0 && <i key={s} style={{ flexGrow: v, background: ACK_VIEW[s][2] }} title={`${ACK_VIEW[s][0]} ${v}`} />)}
@@ -475,7 +478,7 @@ export function CommandResult({ seq, onClose, onDevice }: { seq: number; onClose
       </div>
       <div className="bar2">
         <button type="button" className="btn" disabled={busy || !!c.finished_at || retryable === 0} onClick={retry}
-          title="무응답(pending)·만료(EXPIRED) 대상만 개별 topic 으로 같은 seq 재발송">
+          title="무응답(pending)·만료(EXPIRED) 대상만 단말별 주소로 같은 명령 번호 재발송">
           무응답·만료 개별 재시도 ({nf(retryable)})
         </button>
         <span className="cap">{wait.sec}초 동안 응답이 없으면 다시 보내고(모두 {wait.n}회), 그래도 없으면 {wait.total}초 뒤 무응답(실패)으로 끝난다. 오프라인 단말은 보내지 않는다.</span>

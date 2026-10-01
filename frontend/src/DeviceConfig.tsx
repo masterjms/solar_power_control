@@ -486,7 +486,7 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
     !st ? "불러오는 중" :
     state !== "ACTIVE" ? "쓰기는 운영(ACTIVE) 단말만" :
     !values ? "아직 단말에서 읽지 않았다 — 먼저 '단말에서 읽기'" :
-    pending ? `${pending.kind} seq ${pending.seq} 응답 대기 중` :
+    pending ? `${pending.kind} 명령 번호 ${pending.seq} 응답 대기 중` :
     rangeBad.length ? `범위를 벗어난 값: ${rangeBad.map((i) => i.label).join(", ")}` :
     rules.length ? "규칙 위반 — 빨간 줄을 고친다" :
     withTbl && !tblOk ? "1년 스케줄 조건을 고친다" :
@@ -636,11 +636,11 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
         <div className="grid5">
           <Met l="마지막 전체 읽기" v={st.read_at ? localTime(st.read_at) : "읽지 않음"} h={st.read_at ? relTime(st.read_at) : "서버는 아직 이 단말 값을 모른다"} cls={st.read_at ? "" : "o"} />
           <Met l="설정 지문 sh (DB / 단말)" v={<span className="mono">{str(st.sh_db)} / {str(st.sh_device)}</span>}
-            h={st.sh_db && st.sh_device ? (st.sh_db === st.sh_device ? "같음" : "다름") : "-"} cls={st.sh_db && st.sh_device && st.sh_db !== st.sh_device ? "a" : ""} />
+            h={st.sh_db && st.sh_device ? (st.sh_db === st.sh_device ? "단말과 같음" : "단말과 다름") : "-"} cls={st.sh_db && st.sh_device && st.sh_db !== st.sh_device ? "a" : ""} />
           <Met l="저장 번호 ss (기준 / Telemetry)" v={`${str(st.ss_known)} / ${str(st.ss_telemetry)}`}
-            h={ssDiff ? "다름 — 현장에서 저장함" : "현장 저장 신호"} cls={ssDiff ? "w" : ""} />
+            h={ssDiff ? "단말과 다름 — 현장에서 저장함" : "현장 저장 신호"} cls={ssDiff ? "w" : ""} />
           <Met l="대기 중 요청" v={pending ? `${pending.kind} #${pending.seq}` : "없음"}
-            h={pending ? `시도 ${pending.attempts}/3 · 보냄 ${localTime(pending.sent_at)}` : "무응답 30초면 새 seq 로 재발송(최대 3회)"} cls={pending ? "w" : ""} />
+            h={pending ? `시도 ${pending.attempts}/3 · 보냄 ${localTime(pending.sent_at)}` : "무응답 30초면 새 명령 번호로 재발송(최대 3회)"} cls={pending ? "w" : ""} />
           <Met l="마지막 결과" v={st.last_result ?? "-"} h={localTime(st.last_result_at)} cls={st.last_result && st.last_result !== "OK" ? "a" : st.last_result === "OK" ? "k" : ""} />
         </div>
 
@@ -675,7 +675,7 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
         )}
         {sync === "device_changed" && (
           <div className="confirm">
-            <b>단말 값이 바뀜</b> — 읽어 보니 단말 값이 DB 와 다르다(sh {str(st.sh_device)} ≠ {str(st.sh_db)}). 서버는 자동으로 덮어쓰지 않는다. 어느 쪽을 기준으로 할지 고른다.
+            <b>단말과 다름</b> — 읽어 보니 단말 값이 DB 와 다르다(sh {str(st.sh_device)} ≠ {str(st.sh_db)}). 서버는 자동으로 덮어쓰지 않는다. 어느 쪽을 기준으로 할지 고른다.
             <div style={{ overflowX: "auto", marginTop: 8 }}>
               <table className="mini">
                 <thead><tr><th>항목</th><th className="n">서버(DB)</th><th className="n">단말</th></tr></thead>
@@ -697,7 +697,7 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
 
         {sent && (
           <div className="recv">
-            <div>발행함: <b>{sent.label} · {sent.kind} seq {sent.r.seq}</b> · {localTime(sent.r.sent_at)}
+            <div>발행함: <b>{sent.label} · {sent.kind} 명령 번호 {sent.r.seq}</b> · {localTime(sent.r.sent_at)}
               {sent.r.sh_expected ? <> · 예상 sh <span className="mono">{sent.r.sh_expected}</span></> : null}
               {sent.r.payload_bytes ? ` · ${sent.r.payload_bytes}B` : ""}</div>
             <div>단말 응답: {sentDone

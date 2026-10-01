@@ -226,6 +226,11 @@ class TelemetryOut(BaseModel):
     pp: int | None
     li: int | None
     cs: int | None
+    #: 일일 전력량(kWh×100, 문제점 23번). 옛 펌웨어는 없음(None).
+    eg: int | None = None
+    eu: int | None = None
+    yg: int | None = None
+    yu: int | None = None
 
 
 class EventOut(BaseModel):
@@ -265,9 +270,13 @@ class MapPoint(BaseModel):
 
 
 class EnergyToday(BaseModel):
-    """오늘(KST) 누적 — core/energy.py."""
+    """오늘(KST) 누적 — core/energy.py. 값을 모르면 None(화면 공백)."""
 
     samples: int
-    gen_wh: float
-    use_wh: float
-    co2_g: float
+    gen_wh: float | None
+    use_wh: float | None
+    co2_g: float | None
+    #: MPPT 무응답(er 0x0010) — 화면은 "값 없음"(문제점 23번).
+    no_value: bool = False
+    #: device = 단말이 보낸 eg·eu, server = 옛 펌웨어라 서버가 적분.
+    source: str = "device"

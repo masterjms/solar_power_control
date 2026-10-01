@@ -28,8 +28,8 @@ const PAGES: { id: Page; ico: string; label: string; title: string; superOnly?: 
   { id: "group", ico: "⊞", label: "그룹 제어", title: "그룹 제어" },
   { id: "regions", ico: "⌥", label: "지역(법정동)", title: "지역(법정동) 트리" },
   { id: "config", ico: "≣", label: "단말 설정", title: "단말 설정" },
-  { id: "schedule", ico: "◷", label: "스케줄 배포", title: "스케줄 배포" },
-  { id: "profiles", ico: "◫", label: "프로필(설정)", title: "설정 프로필" },
+  { id: "schedule", ico: "◷", label: "그룹 스케줄 변경", title: "그룹 스케줄 변경" },
+  { id: "profiles", ico: "◫", label: "통신 주기 설정", title: "통신 주기 설정" },
   { id: "server", ico: "☰", label: "서버 설정", title: "서버 설정", superOnly: true },
   { id: "system", ico: "⚙", label: "시스템", title: "시스템" },
 ];

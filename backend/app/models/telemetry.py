@@ -67,3 +67,7 @@ class TelemetryDaily(Base):
     sc_max: Mapped[int | None] = mapped_column(SmallInteger)
     #: 점등 시간 추정(분).
     on_minutes: Mapped[int | None] = mapped_column(Integer)
+    #: 단말(MPPT 보드)이 적산한 그날 발전량·사용량(Wh). 다음날 00:05 뒤 첫 yg·yu, 0 이면 그날 마지막 eg·eu
+    #: (문제점 23번). 옛 펌웨어·MPPT 무응답이면 NULL.
+    gen_wh: Mapped[int | None] = mapped_column(Integer)
+    use_wh: Mapped[int | None] = mapped_column(Integer)

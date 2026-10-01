@@ -286,6 +286,7 @@ async def list_telemetry(
             received_at=r.received_at, ts_device=r.ts_device, sq=r.sq, fw=r.fw, ss=r.ss,
             cv=r.cv, er=r.er, on=r.on_, md=r.md, pw=[r.pw1, r.pw2, r.pw3], bv=r.bv, bi=r.bi,
             sc=r.sc, pp=r.pp, li=r.li, cs=r.cs,
+            **{k: _int_or_none((r.raw or {}).get(k)) for k in ("eg", "eu", "yg", "yu")},
         )
         for r in rows
     ]

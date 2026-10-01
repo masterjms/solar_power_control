@@ -645,6 +645,8 @@ class SimDevice:
 
         self.sq = 0
         self.er = 0
+        #: 일일 전력량 (eg, eu, yg, yu) kWh×100 — 단말 빌드 2026-10-01-1. None 이면 싣지 않는다(옛 펌웨어).
+        self.daily_energy: tuple[int, int, int, int] | None = (120, 85, 160, 140)
         #: §16.6.1 er 앞당김 — 마지막으로 보낸 Telemetry 의 er, 앞당김 보고 시각들, 예약 task.
         self._er_reported = 0
         self._er_early_times: list[float] = []
@@ -751,6 +753,11 @@ class SimDevice:
             "bv": sample["bv"], "bi": sample["bi"], "sc": sample["sc"],
             "pp": sample["pp"], "li": sample["li"], "cs": sample["cs"],
         }
+        # 일일 전력량(단말 빌드 2026-10-01-1, kWh×100): 금일 발전·사용, 전일 발전·사용.
+        # MPPT 무응답(er 0x0010)이면 네 값 모두 0. daily_energy=None 이면 옛 펌웨어처럼 싣지 않는다.
+        if self.daily_energy is not None:
+            eg, eu, yg, yu = (0, 0, 0, 0) if self.er & 0x0010 else self.daily_energy
+            payload.update({"eg": eg, "eu": eu, "yg": yg, "yu": yu})
         self.sq = (self.sq + 1) % SQ_MOD
         return payload
 

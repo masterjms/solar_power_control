@@ -17,6 +17,12 @@ RTC 가 없어 단말은 달력 날짜를 모른다.
 
 Δt 가 MAX_GAP_SEC 를 넘는 구간(단말이 꺼져 있었거나 통신 두절)은 적분에서 뺀다 —
 2시간 전 값과 지금 값 사이를 직선으로 잇는 것은 발전량을 지어내는 것이다.
+
+2026-10-01(문제점 23번, 단말 빌드 2026-10-01-1): 단말이 일일 전력량(eg·eu 금일, yg·yu 전일, kWh×100)을 보낸다.
+그날의 발전량·사용량 `gen_wh`·`use_wh`(Wh)는 **단말 값**으로 적는다(_DEVICE_ENERGY_SQL):
+    다음날 00:05(KST) 뒤 처음 받은 yg·yu. 0 이면(또는 아직 못 받았으면) 그날 마지막 eg·eu.
+MPPT 무응답(er 0x0010)인 Telemetry 는 네 값이 0 이라 쓰지 않는다. 옛 펌웨어는 NULL 로 남는다
+(pp_wh·li_ah 적분은 그대로 같이 적는다 — 비교·옛 단말용).
 """
 
 from __future__ import annotations
@@ -84,6 +90,43 @@ _ROLLUP_SQL = text(
 )
 
 
+_NUM = "~ '^[0-9]+$'"
+_DEVICE_ENERGY_SQL = text(
+    f"""
+    WITH nxt AS (
+      SELECT DISTINCT ON (uuid) uuid,
+             CASE WHEN raw->>'yg' {_NUM} THEN (raw->>'yg')::int END AS yg,
+             CASE WHEN raw->>'yu' {_NUM} THEN (raw->>'yu')::int END AS yu
+      FROM telemetry
+      WHERE received_at >= :next_from AND received_at < :next_end
+        AND raw ? 'yg' AND coalesce(er, 0) & 16 = 0
+      ORDER BY uuid, received_at
+    ),
+    last AS (
+      SELECT DISTINCT ON (uuid) uuid,
+             CASE WHEN raw->>'eg' {_NUM} THEN (raw->>'eg')::int END AS eg,
+             CASE WHEN raw->>'eu' {_NUM} THEN (raw->>'eu')::int END AS eu
+      FROM telemetry
+      WHERE received_at >= :start AND received_at < :end
+        AND raw ? 'eg' AND coalesce(er, 0) & 16 = 0
+      ORDER BY uuid, received_at DESC
+    ),
+    v AS (
+      SELECT coalesce(n.uuid, l.uuid) AS uuid,
+             CASE WHEN coalesce(n.yg, 0) > 0 THEN n.yg ELSE l.eg END AS g,
+             CASE WHEN coalesce(n.yu, 0) > 0 THEN n.yu ELSE l.eu END AS u
+      FROM nxt n FULL JOIN last l ON l.uuid = n.uuid
+    )
+    INSERT INTO telemetry_daily (uuid, day, samples, gen_wh, use_wh)
+    SELECT uuid, :day, 0, g * 10, u * 10 FROM v WHERE g IS NOT NULL OR u IS NOT NULL
+    ON CONFLICT (uuid, day) DO UPDATE SET gen_wh = EXCLUDED.gen_wh, use_wh = EXCLUDED.use_wh
+    """
+)
+
+#: 전일 값(yg·yu)을 읽기 시작하는 시각 — 다음날 00:05(KST). 자정 직후는 보드가 아직 넘기기 전일 수 있다.
+NEXT_DAY_FROM = dt.timedelta(minutes=5)
+
+
 def kst_day_bounds(day: dt.date) -> tuple[dt.datetime, dt.datetime]:
     """KST 하루의 [시작, 끝) 을 UTC 로."""
     start = dt.datetime(day.year, day.month, day.day, tzinfo=KST)
@@ -102,6 +145,11 @@ async def rollup_day(conn: AsyncConnection, day: dt.date) -> int:
     result = await conn.execute(
         _ROLLUP_SQL, {"start": start, "end": end, "day": day, "max_gap": MAX_GAP_SEC}
     )
+    # 단말이 적산한 그날 값(문제점 23번). 다음날 Telemetry 가 더 쌓인 뒤 다시 돌리면 yg·yu 로 바뀐다.
+    await conn.execute(_DEVICE_ENERGY_SQL, {
+        "start": start, "end": end, "day": day,
+        "next_from": end + NEXT_DAY_FROM, "next_end": end + dt.timedelta(days=1),
+    })
     return int(result.rowcount or 0)
 
 

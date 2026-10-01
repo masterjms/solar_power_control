@@ -59,7 +59,7 @@ export function RemoteBadge({ d, onReleased }: { d: Device; onReleased?: (msg: s
   }
   return (
     <span className="bar2" style={{ flexWrap: "nowrap" }}>
-      <span className="badge b-blue" title={`override ${d.override_act ?? "?"} · ${d.override_level ?? ""} · seq ${d.override_seq ?? "-"} · until ${d.override_until ?? "-"}`}>원격 {min}분 남음</span>
+      <span className="badge b-blue" title={`원격 조작 ${d.override_act ?? "?"} · ${d.override_level ?? ""} · 명령 번호 ${d.override_seq ?? "-"} · until ${d.override_until ?? "-"}`}>원격 {min}분 남음</span>
       <button type="button" className="btn sm" disabled={busy} onClick={release}>해제</button>
     </span>
   );
@@ -121,8 +121,8 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
           <option value="true">온라인</option>
           <option value="false">오프라인</option>
         </select>
-        <label className="chk2" title="remote=true — Telemetry md=2 이고 override 유효">
-          <input type="checkbox" checked={remote} onChange={(e) => (setRemote(e.target.checked), setPage(1))} />원격 제어 중만
+        <label className="chk2" title="remote=true — Telemetry md=2 이고 원격 조작 유효">
+          <input type="checkbox" checked={remote} onChange={(e) => (setRemote(e.target.checked), setPage(1))} />원격 조작 중만
         </label>
         <input type="search" placeholder="시설명·UUID·주소·지역 (한 글자도 됨)" aria-label="검색" value={text} onChange={(e) => setText(e.target.value)} style={{ width: 260 }} />
         <span className="sp" />

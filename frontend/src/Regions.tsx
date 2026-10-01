@@ -13,7 +13,7 @@ interface Props {
   onSelect: (uuid: string) => void;
 }
 
-const LEVEL_LABEL: Record<string, string> = { sido: "시도", sigungu: "시군구", dong: "법정동(말단)" };
+const LEVEL_LABEL: Record<string, string> = { sido: "시도", sigungu: "시군구", dong: "법정동(동)" };
 
 export default function Regions({ role, health, tick, onSelect }: Props) {
   const { tree, list, error, reload } = useRegions(tick);
@@ -24,12 +24,12 @@ export default function Regions({ role, health, tick, onSelect }: Props) {
 
   return (
     <div className="explorer">
-      <Card title="지역 트리" meta={list ? `${nf(list.length)}개 노드 · 배정 단말 ${nf(tree.total)}대` : ""}>
+      <Card title="지역 트리" meta={list ? `${nf(list.length)}개 지역 · 배정 단말 ${nf(tree.total)}대` : ""}>
         <input type="search" placeholder="이름 · 법정동코드로 찾기" aria-label="트리 필터" value={filter} onChange={(e) => setFilter(e.target.value)} />
         {error && <div className="err">{error}</div>}
         <RegionTree tree={tree} selected={sel} onSelect={setSel} filter={filter} className="tall"
           empty={list ? "아직 지역이 없습니다. 오른쪽 '법정동 추가'로 만든다." : "불러오는 중…"} />
-        <div className="cap">시도 &gt; 시군구 &gt; 법정동(말단). 말단만 그룹이다(group = 법정동코드 + 00). 숫자 = 그 아래 단말 수.</div>
+        <div className="cap">시도 &gt; 시군구 &gt; 법정동(동). 동만 그룹이다(group = 법정동코드 + 00). 숫자 = 그 아래 단말 수.</div>
       </Card>
 
       <div className="col">
@@ -105,7 +105,7 @@ function NodeCard({ nodeId, tree, isSuper, tick, onSelect, onChanged, onDeleted 
         <div className="met"><div className="l">단말 (하위 전체)</div><div className="v">{nf(r.device_count)}대</div><div className="h">운영(ACTIVE) {nf(r.active_count)}대</div></div>
         <div className="met"><div className="l">{leaf ? "법정동코드 / group" : "하위"}</div>
           <div className="v mono">{leaf ? str(r.bjd_code) : `${nf(node.children.length)}개`}</div>
-          <div className="h">{leaf ? `group ${str(r.grp)} → iotlight/group/${str(r.grp)}/cmd` : "말단이 아니라 그룹이 아니다"}</div></div>
+          <div className="h">{leaf ? `group ${str(r.grp)} → iotlight/group/${str(r.grp)}/cmd` : "동이 아니라 그룹이 아니다"}</div></div>
         <div className="met"><div className="l">좌표</div><div className="v">{r.lat !== null ? `${r.lat}, ${r.lon}` : "-"}</div><div className="h">"오늘 밤" 계산 기준(없으면 서울)</div></div>
         <div className="met"><div className="l">id</div><div className="v">{r.id}</div><div className="h">parent {str(r.parent_id)}</div></div>
       </div>
@@ -187,7 +187,7 @@ function AddRegion({ isSuper, dev, onAdded }: { isSuper: boolean; dev: boolean; 
     setMsg(null);
     try {
       const r = await api.createRegionFromAddress({ pick: g });
-      setMsg(`${g.sido} > ${g.sigungu} > ${r.name} (${str(r.bjd_code)}) — 추가됨(이미 있으면 그 노드)`);
+      setMsg(`${g.sido} > ${g.sigungu} > ${r.name} (${str(r.bjd_code)}) — 추가됨(이미 있으면 그 지역)`);
       onAdded(r.id);
     } catch (x) {
       setErr(errorText(x));
@@ -227,7 +227,7 @@ function AddRegion({ isSuper, dev, onAdded }: { isSuper: boolean; dev: boolean; 
         <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="예: 경기도 군포시 금산로 91 / 안양동" aria-label="주소 검색" style={{ flex: 1, minWidth: 200 }} />
         <button type="submit" className="btn pri" disabled={busy || !q.trim()}>검색</button>
       </form>
-      <div className="cap">결과를 고르면 시도·시군구·법정동을 찾거나 만들고(상위까지), 말단을 트리에 넣는다. 코드를 손으로 치지 않는다.</div>
+      <div className="cap">결과를 고르면 시도·시군구·법정동을 찾거나 만들고(상위까지), 동을 트리에 넣는다. 코드를 손으로 치지 않는다.</div>
       {res && (
         <ul className="picklist">
           {res.map((g, i) => (

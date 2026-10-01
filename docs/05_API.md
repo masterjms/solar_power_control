@@ -79,12 +79,14 @@ ACTIVE 단말에는 즉시 CONFIG_SET 을 보내지 않는다 — 다음 송신 
 `lit`(2026-09-29, 문제점 13번) = 점등 중인가 — 마지막 Telemetry `pw` 앞 두 채널(주등·입간판) 중 하나라도 > 0, `pw` 가 없으면 `on == 1`, Telemetry 없으면 null. `bv` = 마지막 배터리 전압(×100 V). 오프라인이어도 둘 다 마지막 값.
 `/{uuid}` 보다 먼저 선언(경로 충돌 방지).
 
-### `GET /api/devices/energy?uuid=A&uuid=B…` (최대 500) → 오늘 누적 (문제점 #11)
-KST 0시~지금 `{uuid: {"samples","gen_wh","use_wh","co2_g"}}`. 오늘 Telemetry 가 없는 단말은 빠진다(화면은 공백).
-발전 = ∫pp, 사용 = ∫li·bv (사다리꼴, 간격 2시간 넘으면 빼기 — daily_rollup 과 같은 규칙), 감축 = 발전 kWh × `GHG_KG_PER_KWH`(기본 0.4781 kgCO2eq/kWh, .env 로 바꿈). `core/energy.py`.
+### `GET /api/devices/energy?uuid=A&uuid=B…` (최대 500) → 오늘 발전량·사용량 (문제점 #11, #23)
+`{uuid: {"samples","gen_wh","use_wh","co2_g","no_value","source"}}`.
+**2026-10-01(문제점 23번): 단말이 보낸 값을 쓴다** — `gen_wh` = 최신 Telemetry `eg`×10, `use_wh` = `eu`×10(`eg`·`eu` 는 kWh×100), `source:"device"`.
+MPPT 무응답(er 0x0010)이면 `no_value:true`·값 null(화면 "값 없음"), 마지막 Telemetry 가 오늘 것이 아니면 값 null(공백).
+`eg` 가 없는 옛 펌웨어만 아래 서버 계산(`source:"server"`, 오늘 Telemetry 가 없으면 빠진다): 발전 = ∫pp, 사용 = ∫li·bv (사다리꼴, 간격 2시간 넘으면 빼기 — daily_rollup 과 같은 규칙), 감축 = 발전 kWh × `GHG_KG_PER_KWH`(기본 0.4781 kgCO2eq/kWh, .env 로 바꿈). `core/energy.py`.
 
 ### `GET /api/devices/{uuid}` → `DeviceOut`. 404 `DEVICE_NOT_FOUND`.
-### `GET /api/devices/{uuid}/telemetry?from=&to=&limit=200` (변경 없음)
+### `GET /api/devices/{uuid}/telemetry?from=&to=&limit=200` — 2026-10-01 `eg`·`eu`·`yg`·`yu` 추가(없으면 null)
 ### `GET /api/devices/{uuid}/events?kind=&limit=100` (kind 목록은 docs/03 device_event)
 
 ### `PATCH /api/devices/{uuid}/state`

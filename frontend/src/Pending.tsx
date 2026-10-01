@@ -42,7 +42,7 @@ export default function Pending({ tick, onSelect }: Props) {
       <Card title="승인 대기 단말" className="full" meta={`${nf(total)}대`}>
         <div className="cap">
           서버에 처음 접속(REGISTER)했지만 아직 승인하지 않은 단말이다. 승인 전에는 Telemetry 를 보내지 않고, 조명은 펌웨어 기본 스케줄로
-          점등한다. 행을 누르면 <b>승인 창</b>이 열린다 — 단말기 정보 확인 → 설치 정보·지도 위치 → 프로필 → 설정 변경 → 승인/거절/폐기.
+          점등한다. 행을 누르면 <b>승인 창</b>이 열린다 — 단말기 정보 확인 → 설치 정보·지도 위치 → 통신 주기 설정 → 설정 변경 → 승인/거절/폐기.
         </div>
         {error && <div className="err">{error}</div>}
         <div className="tw">

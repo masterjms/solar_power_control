@@ -131,10 +131,10 @@ export function SiteHint({ value }: { value: string }) {
 
 const SYNC_LABEL: Record<SettingsSync, [string, string, string]> = {
   unknown: ["읽지 않음", "b-off", "서버가 아직 단말 운전 설정을 모른다 — 단말에서 읽기"],
-  synced: ["동기", "b-ok", "DB 값 = 단말 값(sh 일치)"],
-  writing: ["쓰는 중", "b-blue", "SETTINGS_SET 보냄, SETTINGS_ACK 대기"],
+  synced: ["단말과 같음", "b-ok", "DB 값 = 단말 값(sh 일치)"],
+  writing: ["쓰는 중", "b-blue", "SETTINGS_SET 보냄, 응답 대기"],
   local_saved: ["현장에서 저장함", "b-warn", "Telemetry ss 가 바뀜 — 현장 PC 도구·OLED 로 저장했다. 다시 읽어 확인"],
-  device_changed: ["단말 값이 바뀜", "b-alarm", "읽어 보니 단말 sh 가 DB 와 다름 — 받아들이기 또는 되돌리기"],
+  device_changed: ["단말과 다름", "b-alarm", "읽어 보니 단말 sh 가 DB 와 다름 — 받아들이기 또는 되돌리기"],
 };
 
 export function syncLabel(s: SettingsSync | null | undefined): string {

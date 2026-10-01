@@ -34,6 +34,11 @@ export interface Telemetry {
   pp?: number;
   li?: number;
   cs?: number;
+  /** 일일 전력량 kWh×100 — 금일 발전·사용, 전일 발전·사용(단말 빌드 2026-10-01-1, 문제점 23번). 옛 펌웨어는 없음. */
+  eg?: number | null;
+  eu?: number | null;
+  yg?: number | null;
+  yu?: number | null;
 }
 
 export type DeviceState = "PENDING" | "ACTIVE" | "SUSPENDED" | "REJECTED" | "RETIRED";
@@ -118,12 +123,16 @@ export interface MapPoint {
   node_name: string | null;
 }
 
-/** GET /api/devices/energy — 오늘(KST 0시~지금) 누적. */
+/** GET /api/devices/energy — 오늘 발전량·사용량. 단말이 보낸 eg·eu(문제점 23번), 옛 펌웨어만 서버 계산. */
 export interface EnergyToday {
   samples: number;
-  gen_wh: number;
-  use_wh: number;
-  co2_g: number;
+  /** 모르면 null(화면 공백). */
+  gen_wh: number | null;
+  use_wh: number | null;
+  co2_g: number | null;
+  /** MPPT 무응답 — 화면은 "값 없음". */
+  no_value?: boolean;
+  source?: "device" | "server";
 }
 
 /** GET /api/ui-config */

@@ -4,7 +4,7 @@ import {
   errorText,
 } from "./api";
 import { SeverityBadge, alarmValue, durText as almDur } from "./Alarms";
-import { div100, erLabel, eventSummary, hex, localTime, mdLabel, pct, relTime, str } from "./format";
+import { dayEnergy, div100, erLabel, eventSummary, hex, localTime, mdLabel, pct, relTime, str } from "./format";
 import { Battery, Lamp, Met, OnlineMark, SiteHint, StateBadge, SyncBadge } from "./ui";
 import { CommandForm, CommandHistory, CommandResult, durText, useLedBasis } from "./Command";
 import { RemoteBadge } from "./DeviceList";
@@ -188,7 +188,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
       // SUSPENDED / REJECTED / PENDING: 단말이 받아도 Telemetry 를 안 보낼 수 있다 → 아무 수신이나 기준(참고용)
       if (after(d.last_seen_at, d.register_ack_at))
         return { done: true, text: `이후 수신 있음 ${localTime(d.last_seen_at)} (retain 이라 재접속·다음 송신 때 받음. 직접 확인 수단 없음)` };
-      return { done: false, text: "대기 중 — retain 이라 다음 단말 송신·재접속 때 받음(직접 ACK 없음)" };
+      return { done: false, text: "대기 중 — retain 이라 다음 단말 송신·재접속 때 받음(직접 응답 없음)" };
     }
     // config
     if (configAck) return { done: true, text: `CONFIG_ACK 받음 ${localTime(configAck.received_at)} — ${eventSummary("CONFIG_ACK", configAck.payload)}` };
@@ -316,7 +316,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
       const r = await api.ping(uuid);
       const deadline = Date.now() + PONG_WAIT_MS;
       while (Date.now() < deadline) {
-        setActionMsg(`PING 발행 seq=${r.seq} — PONG 대기 중… (${Math.ceil((deadline - Date.now()) / 1000)}초 남음. 단말 송신 직후에만 도착하므로 수십 초는 정상)`);
+        setActionMsg(`PING 발행 (명령 번호 ${r.seq}) — PONG 대기 중… (${Math.ceil((deadline - Date.now()) / 1000)}초 남음. 단말 송신 직후에만 도착하므로 수십 초는 정상)`);
         await new Promise((res) => setTimeout(res, 2000));
         const pongs = await api.events(uuid, 5, "PONG");
         const hit = pongs.find((p) => {
@@ -324,12 +324,12 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
           return Date.parse(p.received_at) >= since && (seq === undefined || seq === r.seq);
         });
         if (hit) {
-          setActionMsg(`PONG 수신 (seq=${r.seq}, ${localTime(hit.received_at)}) ${JSON.stringify(hit.payload)}`);
+          setActionMsg(`PONG 수신 (명령 번호 ${r.seq}, ${localTime(hit.received_at)}) ${JSON.stringify(hit.payload)}`);
           load();
           return;
         }
       }
-      setActionMsg(`PING seq=${r.seq} — ${PONG_WAIT_MS / 1000}초 안에 PONG 없음 (타임아웃)`);
+      setActionMsg(`PING (명령 번호 ${r.seq}) — ${PONG_WAIT_MS / 1000}초 안에 PONG 없음 (타임아웃)`);
     } catch (err) {
       setActionErr(errorText(err));
     }
@@ -382,7 +382,14 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
           <div className="grid2">
             <Met l="조명" v={<Lamp on={lt?.on} online={dev.is_online} />} h={lt ? mdLabel(lt.md) : "Telemetry 없음"} />
             <Met l="배터리" v={<Battery sc={lt?.sc} />} h={lt ? `${div100(lt.bv, "V")} · ${div100(lt.bi, "A", true)}` : ""} cls={lt && lt.sc !== undefined && lt.sc < 20 ? "a" : ""} />
-            <Met l="패널 출력 / 부하 전류" v={lt ? `${div100(lt.pp, "W")} / ${div100(lt.li, "A")}` : "-"} />
+            <Met l="패널 출력 / 부하 전류" v={lt ? `${div100(lt.pp, "W")} / ${div100(lt.li, "A")}` : "-"} h="부하 전류 = 부하 1 + 부하 2" />
+            {/* 일일 전력량 — 단말(MPPT 보드)이 적산한 값(문제점 23번). 옛 펌웨어면 칸을 만들지 않는다. */}
+            {lt && lt.eg !== undefined && (
+              <>
+                <Met l="오늘 발전 / 사용" v={`${dayEnergy(lt.eg, lt.er) || "-"} / ${dayEnergy(lt.eu, lt.er) || "-"}`} h="단말이 잰 값 · 자정에 0 으로" />
+                <Met l="어제 발전 / 사용" v={`${dayEnergy(lt.yg, lt.er) || "-"} / ${dayEnergy(lt.yu, lt.er) || "-"}`} h="단말이 잰 값" />
+              </>
+            )}
             <Met l="오류 er" v={erLabel(lt?.er)} cls={lt?.er ? "a" : ""} />
             <Met l="통신" v={<OnlineMark on={dev.is_online} />} h={`브로커 online=${str(dev.online)} · lost ${dev.lost_count} · reboot ${dev.reboot_count}`} cls={dev.is_online ? "" : "o"} />
             <Met l="설정 버전 cv (서버/단말)" v={`${dev.cv_server} / ${str(dev.cv_device)}`} h={dev.config_pending ? "CONFIG 미반영" : dev.cv_server === 0 ? "아직 보낸 적 없음" : "일치"} cls={dev.config_pending ? "w" : ""} />
@@ -406,7 +413,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
             지역: <b>{dev.node_path ?? "미배정"}</b>{dev.grp ? ` · grp ${dev.grp}` : ""}
             {typeof nodeSel === "number" && nodeSel !== dev.node_id && <> → <b className="c-blue">{nodeLabel}</b> (승인하면 같이 배정)</>}
             {!dev.node_id && typeof nodeSel !== "number" && (dev.state === "PENDING" || dev.state === "SUSPENDED") &&
-              " — 승인하려면 말단 법정동이 필요하다(NODE_REQUIRED). 아래 설정의 '지역'에서 고르거나 등록·승인 화면을 쓴다."}
+              " — 승인하려면 법정동이 필요하다(NODE_REQUIRED). 아래 설정의 '지역'에서 고르거나 등록·승인 화면을 쓴다."}
           </div>
           <div className="bar2" style={{ marginTop: 12 }}>
             {ACTIONS[dev.state].map((a) => (
@@ -437,7 +444,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
             <Met l="config_sent_at" v={localTime(dev.config_sent_at)} h={`grp ${str(dev.grp)}`} />
           </div>
           <form onSubmit={submitConfig} onChange={() => (formTouched.current = true)} className="form2" style={{ marginTop: 12 }}>
-            <label className="w2">프로필
+            <label className="w2">통신 주기 설정
               <select value={profileId} onChange={(e) => setProfileId(e.target.value)}>
                 {profiles.map((p) => (
                   <option key={p.id} value={p.id}>{p.name} (ti {p.ti} / ka {p.ka})</option>
@@ -445,12 +452,12 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
                 {!profiles.some((p) => p.id === dev.profile_id) && <option value={dev.profile_id}>#{dev.profile_id} {dev.profile_name ?? ""}</option>}
               </select>
             </label>
-            <label>ti_override <small>빈칸 = 프로필 값 → 적용 {tiEff}</small><input type="number" min={60} max={3600} value={tiOv} placeholder="프로필 값" onChange={(e) => setTiOv(e.target.value)} /></label>
-            <label>ka_override <small>빈칸 = 프로필 값 → 적용 {kaEff}</small><input type="number" min={60} max={1800} value={kaOv} placeholder="프로필 값" onChange={(e) => setKaOv(e.target.value)} /></label>
+            <label>ti_override <small>빈칸 = 주기 설정 값 → 적용 {tiEff}</small><input type="number" min={60} max={3600} value={tiOv} placeholder="주기 설정 값" onChange={(e) => setTiOv(e.target.value)} /></label>
+            <label>ka_override <small>빈칸 = 주기 설정 값 → 적용 {kaEff}</small><input type="number" min={60} max={1800} value={kaOv} placeholder="주기 설정 값" onChange={(e) => setKaOv(e.target.value)} /></label>
             <label>위도 lat<input type="number" step="any" value={lat} onChange={(e) => setLat(e.target.value)} /></label>
             <label>경도 lon<input type="number" step="any" value={lon} onChange={(e) => setLon(e.target.value)} /></label>
             <label>시설명 site <SiteHint value={site} /><input value={site} maxLength={24} onChange={(e) => setSite(e.target.value)} /></label>
-            <label>지역 (말단 법정동) <small>bjd_code·grp 는 지역에서 자동</small>
+            <label>지역 (법정동) <small>bjd_code·grp 는 지역에서 자동</small>
               <span className="bar2" style={{ flexWrap: "nowrap" }}>
                 <span className="mono" style={{ flex: 1, minWidth: 0 }} title={dev.node_path ?? ""}>
                   {nodeSel === undefined ? (dev.node_name ?? "미배정") : nodeSel === null ? "배정 해제" : nodeLabel}
@@ -477,7 +484,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
               응답: cv_server={cfgRes.cv_server} ti={cfgRes.ti_effective} ka={cfgRes.ka_effective} site={str(cfgRes.site)} published=<b className={cfgRes.published ? "c-ok" : "c-warn"}>{String(cfgRes.published)}</b>
               {!cfgRes.published && cfgRes.reason === "NOT_ACTIVE" && <b className="c-warn"> — 승인 후 첫 Telemetry 때 전송됨</b>}
               {!cfgRes.published && cfgRes.reason && cfgRes.reason !== "NOT_ACTIVE" && <b className="c-warn"> — reason={cfgRes.reason}</b>}
-              {cfgRes.payload !== undefined && cfgRes.payload !== null && <div>payload: {JSON.stringify(cfgRes.payload)}</div>}
+              {cfgRes.payload !== undefined && cfgRes.payload !== null && <details><summary>자세히</summary>보낸 내용: {JSON.stringify(cfgRes.payload)}</details>}
               {cfgRes.register_ack_republished && <div>REGISTER_ACK 재발행함(site·grp)</div>}
             </code>
           )}
@@ -517,8 +524,8 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
           <h4>원격 제어 <span>개별 COMMAND · device/…/cmd · 채널마다 나중 명령이 이긴다(경로 무관)</span></h4>
           <div className="grid2">
             <Met l="운전 모드 md" v={mdLabel(lt?.md)} h={lt ? "Telemetry 기준" : "Telemetry 없음"} />
-            <Met l="원격 override" v={dev.remote_active ? `원격 ${Math.max(1, Math.ceil((dev.remote_remaining_sec ?? 0) / 60))}분 남음` : "없음"}
-              h={dev.override_act ? `${dev.override_act}${dev.override_level ? ` · ${dev.override_level}` : ""} · seq ${str(dev.override_seq)} · ~${localTime(dev.override_until)}` : "OK 응답 받은 명령 없음"}
+            <Met l="원격 조작" v={dev.remote_active ? `원격 ${Math.max(1, Math.ceil((dev.remote_remaining_sec ?? 0) / 60))}분 남음` : "없음"}
+              h={dev.override_act ? `${dev.override_act}${dev.override_level ? ` · ${dev.override_level}` : ""} · 명령 번호 ${str(dev.override_seq)} · ~${localTime(dev.override_until)}` : "OK 응답 받은 명령 없음"}
               cls={dev.remote_active ? "w" : ""} />
           </div>
           {dev.remote_active && <div style={{ marginTop: 8 }}><RemoteBadge d={dev} onReleased={(m) => (setCmdNote(m), load())} /></div>}
@@ -665,25 +672,25 @@ function DeviceScheduleSec({ uuid }: { uuid: string }) {
   if (!s) return <div className="sec"><h4>스케줄</h4><div className="muted">{err ?? "불러오는 중…"}</div></div>;
   return (
     <div className="sec">
-      <h4>스케줄 <span>배정·적용·단말 표</span></h4>
+      <h4>스케줄 <span>지정·적용·단말 표</span></h4>
       <div className="grid2">
-        <Met l="배정 프로필" v={s.profile_name ? `${s.profile_name} v${s.profile_version}` : "없음"} h={s.source === "device" ? "단말 예외" : s.source ? "노드에서 물려받음" : "스케줄 배포에서 배정"} />
+        <Met l="지정 양식" v={s.profile_name ? `${s.profile_name} v${s.profile_version}` : "없음"} h={s.source === "device" ? "단말 예외" : s.source ? "지역에서 물려받음" : "그룹 스케줄 변경에서 지정"} />
         <Met l="적용" v={s.profile_id ? (s.applied_ok ? "적용됨" : s.applied_crc ? `옛 판 v${s.applied_version}` : "미적용") : "-"}
           h={s.applied_at ? localTime(s.applied_at) : ""} cls={s.profile_id && !s.applied_ok ? "w" : s.applied_ok ? "k" : ""} />
-        <Met l="단말 표 crc (단말 / 프로필)" v={<span className="mono">{s.device_crc ?? "모름"} / {s.profile_crc ?? "-"}</span>}
+        <Met l="단말 표 crc (단말 / 양식)" v={<span className="mono">{s.device_crc ?? "모름"} / {s.profile_crc ?? "-"}</span>}
           h={s.device_region ? `${s.device_region} · src ${s.device_src}` : "단말에서 읽으면 보인다"}
           cls={s.device_crc && s.profile_crc && s.device_crc !== s.profile_crc ? "a" : ""} />
-        <Met l="오늘 점등 ~ 소등" v={s.today_on ? `${s.today_on} ~ ${s.today_off}` : "-"} h="배정 프로필 조건으로 서버 계산" />
+        <Met l="오늘 점등 ~ 소등" v={s.today_on ? `${s.today_on} ~ ${s.today_off}` : "-"} h="지정 양식 조건으로 서버 계산" />
       </div>
       {s.dip4 === false && <div className="cap c-warn">DIP4 OFF — 다단계를 무시하고 시작 밝기로만 운전한다.</div>}
-      {s.deploy_status && <div className="cap">진행 중인 배포 #{s.deploy_job_id}: {s.deploy_status}</div>}
+      {s.deploy_status && <div className="cap">진행 중인 보내기 #{s.deploy_job_id}: {s.deploy_status}</div>}
       <div className="bar2" style={{ marginTop: 8 }}>
-        <button type="button" className="btn" onClick={() => act(async () => { const r = await api.readSettings(uuid); return `단말에서 읽기 seq ${r.seq}`; })}>단말에서 읽기</button>
+        <button type="button" className="btn" onClick={() => act(async () => { const r = await api.readSettings(uuid); return `단말에서 읽기 명령 번호 ${r.seq}`; })}>단말에서 읽기</button>
         <button type="button" className="btn pri" disabled={!s.profile_id || s.state !== "ACTIVE"} onClick={() => act(async () => {
           const j = await api.createDeploy({ profile_id: s.profile_id!, scope: "device", scope_id: uuid });
-          return `배포 #${j.id} 시작`;
-        })}>다시 배포</button>
-        <a className="btn" href="#schedule" style={{ display: "inline-flex", alignItems: "center", textDecoration: "none" }}>스케줄 배포 화면</a>
+          return `보내기 #${j.id} 시작`;
+        })}>다시 보내기</button>
+        <a className="btn" href="#schedule" style={{ display: "inline-flex", alignItems: "center", textDecoration: "none" }}>그룹 스케줄 변경 화면</a>
       </div>
       {msg && <div className="okl">{msg}</div>}
       {err && <div className="err">{err}</div>}

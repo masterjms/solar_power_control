@@ -67,7 +67,7 @@ export default function Profiles({ onChanged }: Props) {
   }
 
   async function del(p: Profile) {
-    if (!confirm(`프로필 #${p.id} "${p.name}" 삭제? (단말이 쓰고 있으면 409)`)) return;
+    if (!confirm(`통신 주기 설정 #${p.id} "${p.name}" 삭제? (단말이 쓰고 있으면 409)`)) return;
     setMsg(null);
     setError(null);
     try {
@@ -96,9 +96,9 @@ export default function Profiles({ onChanged }: Props) {
 
   return (
     <>
-      <Card title="설정 프로필" meta={`${rows.length}개 · /api/profiles`}>
+      <Card title="통신 주기 설정" meta={`${rows.length}개 · /api/profiles`}>
         <div className="cap">
-          ti = Telemetry 주기(60~3600초), ka = keepalive(60~1800초). ti/ka 를 바꾸면 그 프로필의 단말 전부 cv_server +1
+          ti = Telemetry 주기(60~3600초), ka = keepalive(60~1800초). ti/ka 를 바꾸면 그 주기 설정을 쓰는 단말 전부 cv_server +1
           → 각 단말의 다음 송신 때 CONFIG_SET 이 나간다(즉시 발행 아님, §1.1.10). id 1 은 삭제 불가.
         </div>
         {error && <div className="err">{error}</div>}
@@ -132,7 +132,7 @@ export default function Profiles({ onChanged }: Props) {
           </table>
         </div>
       </Card>
-      <Card title="프로필 추가" meta="POST /api/profiles">
+      <Card title="통신 주기 설정 추가" meta="POST /api/profiles">
         <form onSubmit={create} className="form2">
           <label className="w2">이름<input value={nName} required onChange={(e) => setNName(e.target.value)} placeholder="예: 2,200원 관제" /></label>
           <label>ti (초)<input type="number" min={60} max={3600} value={nTi} onChange={(e) => setNTi(e.target.value)} /></label>

@@ -129,3 +129,14 @@ export function co2Text(g: number | null | undefined): string {
   if (g >= 1e3) return `${(g / 1e3).toFixed(1)} kgCO2eq`;
   return `${g.toFixed(1)} gCO2eq`;
 }
+
+/** 전력량 Wh → "1.60 kWh"(단말 값이 10 Wh 단위라 소수 2자리, 문제점 23번). 값이 없으면 공백. */
+export function kwh2(wh: number | null | undefined): string {
+  return wh === null || wh === undefined ? "" : `${(wh / 1000).toFixed(2)} kWh`;
+}
+
+/** Telemetry 의 일일 전력량(kWh×100) → "1.60 kWh". MPPT 무응답(er 0x0010)이면 "값 없음", 키가 없으면 공백. */
+export function dayEnergy(v: number | null | undefined, er: number | null | undefined): string {
+  if (((er ?? 0) & 0x0010) !== 0) return "값 없음";
+  return v === null || v === undefined ? "" : `${(v / 100).toFixed(2)} kWh`;
+}

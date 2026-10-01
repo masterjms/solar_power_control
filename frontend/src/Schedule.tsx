@@ -31,7 +31,7 @@ export const DEPLOY_STATUS: Record<string, [string, string]> = {
   NO_RESPONSE: ["응답 없음", "b-alarm"],
   READ_FAILED: ["읽기 실패", "b-alarm"],
   CANCELLED: ["취소", "b-off"],
-  SUPERSEDED: ["새 배포로 대체", "b-off"],
+  SUPERSEDED: ["새로 보낸 것으로 대체", "b-off"],
 };
 export function DeployBadge({ s }: { s: string }) {
   const [label, cls] = DEPLOY_STATUS[s] ?? [s, "b-off"];
@@ -121,7 +121,7 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
     setBusy(true);
     try {
       const p = profile ? await api.patchScheduleProfile(profile.id, body) : await api.createScheduleProfile(body);
-      setMsg(`저장함 — v${p.version} · crc ${p.crc}${profile && p.version !== profile.version ? " (판이 올라갔다 — 적용된 단말은 다시 배포해야 한다)" : ""}`);
+      setMsg(`저장함 — v${p.version} · crc ${p.crc}${profile && p.version !== profile.version ? " (판이 올라갔다 — 적용된 단말은 다시 보내야 한다)" : ""}`);
       onSaved(p);
     } catch (e) {
       setErr(errorText(e));
@@ -131,7 +131,7 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
   }
 
   async function remove() {
-    if (!profile || !confirm(`${profile.name} 프로필을 지울까요? (배정된 곳이 있으면 지워지지 않는다)`)) return;
+    if (!profile || !confirm(`${profile.name} 양식을 지울까요? (지정된 곳이 있으면 지워지지 않는다)`)) return;
     try {
       await api.deleteScheduleProfile(profile.id);
       onDeleted();
@@ -141,7 +141,7 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
   }
 
   return (
-    <Card className="full" title={profile ? `프로필 · ${profile.name}` : "새 스케줄 프로필"}
+    <Card className="full" title={profile ? `양식 · ${profile.name}` : "새 스케줄 양식"}
       meta={profile ? <span className="mono">v{profile.version} · crc {profile.crc}</span> : "조건 + 운전 15개"}>
       <div className="form2">
         <label>이름<input value={f.name} maxLength={60} placeholder="예: 경기 남부 기본" onChange={(e) => setF({ ...f, name: e.target.value })} /></label>
@@ -166,13 +166,13 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
           </Card>
         ))}
       </div>
-      <div className="cap">프로필에 넣지 않는 10개(기준 밝기 PWM1~3·Fade·배터리 6개)는 단말마다 다르다 — 배포 때 그 단말에서 마지막으로 읽은 값을 그대로 보낸다.</div>
+      <div className="cap">양식에 넣지 않는 10개(기준 밝기 PWM1~3·Fade·배터리 6개)는 단말마다 다르다 — 보낼 때 그 단말에서 마지막으로 읽은 값을 그대로 보낸다.</div>
       <div className="bar2">
         <button type="button" className="btn pri" disabled={busy} onClick={save}>{profile ? "저장" : "만들기"}</button>
         <button type="button" className="btn" onClick={preview} disabled={!condOk}>미리보기</button>
         {profile && <button type="button" className="btn danger" onClick={remove}>삭제</button>}
         <span className="sp" />
-        {profile && <span className="cap">배정 노드 {nf(profile.assigned_nodes)} · 단말 예외 {nf(profile.assigned_devices)} · 대상 {nf(profile.targets)}대 · 적용됨 {nf(profile.applied)}대</span>}
+        {profile && <span className="cap">지정 지역 {nf(profile.assigned_nodes)} · 단말 예외 {nf(profile.assigned_devices)} · 대상 {nf(profile.targets)}대 · 적용됨 {nf(profile.applied)}대</span>}
       </div>
       {msg && <div className="okl">{msg}</div>}
       {err && <div className="err">{err}</div>}
@@ -208,7 +208,7 @@ function JobDetail({ id, onClose, onSelect }: { id: number; onClose: () => void;
   return (
     <div className="cmdres">
       <div className="bar2">
-        <b>배포 #{job.id}</b> <span>{job.profile_name} v{job.profile_version} · {job.scope_label ?? job.scope_kind}</span>
+        <b>보낸 기록 #{job.id}</b> <span>{job.profile_name} v{job.profile_version} · {job.scope_label ?? job.scope_kind}</span>
         <span className="sp" />
         <button type="button" className="btn sm" disabled={retryable === 0} onClick={async () => {
           try { const r = await api.retryDeploy(job.id); setMsg(`다시 보냄 ${r.retried}대${r.skipped ? ` · 횟수 다 써서 건너뜀 ${r.skipped}대` : ""}`); load(); } catch (e) { setErr(errorText(e)); }
@@ -221,7 +221,7 @@ function JobDetail({ id, onClose, onSelect }: { id: number; onClose: () => void;
       </div>
       {msg && <div className="okl">{msg}</div>}
       {err && <div className="err">{err}</div>}
-      <div className="cap">대기 = 오프라인이면 다시 붙을 때 자동, 온라인이면 차례(초당 10대). 30초 무응답이면 새 seq 로 3회까지 — 그래도 없으면 "응답 없음".</div>
+      <div className="cap">대기 = 오프라인이면 다시 붙을 때 자동, 온라인이면 차례(초당 10대). 30초 무응답이면 새 명령 번호로 3회까지 — 그래도 없으면 "응답 없음".</div>
       <div style={{ maxHeight: 360, overflow: "auto" }}>
         <table className="mini">
           <thead><tr><th>단말</th><th>통신</th><th>상태</th><th className="n">회차</th><th>보냄</th><th>응답</th><th>설명</th></tr></thead>
@@ -337,10 +337,10 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
   const deploy = (scope: "profile" | "node" | "device", scopeId: string | null, label: string) =>
     run(async () => {
       if (!profile) return;
-      if (!confirm(`${profile.name} v${profile.version} 을(를) ${label}에 배포합니다.\n단말마다 SETTINGS_SET(25개 + 표 조건)을 보냅니다. 오프라인 단말은 다시 붙으면 자동으로 갑니다.`)) return;
+      if (!confirm(`${profile.name} v${profile.version} 을(를) ${label}에 보냅니다.\n단말마다 SETTINGS_SET(25개 + 표 조건)을 보냅니다. 오프라인 단말은 다시 붙으면 자동으로 갑니다.`)) return;
       const j = await api.createDeploy({ profile_id: profile.id, scope, scope_id: scopeId });
       setJob(j.id);
-      return `배포 #${j.id} 시작 — ${j.total}대`;
+      return `보내기 #${j.id} 시작 — ${j.total}대`;
     });
 
   const shownDevs = (devs ?? []).filter((d) => node !== null || !profile || d.profile_id === profile.id);
@@ -348,8 +348,8 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
   return (
     <div className="explorer cfgx">
       <div className="col">
-        <Card title="스케줄 프로필" meta={<button type="button" className="btn sm" onClick={() => setSel("new")}>새 프로필</button>}>
-          <div className="tree tall" role="listbox" aria-label="스케줄 프로필">
+        <Card title="스케줄 양식" meta={<button type="button" className="btn sm" onClick={() => setSel("new")}>새 양식</button>}>
+          <div className="tree tall" role="listbox" aria-label="스케줄 양식">
             {(profiles ?? []).map((p) => (
               <div key={p.id} className={`tn ${sel === p.id ? "on" : ""}`} role="option" aria-selected={sel === p.id} tabIndex={0}
                 onClick={() => setSel(p.id)} onKeyDown={(e) => e.key === "Enter" && setSel(p.id)}>
@@ -357,15 +357,15 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
                 <span className={`tct ${p.targets && p.applied === p.targets ? "c-ok" : p.targets ? "c-warn" : ""}`}>{nf(p.applied)}/{nf(p.targets)}</span>
               </div>
             ))}
-            {profiles && profiles.length === 0 && <div className="tempty">프로필이 없습니다. "새 프로필"로 만든다.</div>}
+            {profiles && profiles.length === 0 && <div className="tempty">양식이 없습니다. "새 양식"으로 만든다.</div>}
           </div>
         </Card>
-        <Card title="배정 — 법정동 트리" meta="노드에 걸면 아래가 물려받는다">
+        <Card title="지역별 지정" meta="지역에 걸면 아래가 물려받는다">
           <input type="search" placeholder="법정동 찾기" aria-label="트리 필터" value={filter} onChange={(e) => setFilter(e.target.value)} />
           <RegionTree tree={tree} selected={node} onSelect={(v) => setNode(typeof v === "number" ? (v === node ? null : v) : null)} filter={filter} className="tall"
             badge={(n) => {
               const a = nodeAssign.get(n.r.id);
-              return a ? <em className="c-blue" title="이 노드에 직접 배정"> ◆ {a.profile_name}</em> : null;
+              return a ? <em className="c-blue" title="이 지역에 직접 지정"> ◆ {a.profile_name}</em> : null;
             }} />
         </Card>
       </div>
@@ -378,39 +378,39 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
             onSaved={(p) => (setSel(p.id), refresh())} onDeleted={() => (setSel(null), refresh())} />
         )}
 
-        <Card className="full" title={nodeObj ? `배정 · ${nodeObj.r.name}` : "배정"} meta={nodeObj ? "선택한 노드" : "왼쪽 트리에서 노드를 고른다"}>
+        <Card className="full" title={nodeObj ? `지정 · ${nodeObj.r.name}` : "지정"} meta={nodeObj ? "선택한 지역" : "왼쪽 트리에서 지역을 고른다"}>
           {nodeObj ? (
             <>
               <div className="grid2">
-                <Met l="이 노드에 직접" v={nodeOwn ? nodeOwn.profile_name : "없음"} h={nodeOwn ? `${localTime(nodeOwn.assigned_at)} · ${nodeOwn.assigned_by ?? ""}` : ""} />
-                <Met l="적용되는 프로필(상속 포함)" v={nodeInh ? nodeInh.profile_name : "없음"} h={nodeInh && nodeInh !== nodeOwn ? `위 노드에서 물려받음 — ${nodeInh.label}` : ""} />
+                <Met l="이 지역에 직접" v={nodeOwn ? nodeOwn.profile_name : "없음"} h={nodeOwn ? `${localTime(nodeOwn.assigned_at)} · ${nodeOwn.assigned_by ?? ""}` : ""} />
+                <Met l="적용되는 양식(상속 포함)" v={nodeInh ? nodeInh.profile_name : "없음"} h={nodeInh && nodeInh !== nodeOwn ? `위 지역에서 물려받음 — ${nodeInh.label}` : ""} />
               </div>
               <div className="bar2" style={{ marginTop: 8 }}>
                 <button type="button" className="btn pri" disabled={!profile} onClick={() => run(async () => {
                   await api.setScheduleAssign({ node_id: node!, profile_id: profile!.id });
-                  return `${nodeObj.r.name} ← ${profile!.name} 배정(배포는 따로)`;
-                })}>{profile ? `이 노드에 "${profile.name}" 배정` : "왼쪽에서 프로필을 고른다"}</button>
+                  return `${nodeObj.r.name} ← ${profile!.name} 지정(보내기는 따로)`;
+                })}>{profile ? `이 지역에 "${profile.name}" 지정` : "왼쪽에서 양식을 고른다"}</button>
                 {nodeOwn && <button type="button" className="btn" onClick={() => run(async () => {
                   await api.setScheduleAssign({ node_id: node!, profile_id: null });
-                  return "배정 해제";
-                })}>직접 배정 해제</button>}
+                  return "지정 해제";
+                })}>직접 지정 해제</button>}
                 <span className="sp" />
-                {profile && <button type="button" className="btn" onClick={() => deploy("node", String(node), nodeObj.r.name)}>이 노드 아래에 "{profile.name}" 배포</button>}
+                {profile && <button type="button" className="btn" onClick={() => deploy("node", String(node), nodeObj.r.name)}>이 지역 아래 단말에 "{profile.name}" 보내기</button>}
               </div>
             </>
-          ) : <div className="cap">노드를 고르면 그 아래 단말의 배정·적용 상태가 보인다. 트리의 ◆ = 직접 배정된 프로필.</div>}
-          <h4 style={{ marginTop: 12 }}>단말 예외 <span>단말 하나만 다른 프로필(노드 배정보다 우선)</span></h4>
+          ) : <div className="cap">지역을 고르면 그 아래 단말의 지정·적용 상태가 보인다. 트리의 ◆ = 직접 지정된 양식.</div>}
+          <h4 style={{ marginTop: 12 }}>단말 예외 <span>단말 하나만 다른 양식(지역 지정보다 우선)</span></h4>
           <div className="bar2">
             <input value={exUuid} placeholder="UUID 24자리" style={{ width: 240 }} onChange={(e) => setExUuid(e.target.value)} />
             <button type="button" className="btn" disabled={!profile || exUuid.trim().length !== 24} onClick={() => run(async () => {
               await api.setScheduleAssign({ uuid: exUuid.trim().toUpperCase(), profile_id: profile!.id });
               setExUuid("");
-              return "단말 예외 배정";
-            })}>{profile ? `"${profile.name}" 예외 배정` : "프로필을 고른다"}</button>
+              return "단말 예외 지정";
+            })}>{profile ? `"${profile.name}" 예외 지정` : "양식을 고른다"}</button>
           </div>
           {devAssigns.length > 0 && (
             <table className="mini" style={{ marginTop: 8 }}>
-              <thead><tr><th>단말</th><th>프로필</th><th>배정</th><th /></tr></thead>
+              <thead><tr><th>단말</th><th>양식</th><th>지정</th><th /></tr></thead>
               <tbody>{devAssigns.map((a) => (
                 <tr key={a.id}><td>{a.label}</td><td>{a.profile_name}</td><td>{localTime(a.assigned_at)}</td>
                   <td><button type="button" className="btn sm" onClick={() => run(async () => { await api.setScheduleAssign({ uuid: a.uuid!, profile_id: null }); return "예외 해제"; })}>해제</button></td></tr>
@@ -421,23 +421,23 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
 
         <Card className="full" title="적용 현황" meta={<>
           <span>{nodeObj ? `${nodeObj.r.name} 아래` : profile ? `"${profile.name}" 대상` : "운영 단말"} {nf(shownDevs.length)}대 · 적용됨 {nf(shownDevs.filter((d) => d.applied_ok).length)}</span>
-          {profile && <button type="button" className="btn sm pri" onClick={() => deploy("profile", null, `"${profile.name}" 가 배정된 단말 전부`)}>"{profile.name}" 전체 배포</button>}
+          {profile && <button type="button" className="btn sm pri" onClick={() => deploy("profile", null, `"${profile.name}" 가 지정된 단말 전부`)}>"{profile.name}" 전체 보내기</button>}
         </>}>
           <div style={{ maxHeight: 420, overflow: "auto" }}>
             <table className="mini">
-              <thead><tr><th>단말</th><th>통신</th><th>배정 프로필</th><th>적용</th><th>단말 표</th><th>진행</th><th>오늘 점등~소등</th><th>DIP4</th><th /></tr></thead>
+              <thead><tr><th>단말</th><th>통신</th><th>지정 양식</th><th>적용</th><th>단말 표</th><th>진행</th><th>오늘 점등~소등</th><th>DIP4</th><th /></tr></thead>
               <tbody>
                 {shownDevs.map((d) => (
                   <tr key={d.uuid}>
                     <td data-click onClick={() => onSelect(d.uuid)}>{d.site ?? "-"} <small className="mono muted">{d.uuid.slice(-8)}</small></td>
                     <td><OnlineMark on={d.is_online} /></td>
-                    <td>{d.profile_name ? <>{d.profile_name} <small className="muted">v{d.profile_version} {d.source === "device" ? "· 예외" : ""}</small></> : <span className="muted">배정 없음</span>}</td>
-                    <td>{d.profile_id ? (d.applied_ok ? <span className="badge b-ok">적용됨</span> : d.applied_crc ? <span className="badge b-warn" title={`적용된 판 v${d.applied_version} ${d.applied_crc}`}>옛 판·다름</span> : <span className="badge b-off">미적용</span>) : ""}</td>
+                    <td>{d.profile_name ? <>{d.profile_name} <small className="muted">v{d.profile_version} {d.source === "device" ? "· 예외" : ""}</small></> : <span className="muted">지정 없음</span>}</td>
+                    <td>{d.profile_id ? (d.applied_ok ? <span className="badge b-ok">적용됨</span> : d.applied_crc ? <span className="badge b-warn" title={`적용된 판 v${d.applied_version} ${d.applied_crc}`}>옛 판·단말과 다름</span> : <span className="badge b-off">미적용</span>) : ""}</td>
                     <td className="mono" title={d.device_region ?? ""}>{d.device_crc ?? <span className="muted">모름</span>}{d.profile_crc && d.device_crc ? (d.device_crc === d.profile_crc ? " ✓" : " ✗") : ""}</td>
                     <td>{d.deploy_status ? <DeployBadge s={d.deploy_status} /> : ""}</td>
                     <td>{d.today_on ? `${d.today_on} ~ ${d.today_off}` : ""}</td>
                     <td>{d.dip4 === null ? "" : d.dip4 ? "ON" : <span className="c-warn" title="DIP4 OFF: 단계 무시, 시작 밝기로만 운전">OFF</span>}</td>
-                    <td>{profile && d.profile_id === profile.id && <button type="button" className="btn sm" onClick={() => deploy("device", d.uuid, d.site ?? d.uuid)}>다시 배포</button>}</td>
+                    <td>{profile && d.profile_id === profile.id && <button type="button" className="btn sm" onClick={() => deploy("device", d.uuid, d.site ?? d.uuid)}>다시 보내기</button>}</td>
                   </tr>
                 ))}
                 {devs && shownDevs.length === 0 && <tr><td colSpan={9} className="muted">단말이 없습니다.</td></tr>}
@@ -446,10 +446,10 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
           </div>
         </Card>
 
-        <Card className="full" title="배포 작업" meta="최근 20건 · 3초마다 갱신(열어 둔 작업)">
+        <Card className="full" title="보낸 기록" meta="최근 20건 · 3초마다 갱신(열어 둔 기록)">
           {job !== null && <JobDetail id={job} onClose={() => setJob(null)} onSelect={onSelect} />}
           <table className="mini" style={{ marginTop: 8 }}>
-            <thead><tr><th>#</th><th>프로필</th><th>범위</th><th>진행</th><th>만든 사람·시각</th><th>끝</th></tr></thead>
+            <thead><tr><th>#</th><th>양식</th><th>범위</th><th>진행</th><th>만든 사람·시각</th><th>끝</th></tr></thead>
             <tbody>
               {jobs.map((j) => (
                 <tr key={j.id} data-click className={job === j.id ? "sel" : ""} onClick={() => setJob(j.id)}>
@@ -458,7 +458,7 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
                   <td>{j.cancelled_at ? "취소" : j.finished_at ? localTime(j.finished_at) : <span className="c-blue">진행 중</span>}</td>
                 </tr>
               ))}
-              {jobs.length === 0 && <tr><td colSpan={6} className="muted">배포한 적이 없습니다.</td></tr>}
+              {jobs.length === 0 && <tr><td colSpan={6} className="muted">보낸 적이 없습니다.</td></tr>}
             </tbody>
           </table>
         </Card>

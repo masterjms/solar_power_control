@@ -35,7 +35,7 @@ export default function GroupControl({ role, counts, tick, onSelect }: Props) {
         <div className="tpath">선택: <b>전체</b> (지역 배정과 무관하게 모든 단말)</div>
         <div className="grid2">
           <div className="met"><div className="l">운영(ACTIVE)</div><div className="v">{nf(counts?.ACTIVE)}대</div><div className="h">등록 단말 {nf(total)}대</div></div>
-          <div className="met"><div className="l">발행</div><div className="v mono">iotlight/all/cmd</div><div className="h">1회</div></div>
+          <div className="met"><div className="l">보낼 주소</div><div className="v mono">iotlight/all/cmd</div><div className="h">1회</div></div>
         </div>
         {!isSuper && <div className="err">전체 명령은 최고관리자만 보낼 수 있다.</div>}
       </>
@@ -50,9 +50,9 @@ export default function GroupControl({ role, counts, tick, onSelect }: Props) {
         <div className="tpath">선택: <b>{pathOf(node)}</b>{leaf && node.r.bjd_code ? ` (${node.r.bjd_code})` : ""}</div>
         <div className="grid2">
           <div className="met"><div className="l">단말 (하위 전체)</div><div className="v">{nf(node.r.device_count)}대</div><div className="h">운영(ACTIVE) {nf(node.r.active_count)}대 — 이들에게만 보낸다</div></div>
-          <div className="met"><div className="l">발행</div>
-            <div className={leaf ? "v mono" : "v"}>{leaf ? `iotlight/group/${node.r.grp ?? "?"}/cmd` : `법정동 topic ${nf(leaves.length)}개`}</div>
-            <div className="h">{leaf ? "그룹 topic 1회" : "하위 법정동 topic 마다 1회, seq 는 하나"}</div></div>
+          <div className="met"><div className="l">보낼 주소</div>
+            <div className={leaf ? "v mono" : "v"}>{leaf ? `iotlight/group/${node.r.grp ?? "?"}/cmd` : `법정동 주소 ${nf(leaves.length)}개`}</div>
+            <div className="h">{leaf ? "그룹 주소로 1회" : "하위 법정동 주소마다 1회, 명령 번호는 하나"}</div></div>
         </div>
       </>
     );

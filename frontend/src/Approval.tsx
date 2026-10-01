@@ -192,7 +192,7 @@ export default function Approval({ uuid, onChanged, onClose }: Props) {
   }
 
   const approveBlock = dirty ? "4단계 '설정 변경'으로 먼저 저장한다"
-    : !dev.node_id ? "지역(말단 법정동)을 골라 저장해야 승인할 수 있다"
+    : !dev.node_id ? "지역(법정동)을 골라 저장해야 승인할 수 있다"
     : !dev.site ? "시설명을 넣어 저장한다" : null;
 
   return (
@@ -248,7 +248,7 @@ export default function Approval({ uuid, onChanged, onClose }: Props) {
               <div className="row"><button type="button" className="btn pri" onClick={() => addRegion(suggest)}>트리에 추가하고 고르기</button></div>
             </div>
           )}
-          <h4 style={{ marginTop: 12 }}>지역 (말단 법정동) <span>{leaf ? pathOf(leaf) : "미선택"}{leaf?.r.grp ? ` · grp ${leaf.r.grp}` : ""}</span></h4>
+          <h4 style={{ marginTop: 12 }}>지역 (법정동) <span>{leaf ? pathOf(leaf) : "미선택"}{leaf?.r.grp ? ` · grp ${leaf.r.grp}` : ""}</span></h4>
           <input type="search" placeholder="법정동 찾기" aria-label="트리 필터" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
           {treeErr && <div className="err">{treeErr}</div>}
           <RegionTree tree={tree} selected={nodeId} canSelect={isLeaf} filter={filter} className="short"
@@ -256,7 +256,7 @@ export default function Approval({ uuid, onChanged, onClose }: Props) {
             empty={list ? "지역이 없습니다. 주소 검색이나 지도로 법정동을 추가한다." : "불러오는 중…"} />
         </Step>
 
-        <Step no={3} title="프로필" sub="보고 주기(ti)·keepalive(ka)" done={profileId === dev.profile_id}>
+        <Step no={3} title="통신 주기 설정" sub="보고 주기(ti)·keepalive(ka)" done={profileId === dev.profile_id}>
           <select value={profileId ?? ""} onChange={(e) => (setProfileId(Number(e.target.value)), setTouched(true))} style={{ width: "100%" }}>
             {profiles.map((p) => <option key={p.id} value={p.id}>{p.name} (ti {p.ti}초 / ka {p.ka}초)</option>)}
             {!profiles.some((p) => p.id === dev.profile_id) && <option value={dev.profile_id}>#{dev.profile_id} {dev.profile_name ?? ""}</option>}

@@ -140,6 +140,20 @@ def test_tm_payload_shape_and_sq_increment():
     assert len(json.dumps(p0, separators=(",", ":"))) < 384
 
 
+def test_tm_daily_energy_keys_and_mppt_offline():
+    """단말 빌드 2026-10-01-1: eg·eu·yg·yu(kWh×100). MPPT 무응답(er 0x0010)이면 네 값 모두 0."""
+    d = make()
+    d.daily_energy = (160, 90, 200, 150)
+    p = d.build_tm()
+    assert (p["eg"], p["eu"], p["yg"], p["yu"]) == (160, 90, 200, 150)
+    assert len(json.dumps(p, separators=(",", ":"))) < 384
+    d.er = 0x0010
+    p = d.build_tm()
+    assert (p["eg"], p["eu"], p["yg"], p["yu"]) == (0, 0, 0, 0)
+    d.daily_energy = None  # 옛 펌웨어
+    assert "eg" not in d.build_tm()
+
+
 def test_tm_type_variants():
     assert SimDevice(uuid_from_index(7, 0x0201), mode="1cha").build_tm()["type"] == "TM"
     assert make(tm_type="TM").build_tm()["type"] == "TM"

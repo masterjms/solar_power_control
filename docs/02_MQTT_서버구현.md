@@ -492,3 +492,16 @@ DB       ─ command(type=COMMAND, target_kind, target_id, created_by, topics, e
 flush 의 device upsert 뒤 한 문장: `device_settings ⋈ device` 에서 이 묶음 uuid 중 `sync='synced'`, `ss_known` 있음,
 `device.ss_device <> ss_known`, **`device.last_telemetry_at > device_settings.updated_at`**(ACK·SETTINGS 가 기준을 바꾼 뒤 받은 TM 만)
 → `local_saved`. 자동으로 다시 읽지 않는다(표시만). 카운터 `settings_local_saved`.
+
+## 일일 전력량 (2026-10-01, 문제점 23번, 단말 빌드 2026-10-01-1 · 사양서 §1.1.6)
+
+Telemetry 에 `eg`(금일 발전) · `eu`(금일 사용) · `yg`(전일 발전) · `yu`(전일 사용)이 온다. 단위 kWh×100(160 = 1.60 kWh, 10 Wh 단위).
+적산·자정 리셋은 PowerMPPT 보드가 한다 — **서버는 계산하지 않고 받은 값을 표시·기록만 한다.**
+
+- 저장: 열을 따로 만들지 않고 `telemetry.raw`·`device.last_telemetry` 에 그대로 있다.
+- 대시보드: 발전전력 = `pp`/100 W, 일일발전량 = 최신 `eg`/100 kWh, 일일사용량 = 최신 `eu`/100 kWh(`core/energy.from_device`).
+  마지막 Telemetry 가 오늘(KST) 것이 아니면 오늘 값은 비운다.
+- MPPT 무응답(`er` 0x0010)이면 네 값이 모두 0 으로 온다 → 0 이 아니라 **"값 없음"**.
+- 날짜별 기록: `telemetry_daily.gen_wh`·`use_wh` = 다음날 00:05 뒤 처음 받은 `yg`·`yu`, 0 이면 그날 마지막 `eg`·`eu`(`tasks/daily_rollup._DEVICE_ENERGY_SQL`, 00:30 실행).
+- `li`(부하 전류)는 LOAD1 + LOAD2 합계로 뜻이 바뀌었다(값 형식은 그대로).
+- `eg` 가 없는 옛 펌웨어 단말만 예전처럼 서버가 `pp`·`li×bv` 를 적분한다.
