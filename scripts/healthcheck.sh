@@ -5,6 +5,8 @@
 #   bash scripts/healthcheck.sh            화면 출력, 이상이 있으면 종료코드 1
 #   bash scripts/healthcheck.sh --slack    이상이 있을 때만 Slack (.env 의 SLACK_WEBHOOK_URL)
 #   bash scripts/healthcheck.sh --slack --always   정상이어도 보낸다 (일일 요약)
+#   bash scripts/healthcheck.sh --slack --on-change  10분 cron 용: 문제 목록이 지난번과 달라졌을 때만 보낸다
+#                                                    (새 문제 → 알림, 모두 정상으로 돌아오면 "복구" 알림). 상태 파일 ~/.healthcheck.state
 #
 # 보는 것:
 #   · 디스크·메모리        gp3 30 GB 에 telemetry 파티션 + 컨테이너 로그가 쌓인다
@@ -21,11 +23,12 @@ set -uo pipefail          # -e 는 쓰지 않는다. 한 항목이 실패해도 
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-SLACK=0; ALWAYS=0
+SLACK=0; ALWAYS=0; ONCHANGE=0
 for arg in "$@"; do
     case "$arg" in
         --slack)  SLACK=1 ;;
         --always) ALWAYS=1 ;;
+        --on-change) ONCHANGE=1 ;;
         --dry)    ;;                     # 예전 호환 — 기본이 화면 출력이다
         *) echo "알 수 없는 옵션: $arg"; exit 2 ;;
     esac
@@ -36,6 +39,7 @@ MEM_WARN="${MEM_WARN:-90}"            # % (t3.small 2 GB + swap. 85 는 평소�
 BACKUP_MAX_AGE_H="${BACKUP_MAX_AGE_H:-30}"
 CERT_WARN_DAYS="${CERT_WARN_DAYS:-20}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/db-backups}"
+STATE_FILE="${STATE_FILE:-$HOME/.healthcheck.state}"   # --on-change 가 지난번 문제 목록의 해시를 둔다
 
 PROBLEMS=(); LINES=()
 add_ok()   { LINES+=("  [OK]   $1"); }
@@ -193,10 +197,24 @@ fi
 # ── 출력 ────────────────────────────────────────────────────────────
 if [ ${#PROBLEMS[@]} -gt 0 ]; then HEAD="서버 점검 — 확인 필요 ${#PROBLEMS[@]}건 ($(hostname))"
 else HEAD="서버 점검 — 모두 정상 ($(hostname))"; fi
+
+# --on-change: 문제 목록(해시)이 지난번과 같으면 보내지 않는다. 모두 정상으로 돌아온 첫 회는 "복구"로 보낸다.
+SEND=0
+if [ "$ALWAYS" -eq 1 ]; then SEND=1
+elif [ "$ONCHANGE" -eq 1 ]; then
+    NOW_HASH="$(printf '%s\n' "${PROBLEMS[@]}" | md5sum | cut -c1-32)"
+    PREV_HASH="$(cat "$STATE_FILE" 2>/dev/null || echo none)"
+    if [ "$NOW_HASH" != "$PREV_HASH" ]; then
+        SEND=1
+        [ ${#PROBLEMS[@]} -eq 0 ] && [ "$PREV_HASH" != "none" ] && HEAD="서버 점검 — 복구됨, 모두 정상 ($(hostname))"
+    fi
+    echo "$NOW_HASH" > "$STATE_FILE"
+elif [ ${#PROBLEMS[@]} -gt 0 ]; then SEND=1; fi
+
 TEXT="$HEAD"$'\n'"$(printf '%s\n' "${LINES[@]}")"
 echo "$TEXT"
 
-if [ "$SLACK" -eq 1 ] && { [ ${#PROBLEMS[@]} -gt 0 ] || [ "$ALWAYS" -eq 1 ]; }; then
+if [ "$SLACK" -eq 1 ] && [ "$SEND" -eq 1 ]; then
     WEBHOOK="$(grep -E '^SLACK_WEBHOOK_URL=' .env 2>/dev/null | cut -d= -f2- | tr -d "\"'" || true)"
     if [ -n "$WEBHOOK" ]; then
         curl -sS -X POST -H 'Content-type: application/json' \

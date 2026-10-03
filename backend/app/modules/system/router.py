@@ -6,7 +6,7 @@ import asyncio
 import datetime as dt
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,6 +58,22 @@ async def health(
         "test_account_enabled": settings.mqtt_test_account_enabled,
         "env": settings.app_env,
     }
+
+
+@router.get("/healthz", include_in_schema=False)
+async def healthz(
+    db: AsyncSession = Depends(get_db), conn: MqttConnection = Depends(get_connection),
+) -> Response:
+    """외부 가동 감시(UptimeRobot 등)용 — 로그인 없이 연다(nginx 가 auth_request 를 건너뛴다).
+    내용은 "ok"/"down" 두 글자뿐이라 밖에 새는 정보가 없다. 브로커 연결·DB 가 모두 정상일 때만 200."""
+    db_ok = True
+    try:
+        await asyncio.wait_for(db.execute(text("SELECT 1")), timeout=2.0)
+    except Exception:  # noqa: BLE001
+        db_ok = False
+    ok = conn.is_connected and db_ok
+    return Response("ok" if ok else "down", status_code=200 if ok else 503,
+                    media_type="text/plain")
 
 
 @router.get("/api/ui-config")

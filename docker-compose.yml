@@ -187,6 +187,21 @@ services:
       timeout: 5s
       retries: 10
 
+  # 자동 복구 1단계(2026-10-03, docs/04 §11): healthcheck 가 unhealthy 로 바뀐 컨테이너를 다시 띄운다.
+  # Docker 의 restart 정책은 프로세스가 죽을 때만 돌고, 살아는 있는데 응답을 못 하는 상태(멈춘 backend 등)는 못 본다.
+  # docker.sock 을 읽기 전용으로 물린다 — 이 컨테이너가 뚫리면 호스트 docker 를 쥐므로 이미지 버전을 고정해 둔다.
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    container_name: iotlight-autoheal
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: all
+      AUTOHEAL_INTERVAL: 15
+      AUTOHEAL_START_PERIOD: 60
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
 volumes:
   pgdata:
   # 브로커 persistence(retained REGISTER_ACK 포함) + 설치된 passwd/aclfile + 효력 conf
