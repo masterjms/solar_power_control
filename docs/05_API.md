@@ -359,3 +359,10 @@ applied_profile_id applied_version applied_crc applied_at device_crc device_regi
 | PUT | `/api/server-settings` | `{"values":{"command_wait_sec":30,"command_attempts":2}}` — 보낸 항목만. 하나라도 범위 밖·모르는 key 면 아무것도 안 바꾸고 422 `VALIDATION_FAILED`(`detail.fields`). 저장 즉시 적용 |
 
 `GET /api/ui-config` 에 `command_wait_sec`·`command_attempts` 추가(모든 사용자 — 명령 창 안내 문구용).
+2026-10-03: 항목에 `kind`(int|date)·`scale` 추가, 묶음 "기록 보관 기간"·"발전·사용 통계"(docs/03 server_setting).
+
+## 발전·사용 통계 API (2026-10-03, 문제점 27·29번)
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| GET | `/api/energy/summary?period=7d\|30d\|12m&node_id=` | `{period, since, from, today, days:[{day, gen_wh, use_wh, est_gen_wh, devices, today}], now:{gen_wh, use_wh, reported, no_report, mppt_offline, total_devices}, total:{gen_wh, use_wh, co2_kg}, ghg_kg_per_kwh}`. 날짜별은 `telemetry_daily`(단말 값; 옛 펌웨어는 `est_gen_wh` 로 서버 추정), 오늘은 지금 `eg`·`eu` 합, 누적은 `device.energy_*_wh_total` + 오늘. 통계 시작일 전은 없음, 값 없는 날은 0. `12m` 은 월 합계. `node_id` 는 그 지역 아래 단말만 |
+| POST | `/api/energy/reset` | 최고관리자. 통계 시작일 = 오늘(KST), 모든 단말 누적 0, 오늘 전 `telemetry_daily` 삭제 → `{since, daily_rows_deleted, devices_zeroed}` |

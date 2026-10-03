@@ -66,7 +66,7 @@ async def ui_config() -> dict[str, Any]:
     REST 키(kakao_rest_api_key)는 절대 싣지 않는다."""
     return {
         "kakao_js_key": settings.kakao_js_key or None,
-        "ghg_kg_per_kwh": settings.ghg_kg_per_kwh,
+        "ghg_kg_per_kwh": runtime.ghg_kg_per_kwh,
         #: 원격 명령 응답 대기(서버 설정, ADR-012) — 화면 안내 문구가 지금 값을 따라간다.
         "command_wait_sec": runtime.command_wait_sec,
         "command_attempts": runtime.command_attempts,

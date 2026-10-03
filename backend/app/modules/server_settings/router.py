@@ -47,7 +47,7 @@ async def _view(db: AsyncSession) -> dict[str, Any]:
             row = meta.get(it.key)
             items.append({
                 "key": it.key, "label": it.label, "help": it.help, "unit": it.unit,
-                "min": it.min, "max": it.max, "default": it.default,
+                "min": it.min, "max": it.max, "default": it.default, "scale": it.scale, "kind": it.kind, "scale": it.scale, "kind": it.kind,
                 "value": ss.runtime.get(it.key),
                 "updated_by": row.updated_by if row else None,
                 "updated_at": row.updated_at if row else None,

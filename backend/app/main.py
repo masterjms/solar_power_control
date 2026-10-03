@@ -41,6 +41,7 @@ from app.modules.auth.router import router as auth_router
 from app.modules.command.router import router as command_router
 from app.modules.device import service as device_service
 from app.modules.device.router import router as device_router
+from app.modules.energy.router import router as energy_router
 from app.modules.mqtt_auth.router import router as mqtt_auth_router
 from app.modules.profile.router import router as profile_router
 from app.modules.region.router import geo_router
@@ -290,6 +291,7 @@ if settings.cors_origins:
 app.include_router(system_router)
 app.include_router(auth_router)
 app.include_router(server_settings_router)
+app.include_router(energy_router)
 app.include_router(alarm_router)
 app.include_router(schedule_router)
 app.include_router(schedule_device_router)

@@ -368,3 +368,12 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 }
 .fld.srv{grid-template-columns:150px minmax(0,360px) 58px 46px} /* 서버 설정: 이름이 길다 */
 @media (max-width:760px){ .fld.srv{grid-template-columns:110px minmax(0,1fr) 58px 40px} }
+/* ===== 발전과 사용 그래프(문제점 29번) ===== */
+.ebars{display:block; width:100%; height:170px}
+.ebars .grid{stroke:var(--line2); stroke-width:1}
+.ebars .ax{fill:var(--muted); font-size:var(--f1)}
+.ebars rect.gen{fill:var(--lamp)} .ebars rect.use{fill:var(--blue)}
+.ebars rect.est{opacity:.4; stroke:var(--lamp); stroke-dasharray:3 2}
+.ebars g.today rect{opacity:.5}
+.sw{display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:-1px; margin-right:4px}
+.sw.gen{background:var(--lamp)} .sw.use{background:var(--blue)}

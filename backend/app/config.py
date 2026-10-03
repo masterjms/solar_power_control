@@ -120,11 +120,8 @@ class Settings(BaseSettings):
     config_ti_min_sec: int = 60
     config_ka_min_sec: int = 60
 
-    # ── 보존·집계 ───────────────────────────────────────
-    #: telemetry 월 파티션 보존 개월 수. 13 = 1년 + 여유 1달.
-    telemetry_retention_months: int = 13
-    #: device_event 보존 일수. 파티션 없이 일 배치 DELETE.
-    device_event_retention_days: int = 365
+    # ── 집계 (보관 기간·배출계수는 화면의 서버 설정으로 옮겼다 — core/server_settings, 문제점 27·29번.
+    #    옛 TELEMETRY_RETENTION_MONTHS / ALARM_RETENTION_DAYS / GHG_KG_PER_KWH 는 .env 에 남아 있어도 읽지 않는다) ──
     #: 일 집계 실행 시각(KST).
     rollup_hour_kst: int = 0
     rollup_minute_kst: int = 30
@@ -137,8 +134,6 @@ class Settings(BaseSettings):
     #: 비밀이 아니고, 카카오 개발자 콘솔 [플랫폼 > Web] 에 등록한 도메인에서만 동작한다.
     #: 비우면 화면의 지도 자리는 "키 없음" 안내만 보인다.
     kakao_js_key: str = ""
-    #: 온실가스 감축량 = 발전량(kWh) × 이 값(kgCO2eq/kWh). 국가 전력 배출계수 — 확정값을 받으면 .env 로 바꾼다.
-    ghg_kg_per_kwh: float = 0.4781
     #: 관리 화면 계정(문제점 16번 로그인 화면). nginx 와 같은 .env 값 — 백엔드가 로그인·세션을 판정한다
     #: (core/web_session). 비밀값 — 로그·응답에 내보내지 않는다.
     admin_user: str = "admin"
@@ -172,8 +167,6 @@ class Settings(BaseSettings):
     alarm_local_hold_sec: int = 3600
     #: 오늘(KST) 재부팅이 이 횟수 이상이면 "재부팅 잦음".
     alarm_reboot_per_day: int = 3
-    #: 닫힌 알람 이력 보존 일수.
-    alarm_retention_days: int = 365
 
     # ── S-25 스케줄 배포 (ADR-010) ─────────────────────────────────────
     #: 배포 진행 판정 주기(초).

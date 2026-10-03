@@ -24,7 +24,7 @@ import re
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.config import settings
+from app.core.server_settings import runtime
 
 log = logging.getLogger(__name__)
 
@@ -113,18 +113,18 @@ async def drop_expired_partitions(
 ) -> list[str]:
     now = now or dt.datetime.now(dt.timezone.utc)
     existing = await list_partitions(conn)
-    expired = expired_partitions(existing, now, settings.telemetry_retention_months)
+    expired = expired_partitions(existing, now, runtime.telemetry_retention_months)
     for name in expired:
         await conn.execute(text(f"DROP TABLE IF EXISTS {name}"))
         log.warning("telemetry 파티션 DROP: %s (보존 %d개월 초과)", name,
-                    settings.telemetry_retention_months)
+                    runtime.telemetry_retention_months)
     return expired
 
 
 async def purge_device_events(conn: AsyncConnection, now: dt.datetime | None = None) -> int:
-    """device_event 보존 일수 초과분 삭제. 건수가 적어 DELETE 로 충분하다."""
+    """device_event 보존 기간(서버 설정 event_months) 초과분 삭제. DELETE 로 충분하다."""
     now = now or dt.datetime.now(dt.timezone.utc)
-    cutoff = now - dt.timedelta(days=settings.device_event_retention_days)
+    cutoff = now - dt.timedelta(days=runtime.retention_days("event_months"))
     result = await conn.execute(
         text("DELETE FROM device_event WHERE received_at < :cutoff"), {"cutoff": cutoff}
     )
@@ -132,9 +132,9 @@ async def purge_device_events(conn: AsyncConnection, now: dt.datetime | None = N
 
 
 async def purge_closed_alarms(conn: AsyncConnection, now: dt.datetime | None = None) -> int:
-    """닫힌 지 ALARM_RETENTION_DAYS 넘은 알람 이력 삭제(ADR-009)."""
+    """닫힌 지 보관 기간(서버 설정 alarm_months) 넘은 알람 이력 삭제(ADR-009)."""
     now = now or dt.datetime.now(dt.timezone.utc)
-    cutoff = now - dt.timedelta(days=settings.alarm_retention_days)
+    cutoff = now - dt.timedelta(days=runtime.retention_days("alarm_months"))
     result = await conn.execute(
         text("DELETE FROM alarm WHERE closed_at IS NOT NULL AND closed_at < :cutoff"),
         {"cutoff": cutoff},
@@ -142,8 +142,47 @@ async def purge_closed_alarms(conn: AsyncConnection, now: dt.datetime | None = N
     return int(result.rowcount or 0)
 
 
+async def purge_commands(conn: AsyncConnection, now: dt.datetime | None = None) -> int:
+    """보낸 지 보관 기간(command_months) 넘은 원격 명령·대상·응답 삭제(문제점 27번).
+    단말 행의 마지막 명령 결과는 남는다."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(days=runtime.retention_days("command_months"))
+    old = "SELECT seq FROM command WHERE sent_at < :cutoff"
+    await conn.execute(text(f"DELETE FROM command_ack WHERE seq IN ({old})"), {"cutoff": cutoff})
+    await conn.execute(text(f"DELETE FROM command_target WHERE seq IN ({old})"), {"cutoff": cutoff})
+    result = await conn.execute(text("DELETE FROM command WHERE sent_at < :cutoff"),
+                                {"cutoff": cutoff})
+    return int(result.rowcount or 0)
+
+
+async def purge_settings_history(conn: AsyncConnection, now: dt.datetime | None = None) -> int:
+    """단말 설정 변경 이력 보관 기간(settings_history_months) 초과분 삭제.
+    현재 값(device_settings)은 그대로."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(days=runtime.retention_days("settings_history_months"))
+    result = await conn.execute(
+        text("DELETE FROM device_settings_history WHERE changed_at < :cutoff"), {"cutoff": cutoff}
+    )
+    return int(result.rowcount or 0)
+
+
+async def purge_deploys(conn: AsyncConnection, now: dt.datetime | None = None) -> int:
+    """그룹 스케줄 보낸 기록(deploy_job·deploy_item) 보관 기간(deploy_months) 초과분 삭제.
+    단말별 적용 상태(device_schedule)는 남기되, 지운 기록을 가리키는 job_id 만 비운다."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(days=runtime.retention_days("deploy_months"))
+    old = "SELECT id FROM deploy_job WHERE created_at < :cutoff"
+    await conn.execute(text(f"UPDATE device_schedule SET job_id = NULL WHERE job_id IN ({old})"),
+                       {"cutoff": cutoff})
+    await conn.execute(text(f"DELETE FROM deploy_item WHERE job_id IN ({old})"), {"cutoff": cutoff})
+    result = await conn.execute(text("DELETE FROM deploy_job WHERE created_at < :cutoff"),
+                                {"cutoff": cutoff})
+    return int(result.rowcount or 0)
+
+
 async def run() -> None:
-    """스케줄러·기동 진입점. 실패해도 예외를 올리지 않는다(다음 실행이 따라잡는다)."""
+    """스케줄러·기동 진입점. 실패해도 예외를 올리지 않는다(다음 실행이 따라잡는다).
+    보관 기간은 서버 설정 "기록 보관 기간"(문제점 27번)."""
     from app.db import engine
 
     try:
@@ -152,7 +191,11 @@ async def run() -> None:
             dropped = await drop_expired_partitions(conn)
             purged = await purge_device_events(conn)
             alarms = await purge_closed_alarms(conn)
-        log.info("파티션 점검: 유지 %s, DROP %s, device_event 삭제 %d건, 알람 이력 삭제 %d건",
-                 created, dropped, purged, alarms)
+            cmds = await purge_commands(conn)
+            hist = await purge_settings_history(conn)
+            deploys = await purge_deploys(conn)
+        log.info("보관 점검: 파티션 유지 %s, DROP %s, "
+                 "이벤트 %d·알람 이력 %d·명령 %d·설정 이력 %d·보낸 기록 %d건 삭제",
+                 created, dropped, purged, alarms, cmds, hist, deploys)
     except Exception:  # noqa: BLE001
         log.exception("파티션 점검 실패 (다음 주기에 재시도)")

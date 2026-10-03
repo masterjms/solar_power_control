@@ -146,6 +146,9 @@ class Device(Base):
     #: 마지막 OFFLINE 시각.
     offline_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: 누적 발전·사용(Wh, 문제점 27·29번). 일 집계가 telemetry_daily 를 통계 시작일부터 다시 더해 적는다(멱등).
+    energy_gen_wh_total: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    energy_use_wh_total: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     lost_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     reboot_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     #: 마지막 CONFIG_SET 발행 시각.

@@ -6,6 +6,7 @@ import { DeviceMap, PIN, PinIcon } from "./KakaoMap";
 import { Pager, RemoteBadge, shortPath } from "./DeviceList";
 import { TAB_LABEL, alarmValue } from "./Alarms";
 import { CommandForm, CommandResult, durText, useLedBasis } from "./Command";
+import EnergyCards from "./Energy";
 
 const REFRESH_MS = 30_000;
 const SAMPLE = 500; // 목록 API 최대 size. ACTIVE 가 이보다 많으면 "표본 500대"
@@ -190,8 +191,8 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
       </Card>
 
       {/* 3행 */}
-      <PlaceholderCard title="발전과 사용" meta="최근 7일, MWh" className="h200" stage="7차" note="일 집계(daily rollup)는 있으나 조회 API 가 없다" />
-      <PlaceholderCard title="에너지 합계" meta="전체 단말" className="h200" stage="7차" note="금일·누적 발전, 감축량" />
+      {/* 3행 — 발전과 사용 · 에너지 합계(문제점 29번, 단말 일일 값 기반) */}
+      <EnergyCards tick={tick} />
 
       {/* 4행 */}
       <PlaceholderCard title="최근 이벤트" meta="전체 단말" className="full h200" stage="6차" note="전체 이벤트 조회 API(GET /api/events) 추가 필요 — 지금은 단말별 이벤트만 드로어에서" />

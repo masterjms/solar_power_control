@@ -13,7 +13,7 @@ def test_device_values_are_kwh_x100():
     got = energy.from_device({"er": 0, "eg": 160, "eu": 85, "yg": 200, "yu": 150}, NOON, START)
     assert got["source"] == "device" and got["no_value"] is False
     assert got["gen_wh"] == 1600.0 and got["use_wh"] == 850.0  # 160 = 1.60 kWh
-    assert got["co2_g"] == round(1600.0 * energy.settings.ghg_kg_per_kwh, 2)
+    assert got["co2_g"] == round(1600.0 * energy.runtime.ghg_kg_per_kwh, 2)
 
 
 def test_zero_is_a_value_not_missing():
@@ -22,7 +22,8 @@ def test_zero_is_a_value_not_missing():
 
 
 def test_mppt_offline_means_no_value():
-    got = energy.from_device({"er": 0x0010 | 0x0001, "eg": 0, "eu": 0, "yg": 0, "yu": 0}, NOON, START)
+    tm = {"er": 0x0010 | 0x0001, "eg": 0, "eu": 0, "yg": 0, "yu": 0}
+    got = energy.from_device(tm, NOON, START)
     assert got["no_value"] is True and got["gen_wh"] is None and got["use_wh"] is None
 
 
@@ -40,3 +41,16 @@ def test_stale_telemetry_is_blank_for_today():
 def test_bad_types_do_not_crash():
     got = energy.from_device({"er": "x", "eg": "12", "eu": None}, NOON, START)
     assert got["gen_wh"] == 120.0 and got["use_wh"] is None
+
+
+def test_aggregate_today_counts_and_sums():
+    rows = [
+        ({"er": 0, "eg": 160, "eu": 85}, NOON),            # 반영
+        ({"er": 0, "eg": 40, "eu": None}, NOON),           # 반영(사용 없음 → 0)
+        ({"er": 0x0010, "eg": 0, "eu": 0}, NOON),          # MPPT 무응답
+        ({"er": 0, "eg": 160, "eu": 85}, START - dt.timedelta(hours=1)),  # 어제 보고 → 보고 없음
+        ({"er": 0, "pp": 100}, NOON),                      # 옛 펌웨어 → 보고 없음
+        (None, None),                                      # Telemetry 없음
+    ]
+    got = energy.aggregate_today(rows, START)
+    assert got == {"gen_wh": 2000, "use_wh": 850, "reported": 2, "no_report": 3, "mppt_offline": 1}

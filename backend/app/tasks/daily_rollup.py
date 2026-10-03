@@ -33,6 +33,8 @@ import logging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.core.server_settings import runtime
+
 log = logging.getLogger(__name__)
 
 KST = dt.timezone(dt.timedelta(hours=9))
@@ -123,6 +125,18 @@ _DEVICE_ENERGY_SQL = text(
     """
 )
 
+#: 누적(문제점 27·29번): 통계 시작일부터의 하루 요약을 단말마다 다시 더한다 — 멱등. 요약 없는 단말은 0.
+_TOTALS_SQL = text(
+    """
+    UPDATE device d
+       SET energy_gen_wh_total = coalesce(a.g, 0), energy_use_wh_total = coalesce(a.u, 0)
+    FROM (SELECT dv.uuid, sum(t.gen_wh) AS g, sum(t.use_wh) AS u
+          FROM device dv LEFT JOIN telemetry_daily t ON t.uuid = dv.uuid AND t.day >= :since
+          GROUP BY dv.uuid) a
+    WHERE a.uuid = d.uuid
+    """
+)
+
 #: 전일 값(yg·yu)을 읽기 시작하는 시각 — 다음날 00:05(KST). 자정 직후는 보드가 아직 넘기기 전일 수 있다.
 NEXT_DAY_FROM = dt.timedelta(minutes=5)
 
@@ -150,6 +164,7 @@ async def rollup_day(conn: AsyncConnection, day: dt.date) -> int:
         "start": start, "end": end, "day": day,
         "next_from": end + NEXT_DAY_FROM, "next_end": end + dt.timedelta(days=1),
     })
+    await conn.execute(_TOTALS_SQL, {"since": runtime.stats_since or dt.date(2000, 1, 1)})
     return int(result.rowcount or 0)
 
 

@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.core.server_settings import runtime
 from app.models.device import Device
 from app.tasks.daily_rollup import KST, MAX_GAP_SEC
 
@@ -65,7 +65,7 @@ def today_start_kst(now: dt.datetime) -> dt.datetime:
 
 
 def co2_g(gen_wh: float | None) -> float | None:
-    return None if gen_wh is None else gen_wh * settings.ghg_kg_per_kwh
+    return None if gen_wh is None else gen_wh * runtime.ghg_kg_per_kwh
 
 
 def _int(v: Any) -> int | None:
@@ -98,6 +98,27 @@ def from_device(
     g = co2_g(gen)
     return {"gen_wh": gen, "use_wh": use, "co2_g": None if g is None else round(g, 2),
             "no_value": False, "source": "device"}
+
+
+def aggregate_today(
+    rows: list[tuple[dict[str, Any] | None, dt.datetime | None]], today_start: dt.datetime
+) -> dict[str, int]:
+    """여러 단말의 오늘 발전·사용 합(문제점 29번 "금일"). 값이 있는 단말만 더하고 나머지는 센다 —
+    보고 없음(no_report: Telemetry 없음·어제 이전·옛 펌웨어)과 MPPT 무응답(mppt_offline)은 0 으로 섞지 않는다."""
+    gen = use = reported = no_report = mppt = 0
+    for tm, at in rows:
+        got = from_device(tm, at, today_start)
+        if got is None or (got["gen_wh"] is None and not got["no_value"]):
+            no_report += 1
+            continue
+        if got["no_value"]:
+            mppt += 1
+            continue
+        reported += 1
+        gen += int(got["gen_wh"])
+        use += int(got["use_wh"] or 0)
+    return {"gen_wh": gen, "use_wh": use, "reported": reported, "no_report": no_report,
+            "mppt_offline": mppt}
 
 
 async def today(db: AsyncSession, uuids: list[str], now: dt.datetime) -> dict[str, dict]:

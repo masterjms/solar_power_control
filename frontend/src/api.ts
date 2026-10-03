@@ -153,11 +153,27 @@ export interface ServerSettingItem {
   max: number;
   default: number;
   value: number;
+  /** 저장값 = 표시값 × scale (소수 항목). */
+  scale: number;
+  /** int | date(YYYYMMDD 정수, 0 = 없음). */
+  kind: "int" | "date";
   updated_by: string | null;
   updated_at: string | null;
 }
 export interface ServerSettings {
   groups: { id: string; title: string; items: ServerSettingItem[] }[];
+}
+
+/** GET /api/energy/summary — 대시보드 발전·사용 그래프와 합계(문제점 29번). Wh 단위. */
+export interface EnergySummary {
+  period: "7d" | "30d" | "12m";
+  since: string | null;
+  from: string;
+  today: string;
+  days: { day: string; gen_wh: number; use_wh: number; est_gen_wh: number; devices: number; today: boolean }[];
+  now: { gen_wh: number; use_wh: number; reported: number; no_report: number; mppt_offline: number; total_devices: number };
+  total: { gen_wh: number; use_wh: number; co2_kg: number };
+  ghg_kg_per_kwh: number;
 }
 
 export interface DeviceCounts {
@@ -715,6 +731,9 @@ export const api = {
   serverSettings: () => request<ServerSettings>("/api/server-settings"),
   putServerSettings: (values: Record<string, number>) =>
     request<ServerSettings>("/api/server-settings", json("PUT", { values })),
+  energySummary: (period: EnergySummary["period"], nodeId?: number | null) =>
+    request<EnergySummary>(`/api/energy/summary?${new URLSearchParams({ period, ...(nodeId ? { node_id: String(nodeId) } : {}) })}`),
+  energyReset: () => request<{ since: string; daily_rows_deleted: number; devices_zeroed: number }>("/api/energy/reset", json("POST")),
 
   // 5차: 법정동 트리
   listRegions: () => request<Region[]>("/api/regions"),
