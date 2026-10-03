@@ -362,7 +362,7 @@ function LedControl({ d, onClose, onDetail }: { d: Device; onClose: () => void; 
           {msg && <div className="okl">{msg}</div>}
           <CommandForm target={{ kind: "device", id: d.uuid }} targetLabel={d.site ?? d.uuid}
             basis={basis}
-            blocked={d.state !== "ACTIVE" ? "운영(ACTIVE) 단말에만 보낼 수 있다" : null}
+            blocked={d.state !== "ACTIVE" ? "운영(ACTIVE) 단말에만 보낼 수 있다" : !d.is_online ? "오프라인 단말에는 보낼 수 없다 — 다시 접속하면 보낼 수 있다" : null}
             onSent={(c) => (setSeq(c.seq), setMsg(`명령 #${c.seq} 발행함${c.payload.dur ? ` · 유지 ${durText(Number(c.payload.dur))}` : ""}`))} />
           {seq !== null && <CommandResult seq={seq} onClose={() => setSeq(null)} />}
           <div className="bar2"><span className="sp" /><button type="button" className="btn" onClick={onDetail}>단말 상세 열기</button></div>

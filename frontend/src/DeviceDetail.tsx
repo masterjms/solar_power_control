@@ -105,8 +105,6 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
 
   // 설정 패널
   const [profileId, setProfileId] = useState("");
-  const [tiOv, setTiOv] = useState("");
-  const [kaOv, setKaOv] = useState("");
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
   const [site, setSite] = useState("");
@@ -135,8 +133,6 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
       setError(null);
       if (!formTouched.current) {
         setProfileId(String(d.profile_id));
-        setTiOv(d.ti_override === null ? "" : String(d.ti_override));
-        setKaOv(d.ka_override === null ? "" : String(d.ka_override));
         setLat(d.lat === null ? "" : String(d.lat));
         setLon(d.lon === null ? "" : String(d.lon));
         setSite(d.site ?? "");
@@ -282,8 +278,6 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
     const body: ConfigPatchBody = {};
     const num = (s: string) => (s.trim() === "" ? null : Number(s));
     if (Number(profileId) !== dev.profile_id) body.profile_id = Number(profileId);
-    if (num(tiOv) !== dev.ti_override) body.ti_override = num(tiOv);
-    if (num(kaOv) !== dev.ka_override) body.ka_override = num(kaOv);
     if (num(lat) !== dev.lat) body.lat = num(lat);
     if (num(lon) !== dev.lon) body.lon = num(lon);
     if (site !== (dev.site ?? "")) {
@@ -300,6 +294,21 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
       const affectsDevice = ["profile_id", "ti_override", "ka_override", "lat", "lon"].some((k) => k in body);
       if (affectsDevice) setWatch({ kind: "config", since: Date.now(), published: r.published || r.reason === "NOT_ACTIVE" });
       formTouched.current = false;
+      await load();
+      onChanged();
+    } catch (err) {
+      setCfgErr(errorText(err));
+    }
+  }
+
+  /** 문제점 28번 — 남아 있는 ti/ka override 를 지운다(통신 주기 설정 값으로). */
+  async function clearOverride() {
+    setCfgRes(null);
+    setCfgErr(null);
+    try {
+      const r = await api.patchConfig(uuid, { ti_override: null, ka_override: null });
+      setCfgRes(r);
+      setWatch({ kind: "config", since: Date.now(), published: r.published || r.reason === "NOT_ACTIVE" });
       await load();
       onChanged();
     } catch (err) {
@@ -364,9 +373,11 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
   if (error && !dev) return <>{header}<div className="db"><div className="err">{error}</div></div></>;
   if (!dev) return <>{header}<div className="db"><div className="muted">불러오는 중…</div></div></>;
   const lt = dev.last_telemetry;
-  const selProfile = profiles.find((p) => p.id === Number(profileId));
-  const tiEff = tiOv.trim() === "" ? selProfile?.ti ?? dev.ti_effective : Number(tiOv);
-  const kaEff = kaOv.trim() === "" ? selProfile?.ka ?? dev.ka_effective : Number(kaOv);
+  // 단말에만 따로 준 주기 값(ti/ka override)은 화면에서 더 입력하지 않는다(문제점 28번). 남아 있으면 지울 수만 있다.
+  const hasOverride = dev.ti_override !== null || dev.ka_override !== null;
+  const offline = !dev.is_online;
+  //: 오프라인 단말에는 단말이 받아야 하는 조작을 막는다(문제점 32번). 서버 안에서 끝나는 것(상태·설정·삭제)은 그대로.
+  const offMsg = "오프라인 — 단말이 다시 접속하면 할 수 있다";
   const recv = watch ? receivedText(watch, dev) : null;
   const watchExpired = watch && !recv?.done && Date.now() - watch.since > WATCH_MAX_MS;
 
@@ -452,8 +463,12 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
                 {!profiles.some((p) => p.id === dev.profile_id) && <option value={dev.profile_id}>#{dev.profile_id} {dev.profile_name ?? ""}</option>}
               </select>
             </label>
-            <label>ti_override <small>빈칸 = 주기 설정 값 → 적용 {tiEff}</small><input type="number" min={60} max={3600} value={tiOv} placeholder="주기 설정 값" onChange={(e) => setTiOv(e.target.value)} /></label>
-            <label>ka_override <small>빈칸 = 주기 설정 값 → 적용 {kaEff}</small><input type="number" min={60} max={1800} value={kaOv} placeholder="주기 설정 값" onChange={(e) => setKaOv(e.target.value)} /></label>
+            {hasOverride && (
+              <div className="w2 cap c-warn">
+                이 단말에만 따로 준 주기 값이 남아 있습니다(ti {str(dev.ti_override)} / ka {str(dev.ka_override)}) — 통신 주기 설정 대신 이 값이 적용 중입니다.{" "}
+                <button type="button" className="btn sm" onClick={clearOverride}>주기 설정 값으로</button>
+              </div>
+            )}
             <label>위도 lat<input type="number" step="any" value={lat} onChange={(e) => setLat(e.target.value)} /></label>
             <label>경도 lon<input type="number" step="any" value={lon} onChange={(e) => setLon(e.target.value)} /></label>
             <label>시설명 site <SiteHint value={site} /><input value={site} maxLength={24} onChange={(e) => setSite(e.target.value)} /></label>
@@ -476,7 +491,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
             <label className="w2">주소 address<input value={address} onChange={(e) => setAddress(e.target.value)} /></label>
             <div className="w2 bar2">
               <button type="submit" className="btn pri">설정 변경</button>
-              <span className="cap">profile/override/lat/lon 이 바뀌면 cv_server +1 → CONFIG_SET. site·지역이 바뀌면 REGISTER_ACK(retain) 재발행(site·grp), cv 그대로.</span>
+              <span className="cap">통신 주기 설정·위도·경도가 바뀌면 cv_server +1 → CONFIG_SET(단말이 다음에 보낸 직후 받는다). 시설명·지역이 바뀌면 REGISTER_ACK(retain) 재발행, cv 그대로.</span>
             </div>
           </form>
           {cfgRes && (
@@ -517,7 +532,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
         <DeviceAlarms uuid={uuid} />
 
         {/* ---------- 스케줄 (S-25, §13.1 ⑥) ---------- */}
-        <DeviceScheduleSec uuid={uuid} />
+        <DeviceScheduleSec uuid={uuid} online={dev.is_online} />
 
         {/* ---------- 원격 제어 (5차 개별 COMMAND) ---------- */}
         <div className="sec">
@@ -532,7 +547,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
           {cmdNote && <div className="okl" style={{ marginTop: 8 }}>{cmdNote}</div>}
           <div style={{ marginTop: 12 }}>
             <CommandForm target={{ kind: "device", id: uuid }} targetLabel={dev.site ?? uuid} basis={basis}
-              blocked={dev.state !== "ACTIVE" ? "운영(ACTIVE) 단말에만 보낼 수 있다" : null}
+              blocked={dev.state !== "ACTIVE" ? "운영(ACTIVE) 단말에만 보낼 수 있다" : offline ? "오프라인 단말에는 보낼 수 없다 — 다시 접속하면 보낼 수 있다" : null}
               onSent={(c) => (setCmdSeq(c.seq), setCmdNote(`명령 #${c.seq} 발행함 ${localTime(c.sent_at)}${c.payload.dur ? ` · 유지 ${durText(Number(c.payload.dur))}` : ""}`))} />
           </div>
           {cmdSeq !== null && <CommandResult seq={cmdSeq} onClose={() => setCmdSeq(null)} />}
@@ -544,7 +559,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
         <div className="sec">
           <h4>PING · 삭제 <span>PONG 은 단말 송신 직후에만 온다(60초 대기)</span></h4>
           <div className="bar2">
-            <button type="button" className="btn" onClick={doPing}>PING</button>
+            <button type="button" className="btn" onClick={doPing} disabled={offline} title={offline ? offMsg : "PING — PONG 은 단말 송신 직후에만 온다"}>PING</button>
             <button type="button" className="btn danger" onClick={doDelete}>삭제</button>
           </div>
           {actionMsg && <code className="payload">{actionMsg}</code>}
@@ -649,7 +664,7 @@ function DeviceAlarms({ uuid }: { uuid: string }) {
 }
 
 /** 스케줄 탭(§13.1 ⑥) — 배정 프로필·단말 표·일치·오늘 점등/소등·DIP4, [단말에서 읽기] [다시 배포]. */
-function DeviceScheduleSec({ uuid }: { uuid: string }) {
+function DeviceScheduleSec({ uuid, online }: { uuid: string; online: boolean }) {
   const [s, setS] = useState<DeviceSchedule | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -685,8 +700,9 @@ function DeviceScheduleSec({ uuid }: { uuid: string }) {
       {s.dip4 === false && <div className="cap c-warn">DIP4 OFF — 다단계를 무시하고 시작 밝기로만 운전한다.</div>}
       {s.deploy_status && <div className="cap">진행 중인 보내기 #{s.deploy_job_id}: {s.deploy_status}</div>}
       <div className="bar2" style={{ marginTop: 8 }}>
-        <button type="button" className="btn" onClick={() => act(async () => { const r = await api.readSettings(uuid); return `단말에서 읽기 명령 번호 ${r.seq}`; })}>단말에서 읽기</button>
-        <button type="button" className="btn pri" disabled={!s.profile_id || s.state !== "ACTIVE"} onClick={() => act(async () => {
+        <button type="button" className="btn" disabled={!online} title={online ? "SETTINGS_GET" : "오프라인 — 단말이 다시 접속하면 읽을 수 있다"} onClick={() => act(async () => { const r = await api.readSettings(uuid); return `단말에서 읽기 명령 번호 ${r.seq}`; })}>단말에서 읽기</button>
+        <button type="button" className="btn pri" disabled={!s.profile_id || s.state !== "ACTIVE" || !online}
+          title={!online ? "오프라인 — 지역 단위로 보낸 것은 단말이 다시 접속하면 자동으로 간다" : undefined} onClick={() => act(async () => {
           const j = await api.createDeploy({ profile_id: s.profile_id!, scope: "device", scope_id: uuid });
           return `보내기 #${j.id} 시작`;
         })}>다시 보내기</button>

@@ -60,7 +60,7 @@ export function RemoteBadge({ d, onReleased }: { d: Device; onReleased?: (msg: s
   return (
     <span className="bar2" style={{ flexWrap: "nowrap" }}>
       <span className="badge b-blue" title={`원격 조작 ${d.override_act ?? "?"} · ${d.override_level ?? ""} · 명령 번호 ${d.override_seq ?? "-"} · until ${d.override_until ?? "-"}`}>원격 {min}분 남음</span>
-      <button type="button" className="btn sm" disabled={busy} onClick={release}>해제</button>
+      <button type="button" className="btn sm" disabled={busy || !d.is_online} title={d.is_online ? "스케줄로 복귀(act=auto)" : "오프라인 — 단말이 다시 접속하면 해제할 수 있다"} onClick={release}>해제</button>
     </span>
   );
 }

@@ -437,7 +437,7 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
                     <td>{d.deploy_status ? <DeployBadge s={d.deploy_status} /> : ""}</td>
                     <td>{d.today_on ? `${d.today_on} ~ ${d.today_off}` : ""}</td>
                     <td>{d.dip4 === null ? "" : d.dip4 ? "ON" : <span className="c-warn" title="DIP4 OFF: 단계 무시, 시작 밝기로만 운전">OFF</span>}</td>
-                    <td>{profile && d.profile_id === profile.id && <button type="button" className="btn sm" onClick={() => deploy("device", d.uuid, d.site ?? d.uuid)}>다시 보내기</button>}</td>
+                    <td>{profile && d.profile_id === profile.id && <button type="button" className="btn sm" disabled={!d.is_online} title={d.is_online ? undefined : "오프라인 — 지역 단위로 보낸 것은 다시 접속하면 자동으로 간다"} onClick={() => deploy("device", d.uuid, d.site ?? d.uuid)}>다시 보내기</button>}</td>
                   </tr>
                 ))}
                 {devs && shownDevs.length === 0 && <tr><td colSpan={9} className="muted">단말이 없습니다.</td></tr>}

@@ -23,7 +23,10 @@
   color-scheme:light;
 }
 :root{
-  --f1:12px; --f2:13px; --f3:15px; --f4:20px;
+  /* 글자 크기 — 이 넷만 쓴다(문제점 26번): f1 보조·캡션 12, f2 본문 13, f3 카드·창 제목 15, f4 페이지 제목·큰 숫자 20.
+     굵기는 400(본문)·600(제목·강조) 둘. 글꼴은 --font 하나(코드·식별자만 --mono). style.css 밖(인라인)에서 글자 크기를 정하지 않는다.
+     f-touch 는 폰 입력칸 전용(16px 미만이면 iOS 가 화면을 확대한다). */
+  --f1:12px; --f2:13px; --f3:15px; --f4:20px; --f-touch:16px;
   --s1:4px; --s2:8px; --s3:12px; --s4:16px;
   --r1:8px; --r2:12px;
   --font:"Noto Sans KR","Segoe UI","Apple SD Gothic Neo",sans-serif;
@@ -325,8 +328,8 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .georesults{list-style:none; margin:var(--s2) 0 0; padding:0; display:grid; gap:4px; max-height:200px; overflow:auto}
 
 /* 지도 핀 말풍선(문제점 13번) — 시설명 · 배터리 전압 */
-.kpin-tip{display:flex; flex-direction:column; gap:2px; padding:6px 10px; border-radius:8px; background:#1f2733; color:#fff; font-size:12px; line-height:1.35; white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,.25); pointer-events:none}
-.kpin-tip b{font-size:13px}
+.kpin-tip{display:flex; flex-direction:column; gap:2px; padding:6px 10px; border-radius:8px; background:#1f2733; color:#fff; font-size:var(--f1); line-height:1.35; white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,.25); pointer-events:none}
+.kpin-tip b{font-size:var(--f2)}
 .kpin-tip span{color:#cfd6e0}
 .pinico{display:inline-flex; vertical-align:-5px; margin-right:4px}
 .pinico svg{display:block}
@@ -336,11 +339,11 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .login{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px; background:var(--bg)}
 .login-box{width:100%; max-width:360px; display:flex; flex-direction:column; gap:var(--s3); background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:24px}
 .login-box .logo{display:flex; flex-direction:column; gap:2px; margin-bottom:var(--s2)}
-.login-box .logo b{font-size:18px}
+.login-box .logo b{font-size:var(--f4)}
 .login-box .logo span{font-size:var(--f1); color:var(--muted)}
 .login-box label{display:flex; flex-direction:column; gap:6px; font-size:var(--f1); color:var(--muted)}
-.login-box .inp{height:44px; font-size:16px; width:100%} /* 16px: iOS 가 입력 때 확대하지 않게 */
-.login-box .btn{height:44px; font-size:16px}
+.login-box .inp{height:44px; font-size:var(--f-touch); width:100%}
+.login-box .btn{height:44px; font-size:var(--f-touch)}
 /* ===== 스마트폰(문제점 16번) — 메뉴는 위쪽 가로 스크롤 줄, 카드는 한 줄로 ===== */
 @media (max-width:760px){
   .shell{grid-template-columns:minmax(0,1fr)}

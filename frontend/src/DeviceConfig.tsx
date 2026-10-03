@@ -480,11 +480,14 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
 
   // ---- 상태 판단 ----
   const state = dev?.state;
-  const canRead = state === "PENDING" || state === "ACTIVE";
+  // 오프라인 단말에는 단말이 받아야 하는 요청(읽기·쓰기·되돌리기)을 보내지 않는다(문제점 32번).
+  const online = !!dev?.is_online;
+  const canRead = (state === "PENDING" || state === "ACTIVE") && online;
   const pending = st?.pending ?? null;
   const writeBlock: string | null =
     !st ? "불러오는 중" :
     state !== "ACTIVE" ? "쓰기는 운영(ACTIVE) 단말만" :
+    !online ? "오프라인 — 단말이 다시 접속해야 쓸 수 있다" :
     !values ? "아직 단말에서 읽지 않았다 — 먼저 '단말에서 읽기'" :
     pending ? `${pending.kind} 명령 번호 ${pending.seq} 응답 대기 중` :
     rangeBad.length ? `범위를 벗어난 값: ${rangeBad.map((i) => i.label).join(", ")}` :
@@ -646,7 +649,7 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
 
         <div className="bar2">
           <button type="button" className="btn" disabled={!canRead || !!pending || busy} onClick={doRead}
-            title={canRead ? "SETTINGS_GET — 25개 값·표 조건·현장 스위치를 한 번에" : "읽기는 승인 대기(PENDING)·운영(ACTIVE) 단말만"}>
+            title={canRead ? "SETTINGS_GET — 25개 값·표 조건·현장 스위치를 한 번에" : !online ? "오프라인 — 단말이 다시 접속해야 읽을 수 있다" : "읽기는 승인 대기(PENDING)·운영(ACTIVE) 단말만"}>
             단말에서 읽기
           </button>
           <button type="button" className="btn pri" disabled={!!writeBlock || busy} onClick={doWrite} title={writeBlock ?? "SETTINGS_SET — 25개 전부(+ 표 조건을 고르면 tbl)"}>
@@ -690,7 +693,7 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
             </div>
             <div className="row">
               <button type="button" className="btn" disabled={busy} onClick={doAccept} title="POST …/settings/accept — DB ← 단말 보고값">단말 값 받아들이기</button>
-              <button type="button" className="btn pri" disabled={busy || state !== "ACTIVE" || !!pending} onClick={doRevert} title="POST …/settings/revert — DB 값을 SETTINGS_SET">서버 값으로 되돌리기</button>
+              <button type="button" className="btn pri" disabled={busy || state !== "ACTIVE" || !!pending || !online} onClick={doRevert} title={online ? "POST …/settings/revert — DB 값을 SETTINGS_SET" : "오프라인 — 단말이 다시 접속해야 보낼 수 있다"}>서버 값으로 되돌리기</button>
             </div>
           </div>
         )}
