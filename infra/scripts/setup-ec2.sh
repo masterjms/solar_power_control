@@ -33,6 +33,14 @@ fi
 log "apt 갱신"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
+
+# ── 시간대: KST. cron(백업 03:10·점검 08:30·비용 09:00·인증서 갱신 06:30)과 로그를 한국 시각으로 본다.
+#    (앱은 시각을 UTC 로 저장하고 KST 로 계산하므로 서버 시간대와 무관하다 — 2026-10-03)
+if [ "$(timedatectl show -p Timezone --value 2>/dev/null)" != "Asia/Seoul" ]; then
+    timedatectl set-timezone Asia/Seoul
+    systemctl restart cron 2>/dev/null || true
+    echo "시간대 → Asia/Seoul"
+fi
 apt-get install -y -q ca-certificates curl gnupg git ufw jq
 
 # ── 2. Docker ────────────────────────────────────────────────────────

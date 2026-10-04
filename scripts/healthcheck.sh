@@ -5,6 +5,9 @@
 #   bash scripts/healthcheck.sh            화면 출력, 이상이 있으면 종료코드 1
 #   bash scripts/healthcheck.sh --slack    이상이 있을 때만 Slack (.env 의 SLACK_WEBHOOK_URL)
 #   bash scripts/healthcheck.sh --slack --always   정상이어도 보낸다 (일일 요약)
+#   bash scripts/healthcheck.sh --slack --daily     매일 아침 한 줄 요약(마을 방송과 같은 모양):
+#                                                    "✅ 서버 점검 — 모두 정상 · 디스크 31% · 메모리 28% · 앱 ok · 백업 4h 전 · 인증서 51일"
+#                                                    문제가 있으면 "⚠️ … 확인 필요 N건" + 항목 줄. 항상 보낸다
 #   bash scripts/healthcheck.sh --slack --on-change  10분 cron 용: 문제 목록이 지난번과 달라졌을 때만 보낸다
 #                                                    (새 문제 → 알림, 모두 정상으로 돌아오면 "복구" 알림). 상태 파일 ~/.healthcheck.state
 #
@@ -23,12 +26,13 @@ set -uo pipefail          # -e 는 쓰지 않는다. 한 항목이 실패해도 
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-SLACK=0; ALWAYS=0; ONCHANGE=0
+SLACK=0; ALWAYS=0; ONCHANGE=0; DAILY=0
 for arg in "$@"; do
     case "$arg" in
         --slack)  SLACK=1 ;;
         --always) ALWAYS=1 ;;
         --on-change) ONCHANGE=1 ;;
+        --daily)  DAILY=1 ;;
         --dry)    ;;                     # 예전 호환 — 기본이 화면 출력이다
         *) echo "알 수 없는 옵션: $arg"; exit 2 ;;
     esac
@@ -42,6 +46,7 @@ BACKUP_DIR="${BACKUP_DIR:-$HOME/db-backups}"
 STATE_FILE="${STATE_FILE:-$HOME/.healthcheck.state}"   # --on-change 가 지난번 문제 목록의 해시를 둔다
 
 PROBLEMS=(); LINES=()
+SUMMARY=()               # --daily 한 줄 요약에 넣을 짧은 값들(정상 항목만)
 add_ok()   { LINES+=("  [OK]   $1"); }
 add_bad()  { LINES+=("  [FAIL] $1"); PROBLEMS+=("$1"); }
 add_warn() { LINES+=("  [WARN] $1"); PROBLEMS+=("$1"); }
@@ -53,7 +58,7 @@ DISK_FREE="$(df -h --output=avail / | tail -1 | tr -d ' ')"
 if [ "${DISK_PCT:-0}" -ge "$DISK_WARN" ]; then
     add_bad "디스크 ${DISK_PCT}% 사용 (여유 ${DISK_FREE})"
 else
-    add_ok "디스크 ${DISK_PCT}% (여유 ${DISK_FREE})"
+    add_ok "디스크 ${DISK_PCT}% (여유 ${DISK_FREE})"; SUMMARY+=("디스크 ${DISK_PCT}%")
 fi
 # docker 가 차지하는 양 — 로그 로테이션이 빠졌거나 이미지가 쌓이면 여기서 보인다
 DOCKER_DU="$(docker system df --format '{{.Type}} {{.Size}}' 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
@@ -67,7 +72,7 @@ if [ -z "$MEM_PCT" ]; then
 elif [ "$MEM_PCT" -ge "$MEM_WARN" ]; then
     add_warn "메모리 ${MEM_PCT}% (swap ${SWAP_USED:-?} MB)"
 else
-    add_ok "메모리 ${MEM_PCT}% (swap ${SWAP_USED:-?} MB)"
+    add_ok "메모리 ${MEM_PCT}% (swap ${SWAP_USED:-?} MB)"; SUMMARY+=("메모리 ${MEM_PCT}%")
 fi
 
 # ── 컨테이너 ────────────────────────────────────────────────────────
@@ -97,7 +102,7 @@ if [ ${#DOWN[@]} -gt 0 ]; then
         add_bad "컨테이너 이상: ${DOWN[*]}"
     fi
 else
-    add_ok "컨테이너 ${#EXPECTED[@]}개 정상"
+    add_ok "컨테이너 ${#EXPECTED[@]}개 정상"; SUMMARY+=("컨테이너 ${#EXPECTED[@]}개")
 fi
 
 # ── mosquitto 리스너 ────────────────────────────────────────────────
@@ -109,7 +114,7 @@ else
     if listening 1883; then add_ok "mosquitto 1883 listening"; else add_bad "1883 을 듣는 프로세스가 없다"; fi
 fi
 if [ -f infra/certs/server.crt ]; then
-    if listening 8883; then add_ok "mosquitto 8883 listening (TLS)"; else add_bad "인증서는 있는데 8883 을 안 듣는다 — mosquitto 재시작 필요(리스너는 HUP 로 안 생긴다)"; fi
+    if listening 8883; then add_ok "mosquitto 8883 listening (TLS)"; SUMMARY+=("8883 ok"); else add_bad "인증서는 있는데 8883 을 안 듣는다 — mosquitto 재시작 필요(리스너는 HUP 로 안 생긴다)"; fi
 else
     add_info "8883 비활성 (infra/certs/server.crt 없음 — 4차 전 정상)"
 fi
@@ -128,7 +133,7 @@ fi
 # ── backend /health ─────────────────────────────────────────────────
 HEALTH="$(docker compose exec -T backend python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/health',timeout=5).read().decode())" 2>/dev/null || echo '')"
 case "$HEALTH" in
-    *'"status":"ok"'*|*'"status": "ok"'*) add_ok "backend /health ok" ;;
+    *'"status":"ok"'*|*'"status": "ok"'*) add_ok "backend /health ok"; SUMMARY+=("앱 ok") ;;
     *'"status"'*)                          add_bad "backend /health: $HEALTH" ;;
     *)                                     add_warn "backend /health 응답 없음 (1차엔 정상)" ;;
 esac
@@ -179,7 +184,7 @@ else
     if [ "$AGE_H" -gt "$BACKUP_MAX_AGE_H" ]; then
         add_bad "최근 백업이 ${AGE_H}시간 전 — cron 이 멈췄을 수 있다"
     else
-        add_ok "백업 ${AGE_H}시간 전 ($SIZE)"
+        add_ok "백업 ${AGE_H}시간 전 ($SIZE)"; SUMMARY+=("백업 ${AGE_H}h 전")
     fi
 fi
 
@@ -190,7 +195,7 @@ if [ -f "$CERT" ]; then
     if [ -n "$END" ]; then
         DAYS=$(( ( $(date -d "$END" +%s) - $(date +%s) ) / 86400 ))
         if [ "$DAYS" -le "$CERT_WARN_DAYS" ]; then add_bad "TLS 인증서 만료까지 ${DAYS}일 — 자동 갱신 확인"
-        else add_ok "TLS 인증서 ${DAYS}일 남음"; fi
+        else add_ok "TLS 인증서 ${DAYS}일 남음"; SUMMARY+=("인증서 ${DAYS}일"); fi
     fi
 fi
 
@@ -212,6 +217,18 @@ elif [ "$ONCHANGE" -eq 1 ]; then
 elif [ ${#PROBLEMS[@]} -gt 0 ]; then SEND=1; fi
 
 TEXT="$HEAD"$'\n'"$(printf '%s\n' "${LINES[@]}")"
+# --daily: 마을 방송과 같은 한 줄 요약. 정상이면 한 줄, 문제가 있으면 머리 + 항목 줄. 항상 보낸다.
+if [ "$DAILY" -eq 1 ]; then
+    SEND=1
+    if [ ${#PROBLEMS[@]} -eq 0 ]; then
+        JOINED="$(printf '%s · ' "${SUMMARY[@]}")"; JOINED="${JOINED% · }"
+        TEXT="✅ *서버 점검* — 모두 정상 · ${JOINED}"
+    else
+        TEXT="⚠️ *서버 점검* — 확인 필요 ${#PROBLEMS[@]}건 ($(hostname))"$'
+'"$(printf '%s
+' "${LINES[@]}")"
+    fi
+fi
 echo "$TEXT"
 
 if [ "$SLACK" -eq 1 ] && [ "$SEND" -eq 1 ]; then
