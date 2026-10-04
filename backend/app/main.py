@@ -27,15 +27,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from app.config import settings
 from app.core import device_password
+from app.core.access import access_guard
 from app.core.server_settings import runtime as runtime_settings
 from app.db import SessionFactory, engine, session_scope
 from app.errors import register_exception_handlers
+from app.modules.accounts.router import router as accounts_router
 from app.modules.alarm.router import router as alarm_router
 from app.modules.auth.router import router as auth_router
 from app.modules.command.router import router as command_router
@@ -52,6 +54,7 @@ from app.modules.server_settings.router import load as server_settings_load
 from app.modules.server_settings.router import router as server_settings_router
 from app.modules.settings.router import router as settings_router
 from app.modules.system.router import router as system_router
+from app.modules.system.status import router as system_status_router
 from app.mqtt.command_retry import CommandRetrier
 from app.mqtt.config_sync import ConfigSyncQueue
 from app.mqtt.connection import MqttConnection
@@ -288,17 +291,11 @@ if settings.cors_origins:
         allow_headers=["*"],
     )
 
-app.include_router(system_router)
+# 접근 검사 한 곳(ADR-013): 로그인(auth)·브로커 내부(mqtt_auth) 말고 전부 역할·지역 범위를 거친다.
+_guard = [Depends(access_guard)]
 app.include_router(auth_router)
-app.include_router(server_settings_router)
-app.include_router(energy_router)
-app.include_router(alarm_router)
-app.include_router(schedule_router)
-app.include_router(schedule_device_router)
 app.include_router(mqtt_auth_router)
-app.include_router(profile_router)
-app.include_router(device_router)
-app.include_router(region_router)
-app.include_router(geo_router)
-app.include_router(command_router)
-app.include_router(settings_router)
+for _r in (system_router, system_status_router, accounts_router, server_settings_router,
+           energy_router, alarm_router, schedule_router, schedule_device_router, profile_router,
+           device_router, region_router, geo_router, command_router, settings_router):
+    app.include_router(_r, dependencies=_guard)

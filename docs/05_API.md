@@ -366,3 +366,23 @@ applied_profile_id applied_version applied_crc applied_at device_crc device_regi
 |---|---|---|
 | GET | `/api/energy/summary?period=7d\|30d\|12m&node_id=` | `{period, since, from, today, days:[{day, gen_wh, use_wh, est_gen_wh, devices, today}], now:{gen_wh, use_wh, reported, no_report, mppt_offline, total_devices}, total:{gen_wh, use_wh, co2_kg}, ghg_kg_per_kwh}`. 날짜별은 `telemetry_daily`(단말 값; 옛 펌웨어는 `est_gen_wh` 로 서버 추정), 오늘은 지금 `eg`·`eu` 합, 누적은 `device.energy_*_wh_total` + 오늘. 통계 시작일 전은 없음, 값 없는 날은 0. `12m` 은 월 합계. `node_id` 는 그 지역 아래 단말만 |
 | POST | `/api/energy/reset` | 최고관리자. 통계 시작일 = 오늘(KST), 모든 단말 누적 0, 오늘 전 `telemetry_daily` 삭제 → `{since, daily_rows_deleted, devices_zeroed}` |
+
+## 계정 API (2026-10-04, 문제점 21번, ADR-013)
+접근 검사는 `core/access.access_guard` 한 곳: 지역관리자·게스트는 목록이 맡은 시·도로 걸러지고, 범위 밖 `{uuid}` 는 404, 게스트는 대시보드 GET 만(403 `GUEST_READ_ONLY`), 최고관리자 전용은 403 `FORBIDDEN`. 본문의 노드가 범위 밖이면 403 `OUT_OF_REGION`.
+
+| 메서드 | 경로 | 누가 | 설명 |
+|---|---|---|---|
+| GET | `/api/me` | 누구나 | `{user, role, source(env/db/dev), region_ids, regions, expires_at, can_change_password}` |
+| GET | `/api/accounts` | 최고관리자 | `{items:[{id, username, role, role_label, region_ids, regions, expires_at, expired, expiring, disabled, created_by, created_at, last_login_at, source}], regions:[{id,name}](시·도), max_super, super_count, expiry_choices}`. `.env` 계정은 id null·source env |
+| POST | `/api/accounts` | 최고관리자 | `{username, password, role(super_admin/region_admin/guest), region_ids, expires(7d…365d/never)}` → 201. 잘못되면 422 `ACCOUNT_INVALID` `detail.fields` |
+| PATCH | `/api/accounts/{id}` | 최고관리자 | `{role?, region_ids?, expires?(지금부터), disabled?}` |
+| POST | `/api/accounts/{id}/password` | 최고관리자 | `{password}` 재설정 — 그 계정의 기존 로그인 끊김 |
+| DELETE | `/api/accounts/{id}` | 최고관리자 | 자기 자신은 못 지움 |
+| GET | `/api/accounts/logins?limit=` | 최고관리자 | 로그인 기록 `[{at, username, ok, reason(ok/bad_password/expired/disabled), ip}]` |
+| POST | `/api/accounts/me/password` | 화면 계정 | `{old, new}` — 바꾸면 다시 로그인 |
+| GET | `/api/devices/pending-search?suffix=` | 관리자 | UUID 뒤 6자리 이상 → `{count, uuid}`(1대일 때만 uuid) |
+
+로그인(`POST /api/auth/login`)은 `.env` 계정 다음 DB 계정. 만료면 401 `ACCOUNT_EXPIRED`, 중지면 401 `ACCOUNT_DISABLED`. 쓰는 중 만료·중지되면 다음 요청이 401 `SESSION_ENDED`.
+
+## 서버 상태 API (2026-10-04, 문제점 31번)
+`GET /api/system/status`(최고관리자) → `{at, broker:{backend_connected, port_1883, port_8883, devices_online, devices_broker_connected, devices_active, log_tail}, db:{ok, size_bytes, tables, disk_total_bytes, disk_free_bytes, disk_used_pct, disk_warn, last_rollup_at, last_rollup_day, last_purge_at, telemetry_months}, processing:{buffer_pending, register_queue, telemetry_dropped, flush_failures, commands_open, deploy_open, mqtt_reconnects}, security:{hmac_keys, test_account_enabled, login_failures_24h, accounts_expiring_7d}, server:{version(GIT_SHA), started_at, uptime_sec, env}}`.

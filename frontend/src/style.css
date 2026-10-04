@@ -377,3 +377,11 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .ebars g.today rect{opacity:.5}
 .sw{display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:-1px; margin-right:4px}
 .sw.gen{background:var(--lamp)} .sw.use{background:var(--blue)}
+/* ===== 계정 관리(문제점 21번) — 고르기 칩 ===== */
+.chips{display:flex; flex-wrap:wrap; gap:6px}
+.chip{height:28px; padding:0 var(--s3); border:1px solid var(--line); border-radius:999px; background:var(--panel); color:var(--muted); font-size:var(--f1)}
+.chip.on,.chip[aria-pressed="true"]{border-color:var(--blue); background:var(--blue-soft); color:var(--blue); font-weight:600}
+.chip:disabled{opacity:.4}
+/* 게스트 대시보드 — 다른 화면으로 가는 링크를 막는다(지도·스크롤은 그대로) */
+.ro a[href^="#"]{pointer-events:none; text-decoration:none}
+.ro a.btn[href^="#"]{display:none} /* 게스트: 다른 화면으로 가는 버튼은 숨긴다 */

@@ -7,11 +7,12 @@ import datetime as dt
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core import ids
+from app.models.region import Region
 from app.core.auth import Principal, current_user
 from app.core.metrics import metrics
 from app.core.server_settings import runtime
@@ -114,9 +115,18 @@ async def get_metrics(
 
 
 @router.get("/api/me")
-async def me(principal: Principal = Depends(current_user)) -> dict[str, str]:
-    """현재 사용자·역할(ADR-005). 화면이 최고관리자 전용 버튼(전체 명령·트리 편집)을 숨긴다."""
-    return {"user": principal.user, "role": principal.role}
+async def me(principal: Principal = Depends(current_user),
+             db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """현재 사용자·역할·맡은 시·도(ADR-005, ADR-013). 화면이 메뉴·버튼을 역할대로 숨긴다."""
+    regions: list[str] = []
+    if principal.region_ids:
+        rows = await db.execute(select(Region.id, Region.name).where(Region.id.in_(principal.region_ids)))
+        names = dict(rows.all())
+        regions = [names.get(i, f"#{i}") for i in principal.region_ids]
+    return {"user": principal.user, "role": principal.role, "source": principal.source,
+            "region_ids": list(principal.region_ids) if principal.region_ids is not None else None,
+            "regions": regions, "expires_at": principal.expires_at,
+            "can_change_password": principal.source == "db"}
 
 
 @router.post("/api/admin/rollup")

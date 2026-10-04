@@ -72,6 +72,15 @@ async def energy_today(
     return await service.energy_today(db, [_uuid(u) for u in uuid])
 
 
+@router.get("/pending-search")
+async def pending_search(
+    suffix: str = Query(min_length=6, max_length=24, pattern="^[0-9A-Fa-f]+$"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """승인 대기 단말을 UUID 뒤 6자리 이상으로 찾는다(문제점 21번). `/{uuid}` 보다 먼저."""
+    return await service.pending_search(db, suffix)
+
+
 @router.get(f"/{_UUID_PATH}", response_model=DeviceOut)
 async def get_device(uuid: str, db: AsyncSession = Depends(get_db)) -> DeviceOut:
     return await service.get_device(db, _uuid(uuid))

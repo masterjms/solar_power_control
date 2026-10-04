@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 import re
 
 from sqlalchemy import text
@@ -180,6 +181,14 @@ async def purge_deploys(conn: AsyncConnection, now: dt.datetime | None = None) -
     return int(result.rowcount or 0)
 
 
+async def purge_login_log(conn: AsyncConnection, now: dt.datetime | None = None) -> int:
+    """로그인 기록 1년 초과분 삭제(문제점 21번)."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    result = await conn.execute(text("DELETE FROM login_log WHERE at < :cutoff"),
+                                {"cutoff": now - dt.timedelta(days=365)})
+    return int(result.rowcount or 0)
+
+
 async def run() -> None:
     """스케줄러·기동 진입점. 실패해도 예외를 올리지 않는다(다음 실행이 따라잡는다).
     보관 기간은 서버 설정 "기록 보관 기간"(문제점 27번)."""
@@ -194,6 +203,10 @@ async def run() -> None:
             cmds = await purge_commands(conn)
             hist = await purge_settings_history(conn)
             deploys = await purge_deploys(conn)
+            await purge_login_log(conn)
+        from app.core.metrics import metrics
+
+        metrics.last_purge_at = time.time()
         log.info("보관 점검: 파티션 유지 %s, DROP %s, "
                  "이벤트 %d·알람 이력 %d·명령 %d·설정 이력 %d·보낸 기록 %d건 삭제",
                  created, dropped, purged, alarms, cmds, hist, deploys)

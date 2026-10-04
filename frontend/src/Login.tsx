@@ -64,3 +64,42 @@ export async function logout() {
     location.reload();
   }
 }
+
+/** 내 비밀번호 바꾸기(화면에서 만든 계정만, 문제점 21번). 바꾸면 다시 로그인한다. */
+export function PasswordModal({ onClose }: { onClose: () => void }) {
+  const [old, setOld] = useState("");
+  const [nw, setNw] = useState("");
+  const [nw2, setNw2] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (nw.length < 8) return setErr("새 비밀번호는 8자 이상");
+    if (nw !== nw2) return setErr("새 비밀번호 두 칸이 다릅니다");
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.changeMyPassword(old, nw);
+      alert("비밀번호를 바꿨습니다. 새 비밀번호로 다시 로그인하세요.");
+      location.reload();
+    } catch (x) {
+      setErr(errorText(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="modal-ov" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <form className="modal" onSubmit={submit} role="dialog" aria-label="비밀번호 바꾸기">
+        <div className="dh"><h3>비밀번호 바꾸기</h3><button type="button" className="x" onClick={onClose} aria-label="닫기">✕</button></div>
+        <div className="db form2">
+          <label className="w2">지금 비밀번호<input type="password" value={old} autoComplete="current-password" onChange={(e) => setOld(e.target.value)} /></label>
+          <label>새 비밀번호 <small>8자 이상</small><input type="password" value={nw} autoComplete="new-password" onChange={(e) => setNw(e.target.value)} /></label>
+          <label>새 비밀번호 한 번 더<input type="password" value={nw2} autoComplete="new-password" onChange={(e) => setNw2(e.target.value)} /></label>
+          {err && <div className="w2 err">{err}</div>}
+          <div className="w2 bar2"><span className="sp" /><button type="submit" className="btn pri" disabled={busy || !old || !nw}>{busy ? "바꾸는 중…" : "바꾸기"}</button></div>
+        </div>
+      </form>
+    </div>
+  );
+}

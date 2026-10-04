@@ -17,6 +17,8 @@ interface Props {
   health: Health | null;
   tick: number;
   onSelect: (uuid: string) => void;
+  /** 게스트(문제점 21번) — 보기만. 링크·행 클릭·상세 버튼 없음, 지도는 움직일 수 있다. */
+  readOnly?: boolean;
 }
 
 /** 조치 필요 카드의 점 색 — 알람 등급. */
@@ -31,7 +33,7 @@ const BUCKETS: [string, number, number, string][] = [
 ];
 
 /** 대시보드 — 목업 1~3행. 목록 counts 와 ACTIVE 표본(최대 500대)으로 만든다. 없는 것은 자리만. */
-export default function Dashboard({ counts, total, health, tick, onSelect }: Props) {
+export default function Dashboard({ counts, total, health, tick, onSelect, readOnly = false }: Props) {
   const [active, setActive] = useState<Device[]>([]);
   const [activeTotal, setActiveTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -113,7 +115,7 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
   const sampleNote = sampled ? `표본 ${SAMPLE}대` : `ACTIVE ${nf(activeTotal)}대`;
 
   return (
-    <div className="content">
+    <div className={`content${readOnly ? " ro" : ""}`}>
       {/* 1행 */}
       <div className="pair">
         <Card
@@ -198,7 +200,7 @@ export default function Dashboard({ counts, total, health, tick, onSelect }: Pro
       <PlaceholderCard title="최근 이벤트" meta="전체 단말" className="full h200" stage="6차" note="전체 이벤트 조회 API(GET /api/events) 추가 필요 — 지금은 단말별 이벤트만 드로어에서" />
 
       {/* 5행 — 단말 목록(문제점 #11) */}
-      <DashDevices tick={tick} onSelect={onSelect} />
+      <DashDevices tick={tick} onSelect={onSelect} readOnly={readOnly} />
     </div>
   );
 }
@@ -234,7 +236,7 @@ function MapCard({ onSelect, tick }: { onSelect: (uuid: string) => void; tick: n
 
 /** 대시보드 단말 목록(문제점 #11 탭 "2"). 행 아무 데나 누르면 LED 제어 창, "상세" 는 드로어.
  *  발전량·사용량·감축량은 오늘(KST 0시~지금) 누적 — 화면에 보이는 단말만 계산한다(GET /api/devices/energy). */
-function DashDevices({ tick, onSelect }: { tick: number; onSelect: (uuid: string) => void }) {
+function DashDevices({ tick, onSelect, readOnly = false }: { tick: number; onSelect: (uuid: string) => void; readOnly?: boolean }) {
   const [text, setText] = useState("");
   const [q, setQ] = useState("");
   const [state, setState] = useState("ACTIVE");
@@ -302,7 +304,7 @@ function DashDevices({ tick, onSelect }: { tick: number; onSelect: (uuid: string
             {rows.map((d) => {
               const e = energy[d.uuid];
               return (
-                <tr key={d.uuid} data-click onClick={() => setCtl(d)} title="누르면 LED 제어">
+                <tr key={d.uuid} data-click={readOnly ? undefined : true} onClick={readOnly ? undefined : () => setCtl(d)} title={readOnly ? undefined : "누르면 LED 제어"}>
                   <td><StateBadge state={d.state} /></td>
                   <td>{str(d.site)}</td>
                   <td title={d.node_path ?? ""}>{d.node_id ? shortPath(d) : ""}</td>
@@ -316,7 +318,7 @@ function DashDevices({ tick, onSelect }: { tick: number; onSelect: (uuid: string
                   <td className="n" title={e?.source === "server" ? "옛 펌웨어 — 서버가 계산한 값" : undefined}>{e?.no_value ? <span className="muted">값 없음</span> : kwh2(e?.gen_wh)}</td>
                   <td className="n">{e?.no_value ? <span className="muted">값 없음</span> : kwh2(e?.use_wh)}</td>
                   <td className="n">{e?.no_value ? <span className="muted">값 없음</span> : co2Text(e?.co2_g)}</td>
-                  <td><button type="button" className="btn sm" onClick={(x) => (x.stopPropagation(), onSelect(d.uuid))}>상세</button></td>
+                  <td>{!readOnly && <button type="button" className="btn sm" onClick={(x) => (x.stopPropagation(), onSelect(d.uuid))}>상세</button>}</td>
                 </tr>
               );
             })}

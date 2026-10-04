@@ -8,6 +8,7 @@ from sqlalchemy import Select, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import alarm_rules as ar
+from app.core.access import in_scope
 from app.models.alarm import Alarm
 from app.models.device import Device
 from app.modules.alarm.schemas import AlarmOut, AlarmPage
@@ -23,7 +24,7 @@ def _base(status: str, tab: str | None, kind: str | None, q: str | None,
     stmt = (
         select(Alarm, Device.site, Device.address, Device.node_id, Device.state)
         .join(Device, Device.uuid == Alarm.uuid, isouter=True)
-        .where(Alarm.opened_at.is_not(None))
+        .where(Alarm.opened_at.is_not(None), in_scope(Device.node_id))
     )
     stmt = stmt.where(Alarm.closed_at.is_(None) if status == "open"
                       else Alarm.closed_at.is_not(None))
@@ -67,7 +68,8 @@ async def counts(db: AsyncSession) -> dict[str, int]:
     out = {t: 0 for t in ar.TABS}
     rows = await db.execute(
         select(Alarm.kind, func.count())
-        .where(Alarm.closed_at.is_(None), Alarm.opened_at.is_not(None))
+        .join(Device, Device.uuid == Alarm.uuid, isouter=True)
+        .where(Alarm.closed_at.is_(None), Alarm.opened_at.is_not(None), in_scope(Device.node_id))
         .group_by(Alarm.kind)
     )
     for kind, n in rows:

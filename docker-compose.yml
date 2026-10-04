@@ -77,6 +77,8 @@ services:
     logging: *default-logging
     env_file: .env
     environment:
+      # 서버 상태 화면의 "버전"(문제점 31번) — 배포 명령이 GIT_SHA=$(git rev-parse --short HEAD) 로 넘긴다.
+      GIT_SHA: ${GIT_SHA:-unknown}
       # 컨테이너 네트워크 안에서는 서비스명으로 붙는다(.env 의 값을 덮어쓴다).
       MQTT_HOST: mosquitto
       MQTT_PORT: "1883"

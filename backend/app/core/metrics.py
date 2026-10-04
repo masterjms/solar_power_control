@@ -6,12 +6,18 @@ Prometheus 는 4차 이후 검토(docs/00 §5). 그때까지는 JSON 으로 충�
 
 from __future__ import annotations
 
+import time
 from collections import Counter
 from typing import Any
 
 
 class Metrics:
     def __init__(self) -> None:
+        #: 서버 상태 화면(문제점 31번) — 프로세스 시작, 마지막 일 집계·보관 점검(재시작하면 비어 있다).
+        self.started_at: float = time.time()
+        self.last_rollup_at: float | None = None
+        self.last_rollup_day: str | None = None
+        self.last_purge_at: float | None = None
         #: kind(register/status/result/event)별 수신 건수.
         self.received: Counter[str] = Counter()
         #: type(REGISTER/TELEMETRY/PONG/…)별 수신 건수.

@@ -604,7 +604,8 @@ async def s5_03(ctx: Ctx) -> None:
 @scenario("S5-04", "권한 — 전체 명령은 최고관리자만, all/cmd 1회, PENDING/SUSPENDED 는 STATE·대상 제외", phase=5,
           requires="group_cmd", timeout=180)
 async def s5_04(ctx: Ctx) -> None:
-    """`GET /api/me` 역할(admin → super_admin, operator → admin) → 관리자는 전체 명령·지역 추가 403 `FORBIDDEN`(발행 없음),
+    """`GET /api/me` 역할(admin → super_admin, operator → admin) → 관리자는 전체 명령 403 `FORBIDDEN`(발행 없음)·
+    동 추가는 201(ADR-013, 지역 삭제는 403),
     말단 명령은 201(`created_by=operator`) → 최고관리자 preview `topics=[all/cmd]`·`not_active ≥ 2` → 전체 명령 201,
     `all/cmd` 정확히 1회 → ACTIVE 2대 OK(전체 슬롯), PENDING·SUSPENDED 단말은 `all/cmd` 를 받지만 `STATE` 로 답하고
     대상 스냅숏에 없다 → /health ok. 정리로 전체 auto 를 보낸다."""
@@ -636,7 +637,14 @@ async def s5_04(ctx: Ctx) -> None:
     p = _name_prefix(ctx)
     r = await ctx.s.rest.region_from_address({"sido": f"{p}도", "sigungu": f"{p}시9구", "dong": f"{p}-9-9동",
                                               "bjd_code": fake_bjd_code(ctx.scenario.id, 9, 9)}, _operator(ctx))
-    ctx.check(r.status_code == 403 and error_code(r) == "FORBIDDEN", f"관리자 지역 추가 → 403: {_describe(r)}")
+    # 2026-10-04(ADR-013): 지역관리자도 맡은 시·도에 동을 추가한다 — .env 관리자(전 지역)는 어디든 추가된다.
+    # 지역 이름 바꾸기·삭제는 그대로 최고관리자만.
+    ctx.check(r.status_code in (200, 201), f"관리자(전 지역) 동 추가 → 201: {_describe(r)}")
+    if r.status_code in (200, 201):
+        rid = r.json()["id"]
+        d = await ctx.s.rest.delete_region(rid, _operator(ctx))
+        ctx.check(d.status_code == 403 and error_code(d) == "FORBIDDEN", f"관리자 지역 삭제 → 403: {_describe(d)}")
+        await ctx.s.rest.delete_region(rid, _admin(ctx))
 
     op = await send(ctx, target("node", leaf.id), "auto", user=_operator(ctx))
     ctx.check_eq(op.get("created_by"), _operator(ctx), "관리자 말단 명령 201·created_by")

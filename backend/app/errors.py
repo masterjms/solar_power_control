@@ -106,6 +106,25 @@ class Forbidden(ApiError):
     message = "최고관리자만 할 수 있습니다."
 
 
+class SessionEnded(ApiError):
+    """로그인은 됐지만 계정이 만료·사용 중지됨(문제점 21번). 화면은 로그인 창으로 돌아간다."""
+
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "SESSION_ENDED"
+    message = "계정 사용 기간이 끝났거나 사용 중지되었습니다."
+
+
+class AccountInvalid(ApiError):
+    status_code = 422
+    code = "ACCOUNT_INVALID"
+    message = "계정 정보가 올바르지 않습니다."
+
+
+class AccountNotFound(NotFound):
+    code = "ACCOUNT_NOT_FOUND"
+    message = "없는 계정입니다."
+
+
 class LoginFailed(ApiError):
     """관리 화면 로그인 실패(문제점 16번). 사용자 유무를 구분하지 않는다."""
 

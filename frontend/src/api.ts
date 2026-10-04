@@ -269,10 +269,58 @@ export interface ConfigPatchRes {
 
 // ---------------- 5차: 권한 · 법정동 트리 · 명령 ----------------
 
-export type Role = "super_admin" | "admin";
+/** super_admin 최고관리자 · region_admin 지역관리자 · guest 게스트 · admin 옛 .env 관리자(전 지역) — ADR-013 */
+export type Role = "super_admin" | "admin" | "region_admin" | "guest";
 export interface Me {
   user: string;
   role: Role;
+  /** env(.env 계정) · db(화면에서 만든 계정) · dev */
+  source?: "env" | "db" | "dev";
+  /** 맡은 시·도(트리 최상위 id). null = 전 지역 */
+  region_ids?: number[] | null;
+  regions?: string[];
+  expires_at?: string | null;
+  can_change_password?: boolean;
+}
+
+/** GET /api/accounts 한 줄(문제점 21번). */
+export interface Account {
+  id: number | null;
+  username: string;
+  role: Role;
+  role_label: string;
+  region_ids: number[] | null;
+  regions: string[];
+  expires_at: string | null;
+  expired: boolean;
+  expiring: boolean;
+  disabled: boolean;
+  created_by: string | null;
+  created_at: string | null;
+  last_login_at: string | null;
+  source: "env" | "db";
+}
+export interface AccountList {
+  items: Account[];
+  regions: { id: number; name: string }[];
+  max_super: number;
+  super_count: number;
+  expiry_choices: string[];
+}
+export interface LoginRecord { at: string; username: string; ok: boolean; reason: string; ip: string | null }
+
+/** GET /api/system/status — 서버 상태(문제점 31번). */
+export interface SystemStatus {
+  at: string;
+  broker: { backend_connected: boolean; port_1883: boolean; port_8883: boolean; devices_online: number;
+    devices_broker_connected: number; devices_active: number; log_tail: boolean };
+  db: { ok: boolean; size_bytes: number | null; tables: { name: string; bytes: number }[]; disk_total_bytes: number;
+    disk_free_bytes: number; disk_used_pct: number | null; disk_warn: boolean; last_rollup_at: string | null;
+    last_rollup_day: string | null; last_purge_at: string | null; telemetry_months: number };
+  processing: { buffer_pending: number; register_queue: number; telemetry_dropped: number; flush_failures: number;
+    commands_open: number; deploy_open: number; mqtt_reconnects: number };
+  security: { hmac_keys: string[]; test_account_enabled: boolean; login_failures_24h: number; accounts_expiring_7d: number };
+  server: { version: string; started_at: string; uptime_sec: number; env: string };
 }
 
 export type RegionLevel = "sido" | "sigungu" | "dong";
@@ -725,6 +773,18 @@ export const api = {
 
   // 5차: 권한
   me: () => request<Me>("/api/me"),
+  // 계정(문제점 21번)
+  accounts: () => request<AccountList>("/api/accounts"),
+  createAccount: (body: { username: string; password: string; role: Role; region_ids: number[] | null; expires: string }) =>
+    request<Account>("/api/accounts", json("POST", body)),
+  patchAccount: (id: number, body: { role?: Role; region_ids?: number[] | null; expires?: string; disabled?: boolean }) =>
+    request<Account>(`/api/accounts/${id}`, json("PATCH", body)),
+  resetPassword: (id: number, password: string) => request<{ ok: boolean }>(`/api/accounts/${id}/password`, json("POST", { password })),
+  deleteAccount: (id: number) => request<{ deleted: string }>(`/api/accounts/${id}`, json("DELETE")),
+  loginLog: (limit = 100) => request<LoginRecord[]>(`/api/accounts/logins?limit=${limit}`),
+  changeMyPassword: (old: string, nw: string) => request<{ ok: boolean }>("/api/accounts/me/password", json("POST", { old, new: nw })),
+  systemStatus: () => request<SystemStatus>("/api/system/status"),
+  pendingSearch: (suffix: string) => request<{ count: number; uuid: string | null }>(`/api/devices/pending-search?suffix=${encodeURIComponent(suffix)}`),
   login: (user: string, password: string) => request<{ user: string }>("/api/auth/login", json("POST", { user, password })),
   logout: () => request<{ ok: boolean }>("/api/auth/logout", json("POST")),
   uiConfig: () => request<UiConfig>("/api/ui-config"),

@@ -12,6 +12,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access import current_scope
 from app.config import settings
 from app.constants import RegionLevel
 from app.core import kakao_geo
@@ -58,6 +59,12 @@ def _out_row(row) -> RegionOut:
 
 async def list_regions(db: AsyncSession, *, only_id: int | None = None) -> list[RegionOut]:
     rows = (await db.execute(_LIST_SQL, {"only_id": only_id})).all()
+    scope = current_scope()
+    # 맡은 시·도 아래만(문제점 21번). only_id(방금 만든·고친 노드 하나)는 거르지 않는다 —
+    # 범위는 요청 시작 때 계산돼 새로 만든 동이 아직 안 들어 있다(만드는 쪽은 _check_sido 가 이미 막았다).
+    if scope is not None and only_id is None:
+        allowed = set(scope)
+        rows = [r for r in rows if r.id in allowed]
     return [_out_row(r) for r in rows]
 
 
@@ -104,12 +111,25 @@ async def _ensure(db: AsyncSession, parent_id: int | None, level: RegionLevel, n
     return node
 
 
+async def _check_sido(db: AsyncSession, sido: str | None) -> None:
+    """지역관리자는 맡은 시·도 아래에만 동을 추가한다(문제점 21번). 시·도를 새로 만들 수 없다."""
+    scope = current_scope()
+    if scope is None:
+        return
+    from app.errors import Forbidden
+
+    root = await _find_child(db, None, sido or "")
+    if root is None or root.id not in set(scope):
+        raise Forbidden("맡은 시·도 밖의 주소입니다.", code="OUT_OF_REGION", detail={"sido": sido})
+
+
 async def find_or_create_leaf(db: AsyncSession, geo: GeoResult) -> tuple[Region, bool]:
     """시도 > 시군구 > 법정동 을 차례로 find-or-create. (말단, 새로 만들었나).
 
     말단은 **법정동코드로** 찾는다(이름은 바뀔 수 있어도 코드가 정체성). 같은 시군구 아래 같은
     이름의 다른 코드가 있으면(리 이름 겹침 등) 이름 뒤에 코드를 붙여 구분한다.
     """
+    await _check_sido(db, geo.sido)
     existing = (
         await db.execute(select(Region).where(Region.bjd_code == geo.bjd_code))
     ).scalar_one_or_none()

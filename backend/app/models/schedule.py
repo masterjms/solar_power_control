@@ -67,6 +67,8 @@ class ScheduleProfile(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_by: Mapped[str | None] = mapped_column(Text)
+    #: 만든 사람 — 지역관리자는 자기가 만든 양식만 고치고 지운다(문제점 21번). 옛 행은 NULL(최고관리자만).
+    created_by: Mapped[str | None] = mapped_column(Text)
 
 
 class ScheduleAssign(Base):

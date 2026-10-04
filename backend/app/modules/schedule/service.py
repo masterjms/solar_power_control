@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import presence
 from app.core import schedule_rules as sr
 from app.core import settings_rules as rules
+from app.core.access import check_node, current_scope, device_allowed, in_scope, node_allowed
 from app.core.auth import Principal
 from app.errors import (
     DeployJobNotFound,
@@ -97,7 +98,7 @@ async def create_profile(db: AsyncSession, body: ProfileIn, me: Principal) -> Pr
     p = ScheduleProfile(
         name=body.name.strip(), region=table.region, lat_e6=table.lat_e6, lon_e6=table.lon_e6,
         on_corr=table.on, off_corr=table.off, crc=table.crc, values=values,
-        address=(body.address or "").strip() or None, updated_by=me.user,
+        address=(body.address or "").strip() or None, updated_by=me.user, created_by=me.user,
     )
     db.add(p)
     try:
@@ -108,8 +109,18 @@ async def create_profile(db: AsyncSession, body: ProfileIn, me: Principal) -> Pr
     return _profile_out(p)
 
 
+def _check_owner(p: ScheduleProfile, me: Principal) -> None:
+    """양식은 공용(누구나 쓰고 지정) — 고치고 지우는 것은 만든 사람·최고관리자만(문제점 21번)."""
+    if not me.is_super and p.created_by != me.user:
+        from app.errors import Forbidden
+
+        raise Forbidden("만든 사람과 최고관리자만 고칠 수 있습니다.", code="NOT_OWNER",
+                        detail={"profile": p.name, "created_by": p.created_by})
+
+
 async def patch_profile(db: AsyncSession, pid: int, body: ProfilePatch, me: Principal) -> ProfileOut:
     p = await _get_profile(db, pid)
+    _check_owner(p, me)
     sent = body.model_dump(exclude_unset=True)
     region = sent.get("region", p.region)
     lat = sent.get("lat", p.lat_e6 / 1_000_000)
@@ -139,8 +150,10 @@ async def patch_profile(db: AsyncSession, pid: int, body: ProfilePatch, me: Prin
     return _profile_out(p)
 
 
-async def delete_profile(db: AsyncSession, pid: int) -> dict[str, Any]:
+async def delete_profile(db: AsyncSession, pid: int, me: Principal | None = None) -> dict[str, Any]:
     p = await _get_profile(db, pid)
+    if me is not None:
+        _check_owner(p, me)
     n = await db.scalar(select(func.count()).where(ScheduleAssign.profile_id == pid)) or 0
     if n:
         raise ScheduleProfileInUse(detail={"id": pid, "assigned": int(n)})
@@ -225,8 +238,11 @@ async def set_assign(db: AsyncSession, body: AssignIn, me: Principal) -> dict[st
         tree = await load_tree(db)
         if tree.get(body.node_id) is None:
             raise RegionNotFound(detail={"id": body.node_id})
-    elif await db.get(Device, uuid) is None:
-        raise DeviceNotFound(detail={"uuid": uuid})
+        check_node(body.node_id, action="schedule.assign")
+    else:
+        dev = await db.get(Device, uuid)
+        if dev is None or not node_allowed(dev.node_id):
+            raise DeviceNotFound(detail={"uuid": uuid})
     cond = (ScheduleAssign.node_id == body.node_id) if body.node_id is not None \
         else (ScheduleAssign.uuid == uuid)
     cur = (await db.execute(select(ScheduleAssign).where(cond))).scalar_one_or_none()
@@ -269,6 +285,7 @@ async def devices(
         .join(DeviceSchedule, DeviceSchedule.uuid == Device.uuid, isouter=True)
         .join(DeviceSettings, DeviceSettings.uuid == Device.uuid, isouter=True)
     )
+    stmt = stmt.where(in_scope(Device.node_id))  # 맡은 지역만(문제점 21번)
     if uuid is not None:
         stmt = stmt.where(Device.uuid == uuid)
     else:
@@ -330,7 +347,8 @@ async def create_deploy(
 ) -> DeployJobOut:
     p = await _get_profile(db, body.profile_id)
     cov = await coverage(db)
-    stmt = select(Device.uuid, Device.node_id).where(Device.state == "ACTIVE")
+    stmt = select(Device.uuid, Device.node_id).where(Device.state == "ACTIVE",
+                                                     in_scope(Device.node_id))
     label: str | None = p.name
     if body.scope == "node":
         try:
@@ -339,6 +357,7 @@ async def create_deploy(
             raise ValidationFailed("scope_id = 노드 id", detail={"scope_id": body.scope_id}) from e
         if cov.tree.get(nid) is None:
             raise RegionNotFound(detail={"id": nid})
+        check_node(nid, action="deploy")
         stmt = stmt.where(Device.node_id.in_(cov.tree.subtree_ids(nid) or [-1]))
         label = cov.tree.path_name(nid)
     elif body.scope == "device":
@@ -402,6 +421,11 @@ def _job_out(j: DeployJob, counts: dict[str, int], items: list[DeployItemOut] | 
 async def list_jobs(db: AsyncSession, *, limit: int, profile_id: int | None,
                     uuid: str | None) -> list[DeployJobOut]:
     stmt = select(DeployJob).order_by(DeployJob.id.desc()).limit(limit)
+    if current_scope() is not None:
+        # 맡은 지역 단말이 하나라도 든 작업만(문제점 21번)
+        stmt = stmt.where(DeployJob.id.in_(
+            select(DeployItem.job_id).join(Device, Device.uuid == DeployItem.uuid)
+            .where(in_scope(Device.node_id))))
     if profile_id is not None:
         stmt = stmt.where(DeployJob.profile_id == profile_id)
     if uuid is not None:
@@ -411,8 +435,18 @@ async def list_jobs(db: AsyncSession, *, limit: int, profile_id: int | None,
     return [_job_out(j, counts[j.id], None) for j in jobs]
 
 
+async def _job_allowed(db: AsyncSession, job_id: int) -> bool:
+    if current_scope() is None:
+        return True
+    return bool(await db.scalar(
+        select(DeployItem.job_id).join(Device, Device.uuid == DeployItem.uuid)
+        .where(DeployItem.job_id == job_id, in_scope(Device.node_id)).limit(1)))
+
+
 async def get_job(db: AsyncSession, job_id: int, *, items: bool = True) -> DeployJobOut:
     j = await db.get(DeployJob, job_id, populate_existing=True)
+    if j is not None and not await _job_allowed(db, job_id):
+        j = None
     if j is None:
         raise DeployJobNotFound(detail={"id": job_id})
     out_items: list[DeployItemOut] | None = None
@@ -434,6 +468,8 @@ async def get_job(db: AsyncSession, job_id: int, *, items: bool = True) -> Deplo
 async def retry_job(db: AsyncSession, job_id: int, uuids: list[str] | None,
                     runner: DeployRunner | None, max_rounds: int) -> RetryOut:
     j = await db.get(DeployJob, job_id)
+    if j is not None and not await _job_allowed(db, job_id):
+        j = None
     if j is None:
         raise DeployJobNotFound(detail={"id": job_id})
     stmt = select(DeployItem).where(DeployItem.job_id == job_id,
@@ -457,6 +493,8 @@ async def retry_job(db: AsyncSession, job_id: int, uuids: list[str] | None,
 
 async def cancel_job(db: AsyncSession, job_id: int) -> DeployJobOut:
     j = await db.get(DeployJob, job_id)
+    if j is not None and not await _job_allowed(db, job_id):
+        j = None
     if j is None:
         raise DeployJobNotFound(detail={"id": job_id})
     now = _now()

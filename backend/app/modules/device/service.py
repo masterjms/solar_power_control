@@ -24,6 +24,7 @@ from sqlalchemy.orm import aliased
 from app.config import settings
 from app.constants import STATE_TRANSITIONS, DeviceState, EventKind, MsgType
 from app.core import energy, ids, mqtt_accounts, presence
+from app.core.access import check_node, current_scope, device_allowed, in_scope, node_allowed
 from app.core.command_rules import channel_remaining, remote_status
 from app.core.config_rules import (
     bump_cv_server,
@@ -123,6 +124,7 @@ def _filtered(
     stmt = select(Device, ConfigProfile, DeviceSettings.sync).join(
         ConfigProfile, ConfigProfile.id == Device.profile_id, isouter=True
     ).join(DeviceSettings, DeviceSettings.uuid == Device.uuid, isouter=True)
+    stmt = stmt.where(in_scope(Device.node_id))  # 맡은 지역만(문제점 21번)
     if node_ids is not None:
         # 그 노드 아래 전체(자신 포함). 트리는 메모리에서 펼쳤다 — 말단 수천 개여도 IN 이면 된다.
         stmt = stmt.where(Device.node_id.in_(node_ids or [-1]))
@@ -161,10 +163,12 @@ def _filtered(
 async def _counts(db: AsyncSession, now: dt.datetime) -> dict[str, int]:
     """필터와 무관한 전체 집계 — 화면 상단 탭(PENDING n 건)용."""
     counts = {s.value: 0 for s in DeviceState}
-    for state, n in await db.execute(select(Device.state, func.count()).group_by(Device.state)):
+    for state, n in await db.execute(select(Device.state, func.count())
+                                     .where(in_scope(Device.node_id)).group_by(Device.state)):
         counts[state] = int(n)
     counts["online"] = int(
-        await db.scalar(select(func.count()).select_from(Device).where(presence.online_clause(now)))
+        await db.scalar(select(func.count()).select_from(Device)
+                        .where(presence.online_clause(now), in_scope(Device.node_id)))
         or 0
     )
     return counts
@@ -230,7 +234,7 @@ async def map_points(db: AsyncSession, *, state: str | None) -> list[MapPoint]:
                Device.last_telemetry["pw"].label("pw"),
                Device.last_telemetry["bv"].astext.label("bv"), Region.name)
         .join(Region, Region.id == Device.node_id, isouter=True)
-        .where(Device.lat.is_not(None), Device.lon.is_not(None))
+        .where(Device.lat.is_not(None), Device.lon.is_not(None), in_scope(Device.node_id))
     )
     if state:
         stmt = stmt.where(Device.state == state.upper())
@@ -243,7 +247,22 @@ async def map_points(db: AsyncSession, *, state: str | None) -> list[MapPoint]:
     return out
 
 
+async def pending_search(db: AsyncSession, suffix: str) -> dict:
+    """UUID 뒤 6자리 이상으로 승인 대기 단말 찾기(문제점 21번 — 지역관리자는 대기 목록을 못 본다).
+    1대면 그 uuid, 여러 대면 개수만(고르게 하지 않는다 — 남의 단말을 고를 수 있으므로)."""
+    s = suffix.strip().upper()
+    rows = list(await db.scalars(
+        select(Device.uuid).where(Device.state == DeviceState.PENDING.value,
+                                  Device.uuid.like(f"%{s}"),
+                                  in_scope(Device.node_id) | Device.node_id.is_(None))
+        .limit(20)))
+    return {"count": len(rows), "uuid": rows[0] if len(rows) == 1 else None}
+
+
 async def energy_today(db: AsyncSession, uuids: list[str]) -> dict[str, EnergyToday]:
+    if current_scope() is not None and uuids:
+        uuids = list(await db.scalars(select(Device.uuid).where(Device.uuid.in_(uuids),
+                                                                in_scope(Device.node_id))))
     rows = await energy.today(db, uuids, _now())
     return {u: EnergyToday(**v) for u, v in rows.items()}
 
@@ -357,6 +376,7 @@ async def _assign_node(db: AsyncSession, device: Device, node_id: int | None) ->
         device.grp = None
         device.bjd_code = None
     else:
+        check_node(node_id, action="device.assign")  # 맡은 지역 안의 동만(문제점 21번)
         node = await db.get(Region, node_id)
         if node is None:
             raise RegionNotFound(detail={"id": node_id})
@@ -389,7 +409,7 @@ async def set_state(
     if "node_id" in patch.model_fields_set:
         await _assign_node(db, device, patch.node_id)
     if (patch.state == DeviceState.ACTIVE.value and device.node_id is None
-            and settings.approve_requires_node):
+            and (settings.approve_requires_node or current_scope() is not None)):
         # 주소 없는 단말은 두지 않는다(§3.10.4) — 그룹 명령을 영영 못 받는다.
         raise NodeRequired(detail={"uuid": uuid})
     now = _now()

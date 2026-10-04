@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.constants import UUID_RE, DeviceState, EventKind, MsgType, TargetStatus
 from app.core import ids, presence
+from app.core.access import check_node, current_scope, device_allowed, in_scope, node_allowed
 from app.core.auth import Principal, require_super
 from app.core.command_rules import (
     CommandInvalid,
@@ -108,6 +109,7 @@ async def _resolve(db: AsyncSession, body: CommandIn, me: Principal, tree: Tree)
         node = tree.get(node_id)
         if node is None:
             raise RegionNotFound(detail={"id": node_id})
+        check_node(node_id, action="command.node")  # 맡은 지역(시·도) 안만(문제점 21번)
         # 단말은 말단에만 배정되지만, 하위 전체 id 로 걸어도 결과는 같고 규칙이 단순하다.
         scope = Device.node_id.in_(tree.subtree_ids(node_id))
         return Resolved("node", str(node_id), tree.path_name(node_id) or node.name,
@@ -117,7 +119,7 @@ async def _resolve(db: AsyncSession, body: CommandIn, me: Principal, tree: Tree)
     if not UUID_RE.match(uuid):
         raise ValidationFailed("target.id 는 24자리 16진수 UUID", detail={"field": "target.id"})
     device = await db.get(Device, uuid)
-    if device is None:
+    if device is None or not node_allowed(device.node_id):
         raise DeviceNotFound(detail={"uuid": uuid})
     coords = (device.lat, device.lon) if device.lat is not None and device.lon is not None \
         else tree.coords_for(device.node_id)
@@ -326,6 +328,11 @@ async def list_commands(
     또는 하위 노드를 대상으로 한 명령. PING 은 빼고 COMMAND 만."""
     tree = await load_tree(db)
     stmt = select(Command).where(Command.type == MsgType.COMMAND.value)
+    if current_scope() is not None:
+        # 맡은 지역 단말이 대상에 하나라도 든 명령만(문제점 21번)
+        stmt = stmt.where(exists().where(CommandTarget.seq == Command.seq,
+                                         CommandTarget.uuid.in_(select(Device.uuid)
+                                                                .where(in_scope(Device.node_id)))))
     if uuid:
         u = uuid.strip().upper()
         stmt = stmt.where(exists().where(CommandTarget.seq == Command.seq,
@@ -343,6 +350,10 @@ async def list_commands(
 
 async def _get_command(db: AsyncSession, seq: int) -> Command:
     cmd = await db.get(Command, seq)
+    if cmd is not None and current_scope() is not None and not await db.scalar(
+            select(CommandTarget.seq).join(Device, Device.uuid == CommandTarget.uuid)
+            .where(CommandTarget.seq == seq, in_scope(Device.node_id)).limit(1)):
+        cmd = None  # 맡은 지역 밖 명령은 없는 것처럼
     if cmd is None or cmd.type != MsgType.COMMAND.value:
         raise CommandNotFound(detail={"seq": seq})
     return cmd

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, DeviceCounts, Health, Me, errorText } from "./api";
+import { api, DeviceCounts, Health, Me, Role, errorText } from "./api";
 import Dashboard from "./Dashboard";
 import DeviceList from "./DeviceList";
 import DeviceDetail from "./DeviceDetail";
@@ -8,6 +8,8 @@ import Pending from "./Pending";
 import DeviceConfig from "./DeviceConfig";
 import Profiles from "./Profiles";
 import System from "./System";
+import Accounts from "./Accounts";
+import { PasswordModal } from "./Login";
 import ServerSettings from "./ServerSettings";
 import Regions from "./Regions";
 import GroupControl from "./GroupControl";
@@ -18,9 +20,17 @@ import { nf } from "./ui";
 
 const REFRESH_MS = 10_000;
 
-type Page = "dash" | "alarms" | "devices" | "pending" | "group" | "regions" | "config" | "schedule" | "profiles" | "server" | "system";
+type Page = "dash" | "alarms" | "devices" | "pending" | "group" | "regions" | "config" | "schedule" | "profiles" | "server" | "accounts" | "system";
 
-const PAGES: { id: Page; ico: string; label: string; title: string; superOnly?: boolean }[] = [
+/** 역할별로 보이는 메뉴(문제점 21번, ADR-013). 게스트는 대시보드만, 지역관리자는 서버·계정 관련을 뺀다. */
+const SUPER_PAGES: Page[] = ["profiles", "server", "accounts", "system"];
+export function pageAllowed(id: Page, role: Role | undefined): boolean {
+  if (role === "guest") return id === "dash";
+  if (role === "super_admin" || role === undefined) return !(role === undefined && SUPER_PAGES.includes(id));
+  return !SUPER_PAGES.includes(id);
+}
+
+const PAGES: { id: Page; ico: string; label: string; title: string }[] = [
   { id: "dash", ico: "▦", label: "대시보드", title: "통합 관제 대시보드" },
   { id: "alarms", ico: "!", label: "알람", title: "알람 (조치 필요)" },
   { id: "devices", ico: "≡", label: "단말 목록", title: "단말 목록" },
@@ -30,9 +40,13 @@ const PAGES: { id: Page; ico: string; label: string; title: string; superOnly?: 
   { id: "config", ico: "≣", label: "단말 설정", title: "단말 설정" },
   { id: "schedule", ico: "◷", label: "그룹 스케줄 변경", title: "그룹 스케줄 변경" },
   { id: "profiles", ico: "◫", label: "통신 주기 설정", title: "통신 주기 설정" },
-  { id: "server", ico: "☰", label: "서버 설정", title: "서버 설정", superOnly: true },
-  { id: "system", ico: "⚙", label: "시스템", title: "시스템" },
+  { id: "server", ico: "☰", label: "서버 설정", title: "서버 설정" },
+  { id: "accounts", ico: "☺", label: "계정 관리", title: "계정 관리" },
+  { id: "system", ico: "⚙", label: "서버 상태", title: "서버 상태" },
 ];
+const ROLE_LABEL: Record<string, string> = { super_admin: "최고관리자", region_admin: "지역관리자", guest: "게스트", admin: "관리자" };
+const noop = () => undefined;
+
 /** 아직 백엔드가 없는 메뉴 — 회색으로만 보인다(docs/00 §2 단계). */
 const LATER: { ico: string; label: string; stage: string }[] = [
   { ico: "◎", label: "지도", stage: "7차" },
@@ -63,6 +77,13 @@ export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">(themeNow);
   const [me, setMe] = useState<Me | null>(null);
   const [meErr, setMeErr] = useState<string | null>(null);
+  const [pwOpen, setPwOpen] = useState(false);
+  const guest = me?.role === "guest";
+  const isSuper = !me || me.role === "super_admin";
+  // 역할에 없는 메뉴로 들어오면(주소창에 #… 직접) 대시보드로
+  useEffect(() => {
+    if (me && !pageAllowed(page, me.role)) location.hash = "#dash";
+  }, [me, page]);
 
   // 사용자·역할(5차 §3.9.3 #9). 실패하면 관리자 권한으로 본다(최고관리자 버튼을 숨긴다).
   useEffect(() => {
@@ -131,15 +152,15 @@ export default function App() {
       <aside className="side">
         <div className="logo"><b>Solar Light Control</b><span>태양광 조명 통합관제</span></div>
         <nav className="nav">
-          {PAGES.filter((p) => !p.superOnly || me?.role === "super_admin").map((p) => (
+          {PAGES.filter((p) => pageAllowed(p.id, me?.role)).map((p) => (
             <a key={p.id} href={`#${p.id}`} className={page === p.id ? "on" : ""}>
               <span className="ico">{p.ico}</span>{p.label}
               {p.id === "pending" && pending > 0 && <span className="cnt b">{nf(pending)}</span>}
               {p.id === "alarms" && !!alarmN && <span className="cnt">{nf(alarmN)}</span>}
             </a>
           ))}
-          <div className="sep">이후 단계</div>
-          {LATER.map((p) => (
+          {me?.role !== "guest" && <div className="sep">이후 단계</div>}
+          {me?.role !== "guest" && LATER.map((p) => (
             <a key={p.label} className="dis" title={`${p.stage}에 추가`} onClick={(e) => e.preventDefault()} href="#">
               <span className="ico">{p.ico}</span>{p.label}<span className="stg">{p.stage}</span>
             </a>
@@ -163,7 +184,7 @@ export default function App() {
             </div>
           </div>
           <span className="sp" />
-          {health?.test_account_enabled && (
+          {isSuper && health?.test_account_enabled && (
             <span className="pill warn" title="MQTT_TEST_ACCOUNT_ENABLED — 1차 공용 시험 계정(solarlte-test)이 아직 열려 있음. 운영 전 닫을 것">
               <span className="dot" style={{ background: "var(--warn)" }} />공용 시험 계정 열림
             </span>
@@ -175,12 +196,16 @@ export default function App() {
             <span className="dot" style={{ background: health ? (serverOk ? "var(--ok)" : "var(--alarm)") : "var(--off)" }} />
             {health ? (serverOk ? "서버 정상" : "서버 이상") : "서버 -"}
           </span>
-          <span className="pill" title="활성 HMAC 키(ADR-003)">
+{isSuper && (
+                    <span className="pill" title="활성 HMAC 키(ADR-003)">
             HMAC {health ? (health.hmac_keys?.length ? health.hmac_keys.join(", ") : "없음") : "-"}
           </span>
-          <span className={`pill ${me?.role === "super_admin" ? "role" : ""}`} title={meErr ?? "로그인 사용자 → X-Remote-User (ADR-005)"}>
-            {me ? `${me.user} · ${me.role === "super_admin" ? "최고관리자" : "관리자"}` : meErr ? "사용자 확인 실패 · 관리자로 표시" : "사용자 -"}
+          )}
+          <span className={`pill ${me?.role === "super_admin" ? "role" : ""}`}
+            title={meErr ?? (me?.regions?.length ? `맡은 시·도: ${me.regions.join(", ")}` : "전 지역") + (me?.expires_at ? ` · ${new Date(me.expires_at).toLocaleDateString("ko-KR")} 까지` : "")}>
+            {me ? `${me.user} · ${ROLE_LABEL[me.role] ?? me.role}${me.regions?.length ? ` · ${me.regions.join("·")}` : ""}` : meErr ? "사용자 확인 실패" : "사용자 -"}
           </span>
+          {me?.can_change_password && <button className="btn" onClick={() => setPwOpen(true)} title="내 비밀번호 바꾸기">비밀번호</button>}
           <button className="btn" onClick={logout} title="로그아웃">로그아웃</button>
           <span className="pill clock">{now.toLocaleDateString("ko-KR")} {now.toTimeString().slice(0, 8)}</span>
           <button className="btn" onClick={() => setTick((t) => t + 1)} title="지금 다시 읽기(자동 10초)">새로고침</button>
@@ -189,13 +214,13 @@ export default function App() {
           </button>
         </header>
 
-        {page === "dash" && <Dashboard counts={counts} total={total} health={health} tick={tick} onSelect={setSelected} />}
+        {page === "dash" && <Dashboard counts={counts} total={total} health={health} tick={tick} onSelect={guest ? noop : setSelected} readOnly={guest} />}
         {page === "devices" && (
           <div className="content">
             <DeviceList tick={tick} selected={selected} onSelect={setSelected} />
           </div>
         )}
-        {page === "pending" && <Pending tick={tick} onSelect={setSelected} />}
+        {page === "pending" && <Pending tick={tick} onSelect={setSelected} canList={me?.role === "super_admin" || me?.role === "admin" || !me} />}
         {page === "group" && <GroupControl role={me?.role ?? null} counts={counts} tick={tick} onSelect={setSelected} />}
         {page === "regions" && <Regions role={me?.role ?? null} health={health} tick={tick} onSelect={setSelected} />}
         {page === "config" && <DeviceConfig tick={tick} onSelect={setSelected} />}
@@ -207,9 +232,11 @@ export default function App() {
           </div>
         )}
         {page === "server" && <ServerSettings role={me?.role ?? null} />}
-        {page === "system" && <System />}
+        {page === "accounts" && <Accounts role={me?.role ?? null} />}
+        {page === "system" && <System role={me?.role ?? null} />}
       </main>
 
+      {pwOpen && <PasswordModal onClose={() => setPwOpen(false)} />}
       {selected && <div className="ov" onClick={() => setSelected(null)} />}
       <aside className={`drawer wide ${selected ? "open" : ""}`} aria-label="단말 상세" aria-hidden={!selected}>
         {selected && (

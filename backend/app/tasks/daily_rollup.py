@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -177,6 +178,9 @@ async def run(day: dt.date | None = None) -> int:
         async with engine.begin() as conn:
             count = await rollup_day(conn, day)
         log.info("일 집계 %s: 단말 %d대", day, count)
+        from app.core.metrics import metrics
+
+        metrics.last_rollup_at, metrics.last_rollup_day = time.time(), day.isoformat()
         return count
     except Exception:  # noqa: BLE001
         log.exception("일 집계 실패 %s (수동 재실행: POST /api/admin/rollup?day=%s)", day, day)

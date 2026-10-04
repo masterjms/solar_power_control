@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import energy
 from app.core import server_settings as ss
+from app.core.access import current_scope
 from app.core.auth import Principal, current_user, require_super
 from app.db import get_db
 from app.models.device import Device
@@ -35,10 +36,12 @@ PERIODS = {"7d": 7, "30d": 30, "12m": 365}
 
 async def _scope(db: AsyncSession, node_id: int | None) -> list[int] | None:
     """node_id 아래(자신 포함) 지역 id 목록. None = 전체."""
+    scope = current_scope()
     if node_id is None:
-        return None
+        return scope
     tree = await load_tree(db)
-    return tree.subtree_ids(node_id) or [node_id]
+    ids = tree.subtree_ids(node_id) or [node_id]
+    return ids if scope is None else [i for i in ids if i in set(scope)]
 
 
 @router.get("/summary")

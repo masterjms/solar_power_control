@@ -29,8 +29,8 @@ async def from_address(
     db: AsyncSession = Depends(get_db),
     me: Principal = Depends(current_user),
 ) -> RegionOut:
-    """말단 find-or-create. 새로 만들었으면 201, 이미 있으면 200."""
-    require_super(me, action="region.create")
+    """말단 find-or-create. 새로 만들었으면 201, 이미 있으면 200.
+    지역관리자는 맡은 시·도 아래에만(service._check_sido, 문제점 21번), 게스트는 access_guard 가 막는다."""
     out, created = await service.from_address(db, body)
     response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
     return out

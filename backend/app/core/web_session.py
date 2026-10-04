@@ -60,10 +60,8 @@ def issue(key: bytes, user: str, ttl_sec: int, now: float | None = None) -> str:
     return f"{user}.{exp}.{_sig(key, user, exp)}"
 
 
-def verify(
-    key: bytes, token: str | None, accts: dict[str, str], now: float | None = None
-) -> str | None:
-    """유효하면 사용자명. 만료·위조·지금은 없는 계정이면 None."""
+def parse(key: bytes, token: str | None, now: float | None = None) -> tuple[str, int] | None:
+    """서명이 맞고 만료 전이면 (사용자명, 만료 unix초). 계정이 아직 있는지는 부르는 쪽이 본다."""
     if not token:
         return None
     parts = token.split(".")
@@ -76,9 +74,19 @@ def verify(
         return None
     if not hmac.compare_digest(_sig(key, user, exp), sig):
         return None
-    if exp < (now if now is not None else time.time()) or user not in accts:
+    if exp < (now if now is not None else time.time()):
         return None
-    return user
+    return user, exp
+
+
+def verify(
+    key: bytes, token: str | None, accts: dict[str, str], now: float | None = None
+) -> str | None:
+    """.env 계정용 — 유효하면 사용자명. 만료·위조·지금은 없는 계정이면 None."""
+    got = parse(key, token, now)
+    if got is None or got[0] not in accts:
+        return None
+    return got[0]
 
 
 def basic_user(header: str | None, accts: dict[str, str]) -> str | None:

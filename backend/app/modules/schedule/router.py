@@ -60,8 +60,9 @@ async def patch_profile(pid: int, body: ProfilePatch, db: AsyncSession = Depends
 
 
 @router.delete("/profiles/{pid}")
-async def delete_profile(pid: int, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    return await service.delete_profile(db, pid)
+async def delete_profile(pid: int, db: AsyncSession = Depends(get_db),
+                         me: Principal = Depends(current_user)) -> dict[str, Any]:
+    return await service.delete_profile(db, pid, me)
 
 
 @router.get("/assign", response_model=list[AssignOut])
