@@ -38,6 +38,7 @@ from app.core.server_settings import runtime as runtime_settings
 from app.db import SessionFactory, engine, session_scope
 from app.errors import register_exception_handlers
 from app.modules.accounts.router import router as accounts_router
+from app.modules.activity.router import router as activity_router
 from app.modules.alarm.router import router as alarm_router
 from app.modules.auth.router import router as auth_router
 from app.modules.command.router import router as command_router
@@ -295,7 +296,7 @@ if settings.cors_origins:
 _guard = [Depends(access_guard)]
 app.include_router(auth_router)
 app.include_router(mqtt_auth_router)
-for _r in (system_router, system_status_router, accounts_router, server_settings_router,
+for _r in (system_router, system_status_router, accounts_router, activity_router, server_settings_router,
            energy_router, alarm_router, schedule_router, schedule_device_router, profile_router,
            device_router, region_router, geo_router, command_router, settings_router):
     app.include_router(_r, dependencies=_guard)

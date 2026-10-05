@@ -309,6 +309,22 @@ export interface AccountList {
 }
 export interface LoginRecord { at: string; username: string; ok: boolean; reason: string; ip: string | null }
 
+/** GET /api/activity — 대시보드 최근 활동(문제점 30·34번). */
+export interface ActivityItem {
+  at: string;
+  cat: "alarm" | "device" | "control" | "admin";
+  kind: string;
+  uuid: string | null;
+  site: string | null;
+  region: string | null;
+  text: string;
+  by?: string | null;
+  severity?: string;
+  seq?: number;
+  job_id?: number;
+}
+export interface ActivityPage { items: ActivityItem[]; total: number; page: number; size: number; max_rows: number; cats: string[] }
+
 /** GET /api/system/status — 서버 상태(문제점 31번). */
 export interface SystemStatus {
   at: string;
@@ -784,6 +800,12 @@ export const api = {
   loginLog: (limit = 100) => request<LoginRecord[]>(`/api/accounts/logins?limit=${limit}`),
   changeMyPassword: (old: string, nw: string) => request<{ ok: boolean }>("/api/accounts/me/password", json("POST", { old, new: nw })),
   systemStatus: () => request<SystemStatus>("/api/system/status"),
+  activity: (p: { page: number; size: number; cat?: string; q?: string }) => {
+    const qs = new URLSearchParams({ page: String(p.page), size: String(p.size) });
+    if (p.cat) qs.set("cat", p.cat);
+    if (p.q) qs.set("q", p.q);
+    return request<ActivityPage>(`/api/activity?${qs}`);
+  },
   pendingSearch: (suffix: string) => request<{ count: number; uuid: string | null }>(`/api/devices/pending-search?suffix=${encodeURIComponent(suffix)}`),
   login: (user: string, password: string) => request<{ user: string }>("/api/auth/login", json("POST", { user, password })),
   logout: () => request<{ ok: boolean }>("/api/auth/logout", json("POST")),
@@ -909,6 +931,12 @@ const ERROR_HINT: Record<string, string> = {
   SETTINGS_RULE: "설정 규칙(차단<복귀, 다단계 순서)에 어긋납니다",
   SETTINGS_NOT_CHANGED: "받아들이거나 되돌릴 차이가 없습니다",
 };
+
+/** 사용자에게 보일 짧은 문장 — 상태 번호·코드 없이 메시지만(문제점 33번, 로그인 등). */
+export function userMessage(e: unknown): string {
+  if (e instanceof ApiErrorException) return ERROR_HINT[e.err.code] ?? e.err.message;
+  return e instanceof Error ? e.message : String(e);
+}
 
 export function errorText(e: unknown): string {
   if (e instanceof ApiErrorException) {

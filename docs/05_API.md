@@ -386,3 +386,15 @@ applied_profile_id applied_version applied_crc applied_at device_crc device_regi
 
 ## 서버 상태 API (2026-10-04, 문제점 31번)
 `GET /api/system/status`(최고관리자) → `{at, broker:{backend_connected, port_1883, port_8883, devices_online, devices_broker_connected, devices_active, log_tail}, db:{ok, size_bytes, tables, disk_total_bytes, disk_free_bytes, disk_used_pct, disk_warn, last_rollup_at, last_rollup_day, last_purge_at, telemetry_months}, processing:{buffer_pending, register_queue, telemetry_dropped, flush_failures, commands_open, deploy_open, mqtt_reconnects}, security:{hmac_keys, test_account_enabled, login_failures_24h, accounts_expiring_7d}, server:{version(GIT_SHA), started_at, uptime_sec, env}}`.
+
+## 최근 활동 API (2026-10-05, 문제점 30·34번)
+`GET /api/activity?page=&size=&cat=&q=` — 대시보드 "최근 활동". 새 표 없이 기존 기록을 합쳐 최신순.
+- `size` 1~100(화면은 20·50·100, 기본 20 — 문제점 35번), `page×size ≤ 2000`(넘으면 422 — 그 전 기록은 검색·분류로).
+- `cat`: `alarm`(알람 발생·해제) · `device`(상태 바뀜·재등록·재부팅) · `control`(원격 명령 1건 1줄, 그룹 스케줄 보내기) · `admin`(로그인 실패·서버 설정 변경·계정 만듦 — 최고관리자만).
+- 빼는 것: 10분 보고, CONFIG/SETTINGS 응답, 재발송, 브로커 순간 끊김(통신 두절은 알람으로만), 로그인 성공.
+- `q`: 시설명·주소·UUID·지역(동·시군구·시도 이름) 부분 일치. 단말에 묶인 줄만(명령·보내기는 대상 단말로), 검색하면 관리 분류는 안 나온다.
+- 범위: 지역관리자·게스트는 맡은 시·도 단말 것만(명령·보내기는 대상에 범위 안 단말이 하나라도 있으면), 관리 분류 없음. 게스트도 GET 가능.
+- 응답 `{items:[{at, cat, kind(ALARM_OPEN/ALARM_CLOSE/STATE_CHANGE/REBOOT/COMMAND/DEPLOY/LOGIN_FAIL/SETTING/ACCOUNT), uuid, site, region, text, by?, severity?, seq?, job_id?}], total, page, size, max_rows, cats}`. `total` = 원천별 건수 합.
+
+### 로그인 실패 문구 (문제점 33번)
+API 는 그대로 401 `{code: LOGIN_FAILED, message}`. 화면은 `api.userMessage` 로 **문구만** 보인다("사용자 이름 또는 비밀번호가 맞지 않습니다.") — 상태 번호·코드는 로그인·비밀번호 바꾸기 창에서 빼고, 다른 화면은 지금처럼 `errorText`.

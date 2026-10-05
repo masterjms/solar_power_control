@@ -1,7 +1,7 @@
 // 로그인 화면(문제점 16번) — 브라우저 Basic auth 창 대신. 스마트폰 메신저 안 브라우저에서도 뜬다.
 // 계정은 서버 .env 의 ADMIN_* / OPERATOR_*. 세션은 쿠키(기본 7일), 판정은 nginx auth_request → backend.
 import { FormEvent, ReactNode, useEffect, useState } from "react";
-import { api, ApiErrorException, AUTH_EVENT, errorText } from "./api";
+import { api, ApiErrorException, AUTH_EVENT, userMessage } from "./api";
 
 export function Login({ onDone }: { onDone: () => void }) {
   const [user, setUser] = useState("");
@@ -18,7 +18,7 @@ export function Login({ onDone }: { onDone: () => void }) {
       await api.login(user.trim(), pw);
       onDone();
     } catch (x) {
-      setErr(x instanceof ApiErrorException && x.status === 429 ? "시도가 너무 많습니다 — 1분 뒤 다시" : errorText(x));
+      setErr(x instanceof ApiErrorException && x.status === 429 ? "시도가 너무 많습니다 — 1분 뒤 다시 하세요." : userMessage(x));
     } finally {
       setBusy(false);
     }
@@ -83,7 +83,7 @@ export function PasswordModal({ onClose }: { onClose: () => void }) {
       alert("비밀번호를 바꿨습니다. 새 비밀번호로 다시 로그인하세요.");
       location.reload();
     } catch (x) {
-      setErr(errorText(x));
+      setErr(userMessage(x));
     } finally {
       setBusy(false);
     }

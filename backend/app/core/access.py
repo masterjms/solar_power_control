@@ -35,7 +35,7 @@ GUEST_ALLOW = (
     re.compile(r"^/api/me$"), re.compile(r"^/api/ui-config$"), re.compile(r"^/health$"),
     re.compile(r"^/api/devices$"), re.compile(r"^/api/devices/map$"),
     re.compile(r"^/api/devices/energy$"), re.compile(r"^/api/energy/summary$"),
-    re.compile(r"^/api/alarms$"), re.compile(r"^/api/regions$"),
+    re.compile(r"^/api/alarms$"), re.compile(r"^/api/regions$"), re.compile(r"^/api/activity$"),
 )
 #: 게스트도 되는 쓰기 — 자기 비밀번호.
 GUEST_WRITE_ALLOW = (re.compile(r"^/api/accounts/me/password$"),)

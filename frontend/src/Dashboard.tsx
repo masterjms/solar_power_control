@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlarmPage, AlarmTab, api, Device, DeviceCounts, DeviceList as DeviceListRes, EnergyToday, Health, MapPoint, STATES, errorText } from "./api";
 import { co2Text, kwh2, localTime, relTime, str, volt1, watt1 } from "./format";
-import { Battery, Card, LampPair, OnlineMark, PlaceholderCard, StateBadge, nf, stateLabel } from "./ui";
+import { Battery, Card, DEFAULT_PAGE_SIZE, LampPair, OnlineMark, PAGE_SIZES, StateBadge, nf, stateLabel } from "./ui";
 import { DeviceMap, PIN, PinIcon } from "./KakaoMap";
 import { Pager, RemoteBadge, shortPath } from "./DeviceList";
 import { TAB_LABEL, alarmValue } from "./Alarms";
 import { CommandForm, CommandResult, durText, useLedBasis } from "./Command";
 import EnergyCards from "./Energy";
+import ActivityCard from "./Activity";
 
 const REFRESH_MS = 30_000;
 const SAMPLE = 500; // 목록 API 최대 size. ACTIVE 가 이보다 많으면 "표본 500대"
@@ -197,7 +198,8 @@ export default function Dashboard({ counts, total, health, tick, onSelect, readO
       <EnergyCards tick={tick} />
 
       {/* 4행 */}
-      <PlaceholderCard title="최근 이벤트" meta="전체 단말" className="full h200" stage="6차" note="전체 이벤트 조회 API(GET /api/events) 추가 필요 — 지금은 단말별 이벤트만 드로어에서" />
+      {/* 4행 — 최근 활동(문제점 30·34번) */}
+      <ActivityCard tick={tick} onSelect={onSelect} readOnly={readOnly} />
 
       {/* 5행 — 단말 목록(문제점 #11) */}
       <DashDevices tick={tick} onSelect={onSelect} readOnly={readOnly} />
@@ -241,7 +243,7 @@ function DashDevices({ tick, onSelect, readOnly = false }: { tick: number; onSel
   const [q, setQ] = useState("");
   const [state, setState] = useState("ACTIVE");
   const [page, setPage] = useState(1);
-  const [size, setSize] = useState(20);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [res, setRes] = useState<DeviceListRes | null>(null);
   const [energy, setEnergy] = useState<Record<string, EnergyToday>>({});
   const [err, setErr] = useState<string | null>(null);
@@ -287,7 +289,7 @@ function DashDevices({ tick, onSelect, readOnly = false }: { tick: number; onSel
         </select>
         <span className="sp" />
         <select value={size} aria-label="페이지 크기" onChange={(e) => (setSize(Number(e.target.value)), setPage(1))}>
-          {[20, 50, 100].map((n) => <option key={n} value={n}>{n}개씩</option>)}
+          {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}개씩</option>)}
         </select>
       </div>
       {err && <div className="err">{err}</div>}

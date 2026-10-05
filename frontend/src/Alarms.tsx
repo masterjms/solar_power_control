@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Alarm, AlarmPage, AlarmSeverity, AlarmTab, api, errorText } from "./api";
 import { localTime, relTime } from "./format";
 import { Pager } from "./DeviceList";
-import { Card, nf } from "./ui";
+import { Card, nf, DEFAULT_PAGE_SIZE, PAGE_SIZES } from "./ui";
 
 const REFRESH_MS = 15_000;
 
@@ -49,7 +49,7 @@ export default function Alarms({ tick, onSelect }: { tick: number; onSelect: (uu
   const [text, setText] = useState("");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
-  const [size, setSize] = useState(50);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [res, setRes] = useState<AlarmPage | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -93,7 +93,7 @@ export default function Alarms({ tick, onSelect }: { tick: number; onSelect: (uu
           <input type="search" placeholder="시설명·UUID·주소" aria-label="알람 검색" value={text} onChange={(e) => setText(e.target.value)} style={{ width: 240 }} />
           <span className="sp" />
           <select value={size} aria-label="페이지 크기" onChange={(e) => (setSize(Number(e.target.value)), setPage(1))}>
-            {[20, 50, 100, 200].map((n) => <option key={n} value={n}>{n}개씩</option>)}
+            {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}개씩</option>)}
           </select>
         </div>
         {err && <div className="err">{err}</div>}

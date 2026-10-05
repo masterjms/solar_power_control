@@ -1,7 +1,7 @@
 import { MouseEvent, useEffect, useState } from "react";
 import { api, Device, DeviceList as DeviceListRes, STATES, errorText } from "./api";
 import { relTime, str, volt1 } from "./format";
-import { Battery, Card, LampPair, OnlineMark, StateBadge, stateLabel, nf } from "./ui";
+import { Battery, Card, LampPair, OnlineMark, StateBadge, stateLabel, nf, DEFAULT_PAGE_SIZE, PAGE_SIZES } from "./ui";
 
 const REFRESH_MS = 10_000;
 
@@ -75,7 +75,7 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
   const [text, setText] = useState("");
   const [q, setQ] = useState(""); // 입력 후 300ms 지나면 text → q
   const [page, setPage] = useState(1);
-  const [size, setSize] = useState(50);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [res, setRes] = useState<DeviceListRes | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -127,7 +127,7 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
         <input type="search" placeholder="시설명·UUID·주소·지역 (한 글자도 됨)" aria-label="검색" value={text} onChange={(e) => setText(e.target.value)} style={{ width: 260 }} />
         <span className="sp" />
         <select value={size} aria-label="페이지 크기" onChange={(e) => (setSize(Number(e.target.value)), setPage(1))}>
-          {[20, 50, 100, 200, 500].map((n) => (
+          {PAGE_SIZES.map((n) => (
             <option key={n} value={n}>{n}개씩</option>
           ))}
         </select>

@@ -147,3 +147,7 @@ export function SyncBadge({ sync }: { sync: SettingsSync | null | undefined }) {
   const [label, cls, why] = SYNC_LABEL[s] ?? [s, "b-off", ""];
   return <span className={`badge ${cls}`} title={`${s} — ${why}`}>{label}</span>;
 }
+
+/** 목록 개수 — 모든 목록 화면이 같이 쓴다(문제점 35번): 20·50·100, 기본 20. */
+export const PAGE_SIZES = [20, 50, 100] as const;
+export const DEFAULT_PAGE_SIZE = 20;
