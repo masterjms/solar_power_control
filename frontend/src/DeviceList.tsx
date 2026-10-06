@@ -1,7 +1,7 @@
 import { MouseEvent, useEffect, useState } from "react";
 import { api, Device, DeviceList as DeviceListRes, STATES, errorText } from "./api";
 import { relTime, str, volt1 } from "./format";
-import { Battery, Card, LampPair, OnlineMark, StateBadge, stateLabel, nf, DEFAULT_PAGE_SIZE, PAGE_SIZES } from "./ui";
+import { Battery, Card, LampPair, OnlineMark, StateBadge, stateLabel, nf, DEFAULT_PAGE_SIZE, PageSize, Pager } from "./ui";
 
 const REFRESH_MS = 10_000;
 
@@ -12,25 +12,7 @@ interface Props {
 }
 
 /** 페이지 번호 버튼(목업 .pager). 현재 ±2 와 양 끝만. */
-export function Pager({ page, pages, total, size, onPage }: { page: number; pages: number; total: number; size: number; onPage: (p: number) => void }) {
-  const nums = new Set<number>([1, pages, page - 2, page - 1, page, page + 1, page + 2].filter((n) => n >= 1 && n <= pages));
-  const list = [...nums].sort((a, b) => a - b);
-  const from = total === 0 ? 0 : (page - 1) * size + 1;
-  const to = Math.min(total, page * size);
-  return (
-    <div className="pager">
-      <span>{from}–{to} / {nf(total)}</span>
-      <button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)}>‹</button>
-      {list.map((n, i) => (
-        <span key={n} style={{ display: "contents" }}>
-          {i > 0 && list[i - 1] !== n - 1 && <span>…</span>}
-          <button type="button" className={n === page ? "on" : ""} onClick={() => onPage(n)}>{n}</button>
-        </span>
-      ))}
-      <button type="button" disabled={page >= pages} onClick={() => onPage(page + 1)}>›</button>
-    </div>
-  );
-}
+export { Pager };
 
 /** 지역 경로를 짧게: "경기도 > 안양시 만안구 > 안양동" → "안양시 만안구 > 안양동". */
 export function shortPath(d: Device): string {
@@ -126,11 +108,7 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
         </label>
         <input type="search" placeholder="시설명·UUID·주소·지역 (한 글자도 됨)" aria-label="검색" value={text} onChange={(e) => setText(e.target.value)} style={{ width: 260 }} />
         <span className="sp" />
-        <select value={size} aria-label="페이지 크기" onChange={(e) => (setSize(Number(e.target.value)), setPage(1))}>
-          {PAGE_SIZES.map((n) => (
-            <option key={n} value={n}>{n}개씩</option>
-          ))}
-        </select>
+        <PageSize size={size} onChange={(n) => (setSize(n), setPage(1))} />
       </div>
       {error && <div className="err">{error}</div>}
       {note && <div className="okl">{note}</div>}

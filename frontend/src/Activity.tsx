@@ -2,9 +2,8 @@
 // 검색(시설명·주소·지역), 분류, 목록 개수 20/50/100(기본 20, 문제점 35번), 쪽 넘기기. 열 순서: 시설명 · 지역 · 시각 · 분류 · 내용.
 import { useEffect, useState } from "react";
 import { ActivityItem, ActivityPage, api, errorText } from "./api";
-import { Pager } from "./DeviceList";
 import { localTime, relTime } from "./format";
-import { Card, DEFAULT_PAGE_SIZE, PAGE_SIZES, nf } from "./ui";
+import { Card, DEFAULT_PAGE_SIZE, PageSize, Pager, nf } from "./ui";
 
 const REFRESH_MS = 10_000;
 const CAT_LABEL: Record<string, string> = { alarm: "알람", device: "단말", control: "조작", admin: "관리" };
@@ -46,9 +45,7 @@ export default function ActivityCard({ tick, onSelect, readOnly = false }: { tic
           ))}
         </span>
         <span className="sp" />
-        <select className="inp" value={size} aria-label="목록 개수" onChange={(e) => (setSize(Number(e.target.value)), setPage(1))}>
-          {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}개씩</option>)}
-        </select>
+        <PageSize size={size} onChange={(n) => (setSize(n), setPage(1))} />
       </div>
       {err && <div className="err">{err}</div>}
       <div className="tw">

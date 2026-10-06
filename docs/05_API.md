@@ -398,3 +398,9 @@ applied_profile_id applied_version applied_crc applied_at device_crc device_regi
 
 ### 로그인 실패 문구 (문제점 33번)
 API 는 그대로 401 `{code: LOGIN_FAILED, message}`. 화면은 `api.userMessage` 로 **문구만** 보인다("사용자 이름 또는 비밀번호가 맞지 않습니다.") — 상태 번호·코드는 로그인·비밀번호 바꾸기 창에서 빼고, 다른 화면은 지금처럼 `errorText`.
+
+## 목록 쪽 넘기기 공통 (2026-10-06, 문제점 39번)
+화면의 목록은 모두 `page`·`size`(1~100, 화면은 20/50/100·기본 20) → `{items, total, page, size}`.
+- `GET /api/accounts/logins?page=&size=` — 바뀜(예전 `?limit=` 목록 응답은 없앰, 화면만 씀).
+- `GET /api/commands?page=&size=&uuid=&node_id=` · `GET /api/schedule/deploy?page=&size=` — `page` 를 주면 위 모양, 안 주면 예전처럼 `?limit=` 목록(시나리오·도구 호환).
+- 단말·알람·승인 대기(`/api/devices?state=PENDING`)·최근 활동은 원래 이 모양.

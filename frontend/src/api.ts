@@ -309,6 +309,9 @@ export interface AccountList {
 }
 export interface LoginRecord { at: string; username: string; ok: boolean; reason: string; ip: string | null }
 
+/** 쪽 나눈 목록 공통 모양(문제점 39번). */
+export interface Paged<T> { items: T[]; total: number; page: number; size: number }
+
 /** GET /api/activity — 대시보드 최근 활동(문제점 30·34번). */
 export interface ActivityItem {
   at: string;
@@ -797,7 +800,7 @@ export const api = {
     request<Account>(`/api/accounts/${id}`, json("PATCH", body)),
   resetPassword: (id: number, password: string) => request<{ ok: boolean }>(`/api/accounts/${id}/password`, json("POST", { password })),
   deleteAccount: (id: number) => request<{ deleted: string }>(`/api/accounts/${id}`, json("DELETE")),
-  loginLog: (limit = 100) => request<LoginRecord[]>(`/api/accounts/logins?limit=${limit}`),
+  loginLog: (p: { page: number; size: number }) => request<Paged<LoginRecord>>(`/api/accounts/logins?page=${p.page}&size=${p.size}`),
   changeMyPassword: (old: string, nw: string) => request<{ ok: boolean }>("/api/accounts/me/password", json("POST", { old, new: nw })),
   systemStatus: () => request<SystemStatus>("/api/system/status"),
   activity: (p: { page: number; size: number; cat?: string; q?: string }) => {
@@ -839,6 +842,13 @@ export const api = {
     if (p.uuid) q.set("uuid", p.uuid);
     if (p.node_id !== undefined) q.set("node_id", String(p.node_id));
     return request<CommandSummary[]>(`/api/commands?${q}`);
+  },
+  /** 명령 이력 한 쪽(문제점 39번). */
+  commandPage: (p: { page: number; size: number; uuid?: string; node_id?: number }) => {
+    const q = new URLSearchParams({ page: String(p.page), size: String(p.size) });
+    if (p.uuid) q.set("uuid", p.uuid);
+    if (p.node_id !== undefined) q.set("node_id", String(p.node_id));
+    return request<Paged<CommandSummary>>(`/api/commands?${q}`);
   },
   getCommand: (seq: number) => request<CommandDetail>(`/api/commands/${seq}`),
   retryCommand: (seq: number, uuids: string[] | null = null) =>
@@ -901,6 +911,9 @@ export const api = {
     if (p.uuid) q.set("uuid", p.uuid);
     return request<DeployJob[]>(`/api/schedule/deploy?${q}`);
   },
+  /** 보낸 기록 한 쪽(문제점 39번). */
+  deployJobPage: (p: { page: number; size: number }) =>
+    request<Paged<DeployJob>>(`/api/schedule/deploy?page=${p.page}&size=${p.size}`),
   deployJob: (id: number) => request<DeployJob>(`/api/schedule/deploy/${id}`),
   retryDeploy: (id: number, uuids: string[] | null = null) =>
     request<{ retried: number; skipped: number }>(`/api/schedule/deploy/${id}/retry`, json("POST", { uuids })),

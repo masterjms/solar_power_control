@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Device, api, errorText } from "./api";
 import { localTime, relTime, str } from "./format";
-import { Card, nf } from "./ui";
+import { Card, DEFAULT_PAGE_SIZE, PageSize, Pager, nf, pageCount } from "./ui";
 
 const REFRESH_MS = 10_000;
 
@@ -58,13 +58,15 @@ export default function Pending({ tick, onSelect, canList = true }: Props) {
 function PendingList({ tick, onSelect }: { tick: number; onSelect: (uuid: string) => void }) {
   const [rows, setRows] = useState<Device[]>([]);
   const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     const load = () =>
       api
-        .listDevices({ page: 1, size: 500, state: "PENDING" })
+        .listDevices({ page, size, state: "PENDING" })
         .then((r) => {
           if (!alive) return;
           setRows(r.items);
@@ -78,7 +80,7 @@ function PendingList({ tick, onSelect }: { tick: number; onSelect: (uuid: string
       alive = false;
       clearInterval(id);
     };
-  }, [tick]);
+  }, [tick, page, size]);
 
   return (
     <div className="content">
@@ -88,6 +90,10 @@ function PendingList({ tick, onSelect }: { tick: number; onSelect: (uuid: string
           점등한다. 행을 누르면 <b>승인 창</b>이 열린다 — 단말기 정보 확인 → 설치 정보·지도 위치 → 통신 주기 설정 → 설정 변경 → 승인/거절/폐기.
         </div>
         {error && <div className="err">{error}</div>}
+        <div className="bar2">
+          <span className="sp" />
+          <PageSize size={size} onChange={(n) => (setSize(n), setPage(1))} />
+        </div>
         <div className="tw">
           <table className="list">
             <thead>
@@ -111,6 +117,7 @@ function PendingList({ tick, onSelect }: { tick: number; onSelect: (uuid: string
             </tbody>
           </table>
         </div>
+        <Pager page={page} pages={pageCount(total, size)} total={total} size={size} onPage={setPage} />
       </Card>
     </div>
   );

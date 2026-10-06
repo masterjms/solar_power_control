@@ -419,8 +419,9 @@ def _job_out(j: DeployJob, counts: dict[str, int], items: list[DeployItemOut] | 
 
 
 async def list_jobs(db: AsyncSession, *, limit: int, profile_id: int | None,
-                    uuid: str | None) -> list[DeployJobOut]:
-    stmt = select(DeployJob).order_by(DeployJob.id.desc()).limit(limit)
+                    uuid: str | None, offset: int = 0) -> tuple[list[DeployJobOut], int]:
+    """최신순 (한 쪽, 전체 건수)."""
+    stmt = select(DeployJob)
     if current_scope() is not None:
         # 맡은 지역 단말이 하나라도 든 작업만(문제점 21번)
         stmt = stmt.where(DeployJob.id.in_(
@@ -430,9 +431,11 @@ async def list_jobs(db: AsyncSession, *, limit: int, profile_id: int | None,
         stmt = stmt.where(DeployJob.profile_id == profile_id)
     if uuid is not None:
         stmt = stmt.where(DeployJob.id.in_(select(DeployItem.job_id).where(DeployItem.uuid == uuid)))
-    jobs = list((await db.execute(stmt)).scalars())
+    total = int(await db.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+    jobs = list((await db.execute(
+        stmt.order_by(DeployJob.id.desc()).offset(offset).limit(limit))).scalars())
     counts = await _counts(db, [j.id for j in jobs])
-    return [_job_out(j, counts[j.id], None) for j in jobs]
+    return [_job_out(j, counts[j.id], None) for j in jobs], total
 
 
 async def _job_allowed(db: AsyncSession, job_id: int) -> bool:

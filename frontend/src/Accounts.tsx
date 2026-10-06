@@ -4,7 +4,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Account, AccountList, LoginRecord, Role, api, ApiErrorException, errorText } from "./api";
 import { localTime, relTime } from "./format";
-import { Card, nf } from "./ui";
+import { Card, DEFAULT_PAGE_SIZE, PageSize, Pager, nf, pageCount } from "./ui";
 
 const EXPIRY_LABEL: Record<string, string> = {
   "7d": "7일", "15d": "15일", "30d": "30일", "90d": "90일", "180d": "180일", "365d": "1년", never: "무기한",
@@ -160,11 +160,17 @@ function AccountEdit({ a, data, onDone, onClose }: { a: Account; data: AccountLi
 export default function Accounts({ role }: { role: string | null }) {
   const [data, setData] = useState<AccountList | null>(null);
   const [logs, setLogs] = useState<LoginRecord[]>([]);
+  const [logTotal, setLogTotal] = useState(0);
+  const [logPage, setLogPage] = useState(1);
+  const [logSize, setLogSize] = useState(DEFAULT_PAGE_SIZE);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [edit, setEdit] = useState<number | null>(null);
-  const load = () => Promise.all([api.accounts(), api.loginLog(50)]).then(([d, l]) => (setData(d), setLogs(l), setErr(null))).catch((e) => setErr(errorText(e)));
+  const load = () => api.accounts().then((d) => (setData(d), setErr(null))).catch((e) => setErr(errorText(e)));
+  const loadLogs = () => api.loginLog({ page: logPage, size: logSize })
+    .then((l) => (setLogs(l.items), setLogTotal(l.total))).catch((e) => setErr(errorText(e)));
   useEffect(() => { if (role === "super_admin") load(); }, [role]);
+  useEffect(() => { if (role === "super_admin") loadLogs(); }, [role, logPage, logSize]);
 
   if (role !== "super_admin")
     return <div className="content"><Card title="계정 관리" className="full"><div className="muted">최고관리자만 볼 수 있습니다.</div></Card></div>;
@@ -201,7 +207,12 @@ export default function Accounts({ role }: { role: string | null }) {
       <Card title="새 계정" className="full" meta="최고관리자만">
         {data && <AccountForm data={data} onDone={done} />}
       </Card>
-      <Card title="로그인 기록" className="full" meta="최근 50건 · 1년 보관">
+      <Card title="로그인 기록" className="full" meta={`${nf(logTotal)}건 · 1년 보관`}>
+        <div className="bar2">
+          <span className="sp" />
+          <button type="button" className="btn sm" onClick={loadLogs}>새로고침</button>
+          <PageSize size={logSize} onChange={(n) => (setLogSize(n), setLogPage(1))} />
+        </div>
         <div className="tw">
           <table className="list">
             <thead><tr><th>시각</th><th>아이디</th><th>결과</th><th>IP</th></tr></thead>
@@ -214,6 +225,7 @@ export default function Accounts({ role }: { role: string | null }) {
             </tbody>
           </table>
         </div>
+        <Pager page={logPage} pages={pageCount(logTotal, logSize)} total={logTotal} size={logSize} onPage={setLogPage} />
       </Card>
     </div>
   );

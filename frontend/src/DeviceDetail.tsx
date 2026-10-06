@@ -552,7 +552,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
           </div>
           {cmdSeq !== null && <CommandResult seq={cmdSeq} onClose={() => setCmdSeq(null)} />}
           <h4 style={{ marginTop: 12 }}>명령 이력 <span>이 단말이 대상에 든 명령</span></h4>
-          <CommandHistory uuid={uuid} limit={20} selected={cmdSeq} onOpen={setCmdSeq} />
+          <CommandHistory uuid={uuid} selected={cmdSeq} onOpen={setCmdSeq} />
         </div>
 
         {/* ---------- PING · 삭제 ---------- */}

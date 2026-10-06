@@ -151,3 +151,36 @@ export function SyncBadge({ sync }: { sync: SettingsSync | null | undefined }) {
 /** 목록 개수 — 모든 목록 화면이 같이 쓴다(문제점 35번): 20·50·100, 기본 20. */
 export const PAGE_SIZES = [20, 50, 100] as const;
 export const DEFAULT_PAGE_SIZE = 20;
+
+/** 목록 개수 고르기 — 모든 목록이 같은 모양(문제점 36·39번): 오른쪽 끝에 작게. */
+export function PageSize({ size, onChange }: { size: number; onChange: (n: number) => void }) {
+  return (
+    <select className="psize" value={size} aria-label="목록 개수" onChange={(e) => onChange(Number(e.target.value))}>
+      {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}개씩</option>)}
+    </select>
+  );
+}
+
+/** 쪽 넘기기 — 목록 아래(모든 목록 공통). */
+export function Pager({ page, pages, total, size, onPage }: { page: number; pages: number; total: number; size: number; onPage: (p: number) => void }) {
+  const nums = new Set<number>([1, pages, page - 2, page - 1, page, page + 1, page + 2].filter((n) => n >= 1 && n <= pages));
+  const list = [...nums].sort((a, b) => a - b);
+  const from = total === 0 ? 0 : (page - 1) * size + 1;
+  const to = Math.min(total, page * size);
+  return (
+    <div className="pager">
+      <span>{from}–{to} / {nf(total)}</span>
+      <button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)}>‹</button>
+      {list.map((n, i) => (
+        <span key={n} style={{ display: "contents" }}>
+          {i > 0 && list[i - 1] !== n - 1 && <span>…</span>}
+          <button type="button" className={n === page ? "on" : ""} onClick={() => onPage(n)}>{n}</button>
+        </span>
+      ))}
+      <button type="button" disabled={page >= pages} onClick={() => onPage(page + 1)}>›</button>
+    </div>
+  );
+}
+
+/** 전체 건수 → 쪽 수. */
+export const pageCount = (total: number, size: number) => Math.max(1, Math.ceil(total / size));

@@ -47,13 +47,6 @@ const PAGES: { id: Page; ico: string; label: string; title: string }[] = [
 const ROLE_LABEL: Record<string, string> = { super_admin: "최고관리자", region_admin: "지역관리자", guest: "게스트", admin: "관리자" };
 const noop = () => undefined;
 
-/** 아직 백엔드가 없는 메뉴 — 회색으로만 보인다(docs/00 §2 단계). */
-const LATER: { ico: string; label: string; stage: string }[] = [
-  { ico: "◎", label: "지도", stage: "7차" },
-  { ico: "⇪", label: "OTA", stage: "7차" },
-  { ico: "∿", label: "통계", stage: "7차" },
-];
-
 function pageFromHash(): Page {
   // "#config/<UUID>" 처럼 뒤에 붙은 인자는 페이지가 직접 읽는다.
   const h = location.hash.replace(/^#/, "").split("/")[0];
@@ -141,11 +134,14 @@ export default function App() {
 
   const pending = counts?.PENDING ?? 0;
   const total = counts ? counts.PENDING + counts.ACTIVE + counts.SUSPENDED + counts.REJECTED + counts.RETIRED : null;
-  const serverOk = !!health && health.ok && health.mqtt_connected && health.db_ok;
+  // 서버 이상이면 무엇이 문제인지 그 자리에 적는다(문제점 41번). 정상이면 "서버 정상" 한 마디.
+  const problems: string[] = [];
+  if (error && !health) problems.push("서버 응답 없음");
+  if (health && !health.mqtt_connected) problems.push("단말 통신 서버 끊김");
+  if (health && !health.db_ok) problems.push("DB 장애");
+  if (health && !health.broker_log_tail) problems.push("단말 접속 기록 중단");
+  const serverOk = !!health && problems.length === 0;
   const cur = PAGES.find((p) => p.id === page)!;
-
-  const dotOf = (ok: boolean | undefined) =>
-    ok === undefined ? "var(--off)" : ok ? "var(--ok)" : "var(--alarm)";
 
   return (
     <div className="shell">
@@ -159,18 +155,11 @@ export default function App() {
               {p.id === "alarms" && !!alarmN && <span className="cnt">{nf(alarmN)}</span>}
             </a>
           ))}
-          {me?.role !== "guest" && <div className="sep">이후 단계</div>}
-          {me?.role !== "guest" && LATER.map((p) => (
-            <a key={p.label} className="dis" title={`${p.stage}에 추가`} onClick={(e) => e.preventDefault()} href="#">
-              <span className="ico">{p.ico}</span>{p.label}<span className="stg">{p.stage}</span>
-            </a>
-          ))}
         </nav>
-        <div className="foot">
-          <div><span className="dot" style={{ background: dotOf(health?.mqtt_connected) }} />MQTT Broker {health ? (health.mqtt_connected ? "정상" : "끊김") : "-"}</div>
-          <div><span className="dot" style={{ background: dotOf(health?.db_ok) }} />DB {health ? (health.db_ok ? "정상" : "장애") : "-"}</div>
-          <div><span className="dot" style={{ background: dotOf(health?.broker_log_tail) }} />브로커 로그 {health ? (health.broker_log_tail ? "추적 중" : "중단") : "-"}</div>
-          <div className="muted">{health ? `env ${health.env}` : ""}</div>
+        {/* 왼쪽 아래 — 약관·저작권(문제점 42번). 서버 상태 줄은 위쪽 "서버 정상" 알약 하나로(41번). */}
+        <div className="foot legal">
+          <div>이용약관 · 개인정보 처리방침</div>
+          <div>© 2026, RMNECO. All rights reserved.</div>
         </div>
       </aside>
 
@@ -192,9 +181,9 @@ export default function App() {
           {health && health.telemetry_dropped > 0 && (
             <span className="pill alarm" title="telemetry_dropped">Telemetry 유실 {nf(health.telemetry_dropped)}</span>
           )}
-          <span className="pill" title={health ? `mqtt ${health.mqtt_connected} · db ${health.db_ok} · broker_log_tail ${health.broker_log_tail}` : ""}>
-            <span className="dot" style={{ background: health ? (serverOk ? "var(--ok)" : "var(--alarm)") : "var(--off)" }} />
-            {health ? (serverOk ? "서버 정상" : "서버 이상") : "서버 -"}
+          <span className={`pill ${problems.length ? "alarm" : ""}`} title="자세한 내용은 서버 상태 화면">
+            <span className="dot" style={{ background: serverOk ? "var(--ok)" : problems.length ? "var(--alarm)" : "var(--off)" }} />
+            {serverOk ? "서버 정상" : problems.length ? problems.join(" · ") : "서버 확인 중"}
           </span>
 {isSuper && (
                     <span className="pill" title="활성 HMAC 키(ADR-003)">

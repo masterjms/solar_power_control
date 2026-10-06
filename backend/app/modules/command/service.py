@@ -322,10 +322,10 @@ async def _counts(db: AsyncSession, seqs: list[int]) -> dict[int, dict[str, int]
 
 
 async def list_commands(
-    db: AsyncSession, *, limit: int, uuid: str | None, node_id: int | None
-) -> list[CommandItem]:
-    """최신순. uuid = 그 단말이 대상 스냅숏에 든 명령 전부(그룹·전체 포함). node_id = 그 노드
-    또는 하위 노드를 대상으로 한 명령. PING 은 빼고 COMMAND 만."""
+    db: AsyncSession, *, limit: int, uuid: str | None, node_id: int | None, offset: int = 0,
+) -> tuple[list[CommandItem], int]:
+    """최신순 (한 쪽, 전체 건수). uuid = 그 단말이 대상 스냅숏에 든 명령 전부(그룹·전체 포함).
+    node_id = 그 노드 또는 하위 노드를 대상으로 한 명령. PING 은 빼고 COMMAND 만."""
     tree = await load_tree(db)
     stmt = select(Command).where(Command.type == MsgType.COMMAND.value)
     if current_scope() is not None:
@@ -342,10 +342,12 @@ async def list_commands(
             raise RegionNotFound(detail={"id": node_id})
         stmt = stmt.where(Command.target_kind == "node",
                           Command.target_id.in_([str(i) for i in tree.subtree_ids(node_id)]))
-    cmds = list((await db.execute(stmt.order_by(Command.seq.desc()).limit(limit))).scalars())
+    total = int(await db.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+    cmds = list((await db.execute(
+        stmt.order_by(Command.seq.desc()).offset(offset).limit(limit))).scalars())
     labels = await _labels(db, cmds, tree)
     counts = await _counts(db, [c.seq for c in cmds])
-    return [CommandItem(**_item(c, labels[c.seq], counts[c.seq])) for c in cmds]
+    return [CommandItem(**_item(c, labels[c.seq], counts[c.seq])) for c in cmds], total
 
 
 async def _get_command(db: AsyncSession, seq: int) -> Command:

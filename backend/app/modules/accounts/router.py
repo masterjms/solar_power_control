@@ -6,7 +6,7 @@
   PATCH  /api/accounts/{id}            {role?, region_ids?, expires?, disabled?}
   POST   /api/accounts/{id}/password   {password} — 재설정(그 계정의 기존 로그인 끊김)
   DELETE /api/accounts/{id}
-  GET    /api/accounts/logins?limit=   로그인 기록
+  GET    /api/accounts/logins?page=&size=   로그인 기록 {items,total,page,size}(문제점 39번)
 누구나(DB 계정만):
   POST   /api/accounts/me/password     {old, new}
 """
@@ -225,8 +225,11 @@ async def delete_account(account_id: int, me: Principal = Depends(current_user),
 
 
 @router.get("/logins")
-async def logins(limit: int = Query(default=100, ge=1, le=1000), me: Principal = Depends(current_user),
-                 db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
+async def logins(page: int = Query(default=1, ge=1), size: int = Query(default=20, ge=1, le=100),
+                 me: Principal = Depends(current_user), db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     require_super(me, action="accounts.logins")
-    rows = (await db.execute(select(LoginLog).order_by(LoginLog.id.desc()).limit(limit))).scalars()
-    return [{"at": r.at, "username": r.username, "ok": r.ok, "reason": r.reason, "ip": r.ip} for r in rows]
+    total = int(await db.scalar(select(func.count()).select_from(LoginLog)) or 0)
+    rows = (await db.execute(select(LoginLog).order_by(LoginLog.id.desc())
+                             .offset((page - 1) * size).limit(size))).scalars()
+    return {"items": [{"at": r.at, "username": r.username, "ok": r.ok, "reason": r.reason, "ip": r.ip}
+                      for r in rows], "total": total, "page": page, "size": size}

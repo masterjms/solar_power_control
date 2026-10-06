@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlarmPage, AlarmTab, api, Device, DeviceCounts, DeviceList as DeviceListRes, EnergyToday, Health, MapPoint, STATES, errorText } from "./api";
 import { co2Text, kwh2, localTime, relTime, str, volt1, watt1 } from "./format";
-import { Battery, Card, DEFAULT_PAGE_SIZE, LampPair, OnlineMark, PAGE_SIZES, StateBadge, nf, stateLabel } from "./ui";
+import { Battery, Card, DEFAULT_PAGE_SIZE, LampPair, OnlineMark, StateBadge, nf, stateLabel, PageSize, Pager } from "./ui";
 import { DeviceMap, PIN, PinIcon } from "./KakaoMap";
-import { Pager, RemoteBadge, shortPath } from "./DeviceList";
+import { RemoteBadge, shortPath } from "./DeviceList";
 import { TAB_LABEL, alarmValue } from "./Alarms";
 import { CommandForm, CommandResult, durText, useLedBasis } from "./Command";
 import EnergyCards from "./Energy";
@@ -34,6 +34,15 @@ const BUCKETS: [string, number, number, string][] = [
 ];
 
 /** 대시보드 — 목업 1~3행. 목록 counts 와 ACTIVE 표본(최대 500대)으로 만든다. 없는 것은 자리만. */
+/** 비율 막대 — 0 인 칸은 아예 그리지 않는다(문제점 44번: 최소 폭 때문에 끝에 색이 조금 보였다). */
+function SBar({ label, segs }: { label: string; segs: [number | null | undefined, string][] }) {
+  return (
+    <div className="sbar" aria-label={label}>
+      {segs.filter(([n]) => (n ?? 0) > 0).map(([n, c], i) => <i key={i} style={{ flex: n ?? 0, background: c }} />)}
+    </div>
+  );
+}
+
 export default function Dashboard({ counts, total, health, tick, onSelect, readOnly = false }: Props) {
   const [active, setActive] = useState<Device[]>([]);
   const [activeTotal, setActiveTotal] = useState<number | null>(null);
@@ -123,12 +132,7 @@ export default function Dashboard({ counts, total, health, tick, onSelect, readO
           title="단말 상태"
           meta={<><span>{total === null ? "-" : `${nf(total)}대 등록`}</span><a className="btn sm c-blue" href="#pending">승인 대기 {nf(counts?.PENDING)}</a></>}
         >
-          <div className="sbar" aria-label="상태 비율">
-            <i style={{ flex: online ?? 0, background: "var(--ok)" }} />
-            <i style={{ flex: offline ?? 0, background: "var(--off)" }} />
-            <i style={{ flex: counts?.PENDING ?? 0, background: "var(--blue)" }} />
-            <i style={{ flex: stopped ?? 0, background: "var(--warn)" }} />
-          </div>
+          <SBar label="상태 비율" segs={[[online, "var(--ok)"], [offline, "var(--off)"], [counts?.PENDING, "var(--blue)"], [stopped, "var(--warn)"]]} />
           <div className="keys">
             <a className="key" href="#devices" title="is_online=true"><span className="l"><span className="dot" style={{ background: "var(--ok)" }} />온라인</span><span className="v c-ok">{nf(online)}</span><span className="m">{total ? `${Math.round(((online ?? 0) / total) * 100)}%` : ""}</span></a>
             <a className="key" href="#devices" title="전체 − 온라인"><span className="l"><span className="dot" style={{ background: "var(--off)" }} />오프라인</span><span className="v c-off">{nf(offline)}</span><span className="m">{total ? `${Math.round(((offline ?? 0) / total) * 100)}%` : ""}</span></a>
@@ -143,11 +147,7 @@ export default function Dashboard({ counts, total, health, tick, onSelect, readO
           </div>
         </Card>
         <Card title="조명 상태" meta={error ? <span className="err">{error}</span> : sampleNote}>
-          <div className="sbar">
-            <i style={{ flex: lamp.on, background: "var(--lamp)" }} />
-            <i style={{ flex: lamp.off, background: "var(--seg-off)" }} />
-            <i style={{ flex: lamp.unknown, background: "var(--line)" }} />
-          </div>
+          <SBar label="조명 비율" segs={[[lamp.on, "var(--lamp)"], [lamp.off, "var(--seg-off)"], [lamp.unknown, "var(--line)"]]} />
           <div className="keys k3">
             <div className="key"><span className="l"><span className="bulb on" />점등</span><span className="v">{nf(lamp.on)}</span><span className="m">온라인 · on=1</span></div>
             <div className="key"><span className="l"><span className="bulb" />소등</span><span className="v">{nf(lamp.off)}</span><span className="m">on=0 · 통신 두절</span></div>
@@ -197,12 +197,12 @@ export default function Dashboard({ counts, total, health, tick, onSelect, readO
       {/* 3행 — 발전과 사용 · 에너지 합계(문제점 29번, 단말 일일 값 기반) */}
       <EnergyCards tick={tick} />
 
-      {/* 4행 */}
-      {/* 4행 — 최근 활동(문제점 30·34번) */}
-      <ActivityCard tick={tick} onSelect={onSelect} readOnly={readOnly} />
 
-      {/* 5행 — 단말 목록(문제점 #11) */}
+      {/* 4행 — 단말 목록(문제점 #11) */}
       <DashDevices tick={tick} onSelect={onSelect} readOnly={readOnly} />
+
+      {/* 5행(맨 아래) — 최근 활동(문제점 30·34·37번) */}
+      <ActivityCard tick={tick} onSelect={onSelect} readOnly={readOnly} />
     </div>
   );
 }
@@ -288,9 +288,7 @@ function DashDevices({ tick, onSelect, readOnly = false }: { tick: number; onSel
           {STATES.map((s) => <option key={s} value={s}>{stateLabel(s)}</option>)}
         </select>
         <span className="sp" />
-        <select value={size} aria-label="페이지 크기" onChange={(e) => (setSize(Number(e.target.value)), setPage(1))}>
-          {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}개씩</option>)}
-        </select>
+        <PageSize size={size} onChange={(n) => (setSize(n), setPage(1))} />
       </div>
       {err && <div className="err">{err}</div>}
       {note && <div className="okl">{note}</div>}

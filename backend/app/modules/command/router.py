@@ -9,6 +9,7 @@ from app.core.auth import Principal, current_user
 from app.db import get_db
 from app.modules.command import service
 from app.modules.command.schemas import (
+    CommandPage,
     CommandDetail,
     CommandIn,
     CommandItem,
@@ -45,14 +46,22 @@ async def create(
     return await service.create(db, body, me, publisher, retrier)
 
 
-@router.get("", response_model=list[CommandItem])
+@router.get("", response_model=list[CommandItem] | CommandPage)
 async def list_commands(
     limit: int = Query(default=50, ge=1, le=500),
     uuid: str | None = Query(default=None, max_length=24),
     node_id: int | None = Query(default=None),
+    page: int | None = Query(default=None, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-) -> list[CommandItem]:
-    return await service.list_commands(db, limit=limit, uuid=uuid, node_id=node_id)
+) -> list[CommandItem] | CommandPage:
+    """page 를 주면 {items,total,page,size}(문제점 39번 쪽 넘기기), 없으면 예전처럼 목록만(limit)."""
+    if page is None:
+        items, _ = await service.list_commands(db, limit=limit, uuid=uuid, node_id=node_id)
+        return items
+    items, total = await service.list_commands(db, limit=size, uuid=uuid, node_id=node_id,
+                                               offset=(page - 1) * size)
+    return CommandPage(items=items, total=total, page=page, size=size)
 
 
 @router.get("/{seq}", response_model=CommandDetail)

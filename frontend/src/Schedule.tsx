@@ -11,7 +11,7 @@ import { FieldCtx, GroupFields, StageBar, useSchema } from "./DeviceConfig";
 import { localTime } from "./format";
 import { parseText, toText, rangeError, utf8Bytes, hoursText } from "./settingsLogic";
 import { RegionTree, TreeNode, useRegions } from "./Tree";
-import { Card, Met, OnlineMark, nf } from "./ui";
+import { Card, DEFAULT_PAGE_SIZE, Met, OnlineMark, PageSize, Pager, nf, pageCount } from "./ui";
 
 const REFRESH_MS = 10_000;
 const PROFILE_GROUPS = ["schedule", "stage"];
@@ -261,6 +261,9 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
   const [node, setNode] = useState<number | null>(null);
   const [devs, setDevs] = useState<DeviceSchedule[] | null>(null);
   const [jobs, setJobs] = useState<DeployJob[]>([]);
+  const [jobTotal, setJobTotal] = useState(0);
+  const [jobPage, setJobPage] = useState(1);
+  const [jobSize, setJobSize] = useState(DEFAULT_PAGE_SIZE);
   const [job, setJob] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -275,12 +278,11 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
   useEffect(() => {
     let alive = true;
     const load = () =>
-      Promise.all([api.scheduleProfiles(), api.scheduleAssigns(), api.deployJobs({ limit: 20 })])
-        .then(([p, a, j]) => {
+      Promise.all([api.scheduleProfiles(), api.scheduleAssigns()])
+        .then(([p, a]) => {
           if (!alive) return;
           setProfiles(p);
           setAssigns(a);
-          setJobs(j);
           setSel((s) => (s === null && p.length ? p[0].id : s));
         })
         .catch((e) => alive && setErr(errorText(e)));
@@ -291,6 +293,20 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
       clearInterval(t);
     };
   }, [tick, local]);
+
+  // 보낸 기록 — 쪽마다 따로 읽는다(문제점 39번)
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.deployJobPage({ page: jobPage, size: jobSize })
+      .then((r) => alive && (setJobs(r.items), setJobTotal(r.total)))
+      .catch((e) => alive && setErr(errorText(e)));
+    load();
+    const t = setInterval(load, REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [tick, local, jobPage, jobSize]);
 
   const profile = typeof sel === "number" ? profiles?.find((p) => p.id === sel) ?? null : null;
   const nodeAssign = useMemo(() => new Map(assigns.filter((a) => a.node_id !== null).map((a) => [a.node_id as number, a])), [assigns]);
@@ -446,8 +462,12 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
           </div>
         </Card>
 
-        <Card className="full" title="보낸 기록" meta="최근 20건 · 3초마다 갱신(열어 둔 기록)">
+        <Card className="full" title="보낸 기록" meta={`${nf(jobTotal)}건 · 열어 둔 기록은 3초마다 갱신`}>
           {job !== null && <JobDetail id={job} onClose={() => setJob(null)} onSelect={onSelect} />}
+          <div className="bar2" style={{ marginTop: 8 }}>
+            <span className="sp" />
+            <PageSize size={jobSize} onChange={(n) => (setJobSize(n), setJobPage(1))} />
+          </div>
           <table className="mini" style={{ marginTop: 8 }}>
             <thead><tr><th>#</th><th>양식</th><th>범위</th><th>진행</th><th>만든 사람·시각</th><th>끝</th></tr></thead>
             <tbody>
@@ -461,6 +481,7 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
               {jobs.length === 0 && <tr><td colSpan={6} className="muted">보낸 적이 없습니다.</td></tr>}
             </tbody>
           </table>
+          <Pager page={jobPage} pages={pageCount(jobTotal, jobSize)} total={jobTotal} size={jobSize} onPage={setJobPage} />
         </Card>
       </div>
     </div>

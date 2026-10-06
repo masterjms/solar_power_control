@@ -17,6 +17,7 @@ from app.modules.schedule.schemas import (
     AssignOut,
     DeployIn,
     DeployJobOut,
+    DeployJobPage,
     DeviceScheduleOut,
     DevicesPage,
     ProfileIn,
@@ -95,13 +96,21 @@ async def create_deploy(body: DeployIn, db: AsyncSession = Depends(get_db),
     return await service.create_deploy(db, body, me, runner)
 
 
-@router.get("/deploy", response_model=list[DeployJobOut])
+@router.get("/deploy", response_model=list[DeployJobOut] | DeployJobPage)
 async def list_jobs(limit: int = Query(default=30, ge=1, le=200),
                     profile_id: int | None = Query(default=None),
                     uuid: str | None = Query(default=None),
-                    db: AsyncSession = Depends(get_db)) -> list[DeployJobOut]:
-    return await service.list_jobs(db, limit=limit, profile_id=profile_id,
-                                   uuid=uuid.strip().upper() if uuid else None)
+                    page: int | None = Query(default=None, ge=1),
+                    size: int = Query(default=20, ge=1, le=100),
+                    db: AsyncSession = Depends(get_db)) -> list[DeployJobOut] | DeployJobPage:
+    """page 를 주면 {items,total,page,size}(문제점 39번), 없으면 예전처럼 목록만(limit)."""
+    u = uuid.strip().upper() if uuid else None
+    if page is None:
+        items, _ = await service.list_jobs(db, limit=limit, profile_id=profile_id, uuid=u)
+        return items
+    items, total = await service.list_jobs(db, limit=size, profile_id=profile_id, uuid=u,
+                                           offset=(page - 1) * size)
+    return DeployJobPage(items=items, total=total, page=page, size=size)
 
 
 @router.get("/deploy/{job_id}", response_model=DeployJobOut)

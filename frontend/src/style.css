@@ -24,7 +24,7 @@
 }
 :root{
   /* 글자 크기 — 이 넷만 쓴다(문제점 26번): f1 보조·캡션 12, f2 본문 13, f3 카드·창 제목 15, f4 페이지 제목·큰 숫자 20.
-     굵기는 400(본문)·600(제목·강조) 둘. 글꼴은 --font 하나(코드·식별자만 --mono). style.css 밖(인라인)에서 글자 크기를 정하지 않는다.
+     굵기는 400(본문)·600(제목·강조) 둘. 글꼴은 --font 하나 — UUID·코드·기록도 같은 글꼴(문제점 40번), --mono 는 '자세히'의 원문(JSON)만. style.css 밖(인라인)에서 글자 크기를 정하지 않는다.
      f-touch 는 폰 입력칸 전용(16px 미만이면 iOS 가 화면을 확대한다). */
   --f1:12px; --f2:13px; --f3:15px; --f4:20px; --f-touch:16px;
   --s1:4px; --s2:8px; --s3:12px; --s4:16px;
@@ -41,7 +41,7 @@ button{cursor:pointer} button:disabled{cursor:default; opacity:.55}
 b,strong{font-weight:600}
 code{font-family:var(--mono); font-size:var(--f1)}
 .muted{color:var(--muted)} .cap{font-size:var(--f1); color:var(--muted)}
-.mono{font-family:var(--mono); font-size:var(--f1); word-break:break-all}
+.mono{font-variant-numeric:tabular-nums; word-break:break-all} /* 문제점 40번: 글꼴은 본문과 같게, 숫자 폭만 고르게 */
 .dot{width:8px; height:8px; border-radius:50%; display:inline-block; flex:none}
 .err{font-size:var(--f1); color:var(--alarm)} .okl{font-size:var(--f1); color:var(--ok)}
 .c-ok{color:var(--ok)} .c-warn{color:var(--warn)} .c-alarm{color:var(--alarm)} .c-off{color:var(--off)} .c-blue{color:var(--blue)}
@@ -63,6 +63,8 @@ code{font-family:var(--mono); font-size:var(--f1)}
 .nav .sep{margin:var(--s2) var(--s3) var(--s1); font-size:var(--f1); color:var(--muted2)}
 .side .foot{margin-top:auto; border-top:1px solid var(--line2); padding:var(--s3) var(--s3) 0; font-size:var(--f1); color:var(--muted); display:grid; gap:var(--s1)}
 .side .foot div{display:flex; align-items:center; gap:var(--s2)}
+.side .foot.legal{color:var(--muted2); line-height:1.6} /* 문제점 42번 */
+.psize{width:auto; flex:none} /* 목록 개수 — 오른쪽 끝에 작게(문제점 36번) */
 
 .top{position:sticky; top:0; z-index:20; height:64px; background:var(--panel); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:var(--s2); padding:0 var(--s4)}
 .top h1{font-size:var(--f4); font-weight:600; margin:0; line-height:1.3; white-space:nowrap} .top .sub{font-size:var(--f1); color:var(--muted)} .top .sp{flex:1}
@@ -76,7 +78,7 @@ code{font-family:var(--mono); font-size:var(--f1)}
 .btn.danger{color:var(--alarm); border-color:var(--alarm)}
 .btn.sm{height:28px; padding:0 var(--s2)}
 .btn.icon{width:32px; padding:0; font-size:var(--f3)}
-select,input[type=search],input[type=text],input[type=number],input:not([type]){height:32px; border:1px solid var(--line); border-radius:var(--r1); background:var(--soft); padding:0 var(--s2); font-size:var(--f1)}
+select,input[type=search],input[type=text],input[type=number],input[type=password],input:not([type]){height:32px; border:1px solid var(--line); border-radius:var(--r1); background:var(--soft); padding:0 var(--s2); font-size:var(--f1)}
 input[type=number]{width:80px; text-align:right}
 .inp{width:100%}
 
@@ -169,7 +171,7 @@ table.mini{width:100%; border-collapse:collapse; font-size:var(--f1)}
 .drawer.wide.open,.drawer.open{right:0}
 .dh{min-height:64px; padding:var(--s3) var(--s4); border-bottom:1px solid var(--line); display:flex; gap:var(--s2); align-items:center}
 .dh h3{margin:0; font-size:var(--f3); font-weight:600}
-.dh .u{font-size:var(--f1); color:var(--muted2); word-break:break-all; font-family:var(--mono)}
+.dh .u{font-size:var(--f1); color:var(--muted2); word-break:break-all; font-variant-numeric:tabular-nums}
 .dh .x{margin-left:auto; border:0; background:none; font-size:var(--f3); color:var(--muted); width:32px; height:32px}
 .db{overflow:auto; padding:var(--s4); display:grid; grid-template-columns:minmax(0,1fr); gap:var(--s4); align-content:start}
 .sec h4{font-size:var(--f2); font-weight:600; margin:0 0 var(--s2); display:flex; justify-content:space-between; align-items:baseline; gap:var(--s2)}
@@ -197,7 +199,7 @@ details.info .grid2{margin-top:var(--s2)}
 .steps li{display:grid; grid-template-columns:24px minmax(0,1fr) auto; gap:var(--s2); align-items:start}
 .steps .no{width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:var(--f1); background:var(--soft); border:1px solid var(--line); color:var(--muted)}
 .steps .s{font-size:var(--f1); color:var(--muted)}
-.log{list-style:none; margin:0; padding:0; font-family:var(--mono); font-size:var(--f1); overflow:auto; flex:1; min-height:120px; max-height:360px}
+.log{list-style:none; margin:0; padding:0; font-variant-numeric:tabular-nums; font-size:var(--f1); overflow:auto; flex:1; min-height:120px; max-height:360px}
 .log li{padding:6px 0; border-bottom:1px solid var(--line2); display:grid; grid-template-columns:132px 96px minmax(0,1fr); gap:var(--s2)}
 .log .t{color:var(--muted2)} .log .dn{color:var(--blue)} .log .up{color:var(--ok)} .log .er{color:var(--alarm)}
 .log .body{white-space:normal; word-break:break-all}
@@ -225,7 +227,7 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .tn.dis .tnm{color:var(--muted2)}
 .tn .tc{border:0; background:none; color:var(--muted); font-size:var(--f1); width:20px; height:20px; padding:0}
 .tnm{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
-.tnm small{font-weight:400; color:var(--muted2); font-size:var(--f1); margin-left:6px; font-family:var(--mono)}
+.tnm small{font-weight:400; color:var(--muted2); font-size:var(--f1); margin-left:6px; font-variant-numeric:tabular-nums}
 .tct{font-size:var(--f1); color:var(--muted); white-space:nowrap; font-weight:400}
 .tct em{font-style:normal; color:var(--off); margin-left:6px}
 .tempty{padding:var(--s4); text-align:center; color:var(--muted2); font-size:var(--f1)}

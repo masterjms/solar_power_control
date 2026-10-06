@@ -151,6 +151,15 @@ class DeployJobOut(BaseModel):
     items: list[DeployItemOut] | None = None
 
 
+
+class DeployJobPage(BaseModel):
+    """보낸 기록 한 쪽(문제점 39번)."""
+
+    items: list[DeployJobOut]
+    total: int
+    page: int
+    size: int
+
 class RetryIn(BaseModel):
     #: 비우면 다시 보낼 수 있는 항목 전부(응답 없음·실패).
     uuids: list[str] | None = None

@@ -80,6 +80,15 @@ class CommandItem(BaseModel):
     counts: dict[str, int]
 
 
+
+class CommandPage(BaseModel):
+    """명령 이력 한 쪽(문제점 39번)."""
+
+    items: list[CommandItem]
+    total: int
+    page: int
+    size: int
+
 class TargetRow(BaseModel):
     uuid: str
     site: str | None

@@ -6,7 +6,7 @@ import {
   CommandSummary, CommandTargetRef, DurPreset, api, errorText,
 } from "./api";
 import { localTime, relTime, str } from "./format";
-import { nf } from "./ui";
+import { DEFAULT_PAGE_SIZE, PageSize, Pager, nf, pageCount } from "./ui";
 
 const POLL_MS = 3_000; // 결과 폴링(지시: 3초)
 const HIST_MS = 10_000;
@@ -521,19 +521,22 @@ export function CommandResult({ seq, onClose, onDevice }: { seq: number; onClose
 // ---------------------------------------------------------------- 이력
 
 /** 명령 이력 — 누가·언제·무엇을·대상·결과(§3.9.3 #8). 행 클릭 → onOpen(seq). */
-export function CommandHistory({ uuid, nodeId, tick, selected, onOpen, limit = 50 }: {
+export function CommandHistory({ uuid, nodeId, tick, selected, onOpen }: {
   uuid?: string; nodeId?: number; tick?: number; selected?: number | null;
-  onOpen: (seq: number) => void; limit?: number;
+  onOpen: (seq: number) => void;
 }) {
   const [rows, setRows] = useState<CommandSummary[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     const load = () =>
       api
-        .listCommands({ limit, uuid, node_id: nodeId })
-        .then((r) => alive && (setRows(r), setErr(null)))
+        .commandPage({ page, size, uuid, node_id: nodeId })
+        .then((r) => alive && (setRows(r.items), setTotal(r.total), setErr(null)))
         .catch((e) => alive && setErr(errorText(e)));
     load();
     const id = setInterval(load, HIST_MS);
@@ -541,11 +544,17 @@ export function CommandHistory({ uuid, nodeId, tick, selected, onOpen, limit = 5
       alive = false;
       clearInterval(id);
     };
-  }, [uuid, nodeId, tick, limit]);
+  }, [uuid, nodeId, tick, page, size]);
+  useEffect(() => setPage(1), [uuid, nodeId]);
 
   return (
     <>
       {err && <div className="err">{err}</div>}
+      <div className="bar2">
+        <span className="muted">{nf(total)}건</span>
+        <span className="sp" />
+        <PageSize size={size} onChange={(n) => (setSize(n), setPage(1))} />
+      </div>
       <div style={{ overflowX: "auto" }}>
         <table className="mini">
           <thead>
@@ -581,6 +590,7 @@ export function CommandHistory({ uuid, nodeId, tick, selected, onOpen, limit = 5
           </tbody>
         </table>
       </div>
+      <Pager page={page} pages={pageCount(total, size)} total={total} size={size} onPage={setPage} />
     </>
   );
 }

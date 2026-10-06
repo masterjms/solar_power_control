@@ -2,8 +2,7 @@
 import { useEffect, useState } from "react";
 import { Alarm, AlarmPage, AlarmSeverity, AlarmTab, api, errorText } from "./api";
 import { localTime, relTime } from "./format";
-import { Pager } from "./DeviceList";
-import { Card, nf, DEFAULT_PAGE_SIZE, PAGE_SIZES } from "./ui";
+import { Card, nf, DEFAULT_PAGE_SIZE, PageSize, Pager } from "./ui";
 
 const REFRESH_MS = 15_000;
 
@@ -92,9 +91,7 @@ export default function Alarms({ tick, onSelect }: { tick: number; onSelect: (uu
           </select>
           <input type="search" placeholder="시설명·UUID·주소" aria-label="알람 검색" value={text} onChange={(e) => setText(e.target.value)} style={{ width: 240 }} />
           <span className="sp" />
-          <select value={size} aria-label="페이지 크기" onChange={(e) => (setSize(Number(e.target.value)), setPage(1))}>
-            {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}개씩</option>)}
-          </select>
+          <PageSize size={size} onChange={(n) => (setSize(n), setPage(1))} />
         </div>
         {err && <div className="err">{err}</div>}
         <div className="tw">
