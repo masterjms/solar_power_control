@@ -171,6 +171,13 @@ async def _counts(db: AsyncSession, now: dt.datetime) -> dict[str, int]:
                         .where(presence.online_clause(now), in_scope(Device.node_id)))
         or 0
     )
+    # 켜져 있는 승인 대기 — 등록·승인 목록과 메뉴 숫자는 이것만(문제점 45번: 꺼진 대기 단말은 목록에 둘 필요 없음)
+    counts["PENDING_ONLINE"] = int(
+        await db.scalar(select(func.count()).select_from(Device)
+                        .where(Device.state == DeviceState.PENDING.value, presence.online_clause(now),
+                               in_scope(Device.node_id)))
+        or 0
+    )
     return counts
 
 

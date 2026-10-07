@@ -6,7 +6,7 @@ import {
   CommandSummary, CommandTargetRef, DurPreset, api, errorText,
 } from "./api";
 import { localTime, relTime, str } from "./format";
-import { DEFAULT_PAGE_SIZE, PageSize, Pager, nf, pageCount } from "./ui";
+import { DEFAULT_PAGE_SIZE, Detail, PageSize, Pager, nf, pageCount } from "./ui";
 
 const POLL_MS = 3_000; // 결과 폴링(지시: 3초)
 const HIST_MS = 10_000;
@@ -58,6 +58,10 @@ export const ACK_VIEW: Record<AckStatus, [string, string, string]> = {
   NO_RESPONSE: ["무응답(실패)", "b-alarm", "var(--alarm)"],
   OFFLINE: ["오프라인 — 안 보냄", "b-off", "var(--off)"],
 };
+
+/** 명령 전체 결과(서버 값) → 화면 문구 */
+const RESULT_LABEL: Record<string, string> = { OK: "모두 응답", PARTIAL: "일부 응답", TIMEOUT: "응답 없음" };
+const resultText = (r: string | null | undefined) => (r ? RESULT_LABEL[r] ?? r : "-");
 
 const cnt = (c: Partial<Record<AckStatus, number>>, k: AckStatus) => c[k] ?? 0;
 
@@ -246,7 +250,7 @@ export function CommandForm({ target, targetLabel, blocked, onSent, basis }: For
       })}
       {act === "pwm" && (
         <div className="cap">
-          설치 기준 밝기 대비 % — 단말이 설치 기준 밝기에 곱한다(사양서 §3.10.7). 100% = 설치 기준 그대로.
+          설치 기준 밝기 대비 % — 단말이 설치 기준 밝기에 곱한다. 100% = 설치 기준 그대로.
           {chs.some((k) => basis?.base[k] !== undefined) ? ` 실제 = 설치 기준(${chs.filter((k) => basis?.base[k] !== undefined).map((k) => `${CH_LABEL[k]} ${basis!.base[k]}%`).join(", ")}) × 비율.` : ""}
           {basis?.source ? ` (${basis.source})` : ""}
         </div>
@@ -265,10 +269,10 @@ export function CommandForm({ target, targetLabel, blocked, onSent, basis }: For
           )}
         </div>
       ) : (
-        <div className="cap" style={{ marginTop: 12 }}>스케줄 복귀(auto)는 유지시간 없이 고른 채널의 원격 명령을 즉시 해제한다(어느 경로로 왔든).</div>
+        <div className="cap" style={{ marginTop: 12 }}>스케줄 복귀는 유지시간 없이 고른 채널의 원격 명령을 즉시 해제한다(어느 경로로 왔든).</div>
       )}
       {dur === "tonight" && act !== "auto" && <div className="cap">오늘 밤 = 대상 좌표 기준 오늘 소등 시각까지 남은 초를 서버가 계산한다.</div>}
-      <details><summary>자세히</summary><code className="payload">{JSON.stringify(shown)}</code></details>
+      <Detail><code className="payload">{JSON.stringify(shown)}</code></Detail>
       <button type="button" className="btn pri send" disabled={!!reason || busy} onClick={doPreview}>
         {reason ?? (busy ? "확인 중…" : `${targetLabel}에 ${cmdText({ act, ch: chs, pwm: chs.map((k) => pwm[k]) }, act === "auto" ? undefined : durLabel)} — 보내기 전 확인`)}
       </button>
@@ -333,22 +337,21 @@ function PreviewModal({ label, text, body, res, onCancel, onSent }: {
           <div className="sec">
             <h4>명령 <span>{text}</span></h4>
             <div className="grid2">
-              <div className="met"><div className="l">대상 (운영 단말)</div><div className="v">{nf(res.expected)}대</div><div className="h">범위 안 승인(ACTIVE) 단말</div></div>
+              <div className="met"><div className="l">대상 (운영 단말)</div><div className="v">{nf(res.expected)}대</div><div className="h">범위 안 승인된(운영) 단말</div></div>
               <div className="met k"><div className="l">온라인 — 보냄</div><div className="v">{nf(res.online)}대</div><div className="h">이 수만큼 응답을 기다린다(최대 {wait.total}초, 없으면 실패)</div></div>
               <div className={`met ${res.offline ? "o" : ""}`}><div className="l">오프라인 — 안 보냄</div><div className="v">{nf(res.offline)}대</div><div className="h">보내지도 기다리지도 않는다</div></div>
-              <div className={`met ${lights && res.low_battery ? "a" : ""}`}><div className="l">저전압 (안 켜질 수)</div><div className="v">{nf(res.low_battery)}대</div><div className="h">{lights ? "BATT_LOW — 점등 명령이어도 켜지지 않는다" : "소등·복귀에는 영향 없음"}</div></div>
-              <div className="met o"><div className="l">제외 (승인 안 됨)</div><div className="v">{nf(res.not_active)}대</div><div className="h">범위 안이지만 ACTIVE 가 아니라 보내지 않음</div></div>
-              <div className="met"><div className="l">보낼 주소</div><div className="v">{nf(tp)}개</div><div className="h">{res.dur !== null ? `유지 ${durText(res.dur)} (dur ${res.dur}초)` : "유지시간 없음(auto)"}</div></div>
+              <div className={`met ${lights && res.low_battery ? "a" : ""}`}><div className="l">저전압 (안 켜질 수)</div><div className="v">{nf(res.low_battery)}대</div><div className="h">{lights ? "배터리 부족 — 점등 명령이어도 켜지지 않는다" : "소등·복귀에는 영향 없음"}</div></div>
+              <div className="met o"><div className="l">제외 (승인 안 됨)</div><div className="v">{nf(res.not_active)}대</div><div className="h">범위 안이지만 운영 단말이 아니라 보내지 않음</div></div>
+              <div className="met"><div className="l">유지시간</div><div className="v">{res.dur !== null ? durText(res.dur) : "없음"}</div><div className="h">{res.dur !== null ? "지나면 스케줄로 복귀" : "스케줄 복귀는 유지시간 없음"}</div></div>
             </div>
-            <details>
-              <summary>자세히</summary>
-              <div className="topic">보낼 주소: <code>{res.topics[0] ?? "-"}</code>{tp > 1 ? ` 외 ${nf(tp - 1)}개 — 법정동마다 1회, 명령 번호는 하나` : tp === 1 ? " 1회" : ""}</div>
+            <Detail>
+              <div className="topic">보낼 주소: <code>{res.topics[0] ?? "-"}</code>{tp > 1 ? ` 외 ${nf(tp - 1)}개 — 법정동마다 1회, 명령 번호는 하나` : tp === 1 ? " 1회" : ""}{res.dur !== null ? ` · dur ${res.dur}초` : ""}</div>
               <code className="payload">{JSON.stringify(res.payload)}</code>
-            </details>
-            <div className="cap" style={{ marginTop: 8 }}>명령 번호와 보낸 시각(ts)은 보낼 때 서버가 넣는다. 단말은 다음 송신 뒤 받을 수 있다(최대 약 5분).</div>
+            </Detail>
+            <div className="cap" style={{ marginTop: 8 }}>단말은 다음 보고 뒤에 받을 수 있다(최대 약 5분).</div>
           </div>
-          {res.expected === 0 && <div className="err">운영(ACTIVE) 단말이 없어 보낼 수 없다(NO_TARGETS).</div>}
-          {res.expected > 0 && res.online === 0 && <div className="err">대상 단말이 모두 오프라인이라 보낼 수 없다(NO_ONLINE_TARGETS).</div>}
+          {res.expected === 0 && <div className="err">운영 단말이 없어 보낼 수 없다.</div>}
+          {res.expected > 0 && res.online === 0 && <div className="err">대상 단말이 모두 오프라인이라 보낼 수 없다.</div>}
           {isAll && step === 2 ? (
             <div className="confirm">
               <b>전체 단말</b>에 <b>{text}</b>을 보낸다. 되돌리려면 다시 스케줄 복귀를 보내야 한다.
@@ -425,7 +428,7 @@ export function CommandResult({ seq, onClose, onDevice }: { seq: number; onClose
     setErr(null);
     try {
       const r = await api.retryCommand(seq, null);
-      setMsg(`단말별 주소로 ${nf(r.resent)}대 다시 보냄 (같은 명령 번호, 새 ts)`);
+      setMsg(`${nf(r.resent)}대에 같은 명령을 다시 보냄`);
       setN((x) => x + 1);
     } catch (e) {
       setErr(errorText(e));
@@ -454,13 +457,13 @@ export function CommandResult({ seq, onClose, onDevice }: { seq: number; onClose
       <h4>
         명령 #{c.seq} 결과
         <span className="bar2">
-          {c.finished_at ? <span className={`badge ${c.result === "OK" ? "b-ok" : c.result === "TIMEOUT" ? "b-alarm" : "b-warn"}`}>종료 {str(c.result)}</span>
+          {c.finished_at ? <span className={`badge ${c.result === "OK" ? "b-ok" : c.result === "TIMEOUT" ? "b-alarm" : "b-warn"}`}>종료 · {resultText(c.result)}</span>
             : <span className="badge b-blue">집계 중 · 3초마다</span>}
           {onClose && <button type="button" className="btn sm" onClick={onClose}>닫기</button>}
         </span>
       </h4>
       <div className="recv">
-        <div>발행함 <b>{hms(c.sent_at)}</b> · {c.created_by} · {str(c.target_label)} · {cmdText(c)}</div>
+        <div>보냄 <b>{hms(c.sent_at)}</b> · {c.created_by} · {str(c.target_label)} · {cmdText(c)}</div>
         <div>단말 응답: {c.finished_at ? `끝남 ${hms(c.finished_at)}` : "응답 받는 중"}</div>
       </div>
       <div className="pbar">
@@ -468,8 +471,8 @@ export function CommandResult({ seq, onClose, onDevice }: { seq: number; onClose
       </div>
       <div className="plg">
         <span>응답 OK <b>{nf(cnt(k, "OK"))}</b></span>
-        <span>현장 조작 중(LOCAL) <b>{nf(cnt(k, "LOCAL"))}</b></span>
-        <span>만료(EXPIRED) <b>{nf(cnt(k, "EXPIRED"))}</b></span>
+        <span>현장 조작 중 <b>{nf(cnt(k, "LOCAL"))}</b></span>
+        <span>만료 <b>{nf(cnt(k, "EXPIRED"))}</b></span>
         <span>오류 <b>{nf(errN)}</b></span>
         <span>{c.finished_at ? "무응답" : "응답 대기"} <b>{nf(cnt(k, "pending"))}</b></span>
         <span>무응답(실패) <b>{nf(cnt(k, "NO_RESPONSE"))}</b></span>
@@ -478,7 +481,7 @@ export function CommandResult({ seq, onClose, onDevice }: { seq: number; onClose
       </div>
       <div className="bar2">
         <button type="button" className="btn" disabled={busy || !!c.finished_at || retryable === 0} onClick={retry}
-          title="무응답(pending)·만료(EXPIRED) 대상만 단말별 주소로 같은 명령 번호 재발송">
+          title="응답이 없거나 만료된 단말에만 같은 명령을 하나씩 다시 보낸다">
           무응답·만료 개별 재시도 ({nf(retryable)})
         </button>
         <span className="cap">{wait.sec}초 동안 응답이 없으면 다시 보내고(모두 {wait.n}회), 그래도 없으면 {wait.total}초 뒤 무응답(실패)으로 끝난다. 오프라인 단말은 보내지 않는다.</span>
@@ -569,18 +572,18 @@ export function CommandHistory({ uuid, nodeId, tick, selected, onOpen }: {
                   <td className="muted">#{c.seq}</td>
                   <td title={localTime(c.sent_at)}>{localTime(c.sent_at)} <span className="md">{relTime(c.sent_at)}</span></td>
                   <td>{c.created_by}</td>
-                  <td title={`${c.target_kind} ${str(c.target_id)}`}>{c.target_kind === "all" ? "전체" : str(c.target_label)}</td>
+                  <td title={c.target_kind === "all" ? "전체" : str(c.target_label)}>{c.target_kind === "all" ? "전체" : str(c.target_label)}</td>
                   <td>{cmdText(c)}</td>
                   <td>
-                    <span className="c-ok">OK {nf(cnt(k, "OK"))}</span>
-                    {cnt(k, "LOCAL") > 0 && <span className="md">LOCAL {nf(cnt(k, "LOCAL"))}</span>}
+                    <span className="c-ok">응답 {nf(cnt(k, "OK"))}</span>
+                    {cnt(k, "LOCAL") > 0 && <span className="md">현장 조작 {nf(cnt(k, "LOCAL"))}</span>}
                     {cnt(k, "EXPIRED") > 0 && <span className="md c-warn">만료 {nf(cnt(k, "EXPIRED"))}</span>}
                     {errN > 0 && <span className="md c-alarm">오류 {nf(errN)}</span>}
                     {cnt(k, "pending") > 0 && <span className="md">응답 대기 {nf(cnt(k, "pending"))}</span>}
                     {cnt(k, "NO_RESPONSE") > 0 && <span className="md c-alarm">무응답 {nf(cnt(k, "NO_RESPONSE"))}</span>}
                     {cnt(k, "OFFLINE") > 0 && <span className="md">오프라인 {nf(cnt(k, "OFFLINE"))}</span>}
                     <span className="md">/ {nf(c.expected_count)}</span>
-                    {c.finished_at ? <span className="md">· {str(c.result)}</span> : <span className="md c-blue">· 진행 중</span>}
+                    {c.finished_at ? <span className="md">· {resultText(c.result)}</span> : <span className="md c-blue">· 진행 중</span>}
                   </td>
                 </tr>
               );

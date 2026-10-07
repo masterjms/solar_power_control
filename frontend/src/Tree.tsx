@@ -214,7 +214,7 @@ export function RegionTree({ tree, selected, onSelect, canSelect, root, filter, 
             aria-expanded={hasKids ? isOpen : undefined}
             aria-disabled={!can || undefined}
             tabIndex={0}
-            title={n ? `${pathOf(n)}${n.r.grp ? ` · group ${n.r.grp}` : ""}${can ? "" : " (고를 수 없음)"}` : root?.note}
+            title={n ? `${pathOf(n)}${can ? "" : " (고를 수 없음)"}` : root?.note}
             onClick={() => choose(n)}
             onDoubleClick={() => (n ? n.children.length && toggle(n.r.id) : setRootOpen((o) => !o))}
             onKeyDown={(e) => onKey(e, i)}
@@ -238,7 +238,7 @@ export function RegionTree({ tree, selected, onSelect, canSelect, root, filter, 
               {leaf && n?.r.bjd_code && <small>{n.r.bjd_code}</small>}
               {n && badge?.(n)}
             </span>
-            <span className="tct" title={`단말 ${cnt}대 · 운영(ACTIVE) ${act}대`}>
+            <span className="tct" title={`단말 ${cnt}대 · 운영 ${act}대`}>
               {nf(cnt)}대{cnt !== act && <em>운영 {nf(act)}</em>}
             </span>
           </div>

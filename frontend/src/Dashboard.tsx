@@ -4,7 +4,7 @@ import { co2Text, kwh2, localTime, relTime, str, volt1, watt1 } from "./format";
 import { Battery, Card, DEFAULT_PAGE_SIZE, LampPair, OnlineMark, StateBadge, nf, stateLabel, PageSize, Pager } from "./ui";
 import { DeviceMap, PIN, PinIcon } from "./KakaoMap";
 import { RemoteBadge, shortPath } from "./DeviceList";
-import { TAB_LABEL, alarmValue } from "./Alarms";
+import { TAB_LABEL, alarmRaw, alarmValue } from "./Alarms";
 import { CommandForm, CommandResult, durText, useLedBasis } from "./Command";
 import EnergyCards from "./Energy";
 import ActivityCard from "./Activity";
@@ -43,7 +43,7 @@ function SBar({ label, segs }: { label: string; segs: [number | null | undefined
   );
 }
 
-export default function Dashboard({ counts, total, health, tick, onSelect, readOnly = false }: Props) {
+export default function Dashboard({ counts, total, tick, onSelect, readOnly = false }: Props) {
   const [active, setActive] = useState<Device[]>([]);
   const [activeTotal, setActiveTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +91,9 @@ export default function Dashboard({ counts, total, health, tick, onSelect, readO
   const online = counts?.online ?? null;
   const offline = total !== null && online !== null ? total - online : null;
   const stopped = counts ? counts.SUSPENDED + counts.REJECTED : null;
+  // 승인 대기는 켜져 있는 단말만 센다 — 등록·승인 목록과 같은 숫자(문제점 45번)
+  const pendingOn = counts ? counts.PENDING_ONLINE ?? counts.PENDING : undefined;
+  const pendingOff = counts ? counts.PENDING - (pendingOn ?? 0) : 0;
 
   // 조명 상태: last_telemetry.on. 통신 두절은 마지막 보고와 관계없이 소등(문제점 15번).
   const lamp = useMemo(() => {
@@ -120,9 +123,7 @@ export default function Dashboard({ counts, total, health, tick, onSelect, readO
     return { cnt, avg: n ? Math.round(sum / n) : null, n, max: Math.max(1, ...cnt) };
   }, [active]);
 
-
-  const dotOf = (ok: boolean | undefined) => (ok === undefined ? "var(--off)" : ok ? "var(--ok)" : "var(--alarm)");
-  const sampleNote = sampled ? `표본 ${SAMPLE}대` : `ACTIVE ${nf(activeTotal)}대`;
+  const sampleNote = sampled ? `표본 ${SAMPLE}대` : `운영 ${nf(activeTotal)}대`;
 
   return (
     <div className={`content${readOnly ? " ro" : ""}`}>
@@ -130,28 +131,22 @@ export default function Dashboard({ counts, total, health, tick, onSelect, readO
       <div className="pair">
         <Card
           title="단말 상태"
-          meta={<><span>{total === null ? "-" : `${nf(total)}대 등록`}</span><a className="btn sm c-blue" href="#pending">승인 대기 {nf(counts?.PENDING)}</a></>}
+          meta={<><span>{total === null ? "-" : `${nf(total)}대 등록`}</span><a className="btn sm c-blue" href="#pending">승인 대기 {nf(pendingOn)}</a></>}
         >
           <SBar label="상태 비율" segs={[[online, "var(--ok)"], [offline, "var(--off)"], [counts?.PENDING, "var(--blue)"], [stopped, "var(--warn)"]]} />
           <div className="keys">
-            <a className="key" href="#devices" title="is_online=true"><span className="l"><span className="dot" style={{ background: "var(--ok)" }} />온라인</span><span className="v c-ok">{nf(online)}</span><span className="m">{total ? `${Math.round(((online ?? 0) / total) * 100)}%` : ""}</span></a>
-            <a className="key" href="#devices" title="전체 − 온라인"><span className="l"><span className="dot" style={{ background: "var(--off)" }} />오프라인</span><span className="v c-off">{nf(offline)}</span><span className="m">{total ? `${Math.round(((offline ?? 0) / total) * 100)}%` : ""}</span></a>
-            <a className="key" href="#pending"><span className="l"><span className="dot" style={{ background: "var(--blue)" }} />승인 대기</span><span className="v c-blue">{nf(counts?.PENDING)}</span><span className="m">등록·승인 화면</span></a>
+            <a className="key" href="#devices"><span className="l"><span className="dot" style={{ background: "var(--ok)" }} />온라인</span><span className="v c-ok">{nf(online)}</span><span className="m">{total ? `${Math.round(((online ?? 0) / total) * 100)}%` : ""}</span></a>
+            <a className="key" href="#devices"><span className="l"><span className="dot" style={{ background: "var(--off)" }} />오프라인</span><span className="v c-off">{nf(offline)}</span><span className="m">{total ? `${Math.round(((offline ?? 0) / total) * 100)}%` : ""}</span></a>
+            <a className="key" href="#pending"><span className="l"><span className="dot" style={{ background: "var(--blue)" }} />승인 대기</span><span className="v c-blue">{nf(pendingOn)}</span><span className="m">{pendingOff > 0 ? `꺼진 대기 ${nf(pendingOff)}대 제외` : "등록·승인 화면"}</span></a>
             <a className="key" href="#devices"><span className="l"><span className="dot" style={{ background: "var(--warn)" }} />중지·거부</span><span className="v c-warn">{nf(stopped)}</span><span className="m">{counts ? `중지 ${counts.SUSPENDED} · 거부 ${counts.REJECTED} · 폐기 ${counts.RETIRED}` : ""}</span></a>
-          </div>
-          <div className="hrow">
-            <span><span className="dot" style={{ background: dotOf(health?.mqtt_connected) }} />MQTT</span>
-            <span><span className="dot" style={{ background: dotOf(health?.db_ok) }} />DB</span>
-            <span><span className="dot" style={{ background: dotOf(health?.broker_log_tail) }} />브로커 로그</span>
-            {health && <span>버퍼 {health.buffer_pending} · 등록 큐 {health.register_queue}</span>}
           </div>
         </Card>
         <Card title="조명 상태" meta={error ? <span className="err">{error}</span> : sampleNote}>
           <SBar label="조명 비율" segs={[[lamp.on, "var(--lamp)"], [lamp.off, "var(--seg-off)"], [lamp.unknown, "var(--line)"]]} />
           <div className="keys k3">
-            <div className="key"><span className="l"><span className="bulb on" />점등</span><span className="v">{nf(lamp.on)}</span><span className="m">온라인 · on=1</span></div>
-            <div className="key"><span className="l"><span className="bulb" />소등</span><span className="v">{nf(lamp.off)}</span><span className="m">on=0 · 통신 두절</span></div>
-            <div className="key"><span className="l"><span className="dot" style={{ background: "var(--line)" }} />미수신</span><span className="v c-off">{nf(lamp.unknown)}</span><span className="m">Telemetry 없음</span></div>
+            <div className="key"><span className="l"><span className="bulb on" />점등</span><span className="v">{nf(lamp.on)}</span><span className="m">켜짐</span></div>
+            <div className="key"><span className="l"><span className="bulb" />소등</span><span className="v">{nf(lamp.off)}</span><span className="m">꺼짐 · 통신 두절</span></div>
+            <div className="key"><span className="l"><span className="dot" style={{ background: "var(--line)" }} />미수신</span><span className="v c-off">{nf(lamp.unknown)}</span><span className="m">보고 없음</span></div>
           </div>
         </Card>
       </div>
@@ -165,7 +160,7 @@ export default function Dashboard({ counts, total, health, tick, onSelect, readO
             </button>
           ))}
         </div>
-        <div className="cap">last_telemetry.sc 기준, 수신 {nf(batt.n)}대</div>
+        <div className="cap">최근 보고 기준 {nf(batt.n)}대</div>
       </Card>
 
       {/* 2행 */}
@@ -183,7 +178,7 @@ export default function Dashboard({ counts, total, health, tick, onSelect, readO
             <li key={a.id} tabIndex={0} onClick={() => onSelect(a.uuid)} onKeyDown={(e) => e.key === "Enter" && onSelect(a.uuid)}>
               <span className="dot" style={{ background: SEV_DOT[a.severity] ?? "var(--off)" }} />
               <div style={{ minWidth: 0 }}>
-                <div className="t">{a.label}{alarmValue(a) ? ` — ${alarmValue(a)}` : ""}</div>
+                <div className="t" title={alarmRaw(a) || undefined}>{a.label}{alarmValue(a) ? ` — ${alarmValue(a)}` : ""}</div>
                 <div className="d">{`${a.site ?? "(장소 없음)"} · ${a.uuid}`}</div>
               </div>
               <span className="w">{relTime(a.first_seen_at)}</span>
@@ -361,12 +356,12 @@ function LedControl({ d, onClose, onDetail }: { d: Device; onClose: () => void; 
             <span className="sp" />
             <span className="cap">마지막 수신 {localTime(d.last_telemetry_at)}</span>
           </div>
-          <div className="cap">원격 명령 뒤 점등 상태는 단말이 2초 뒤 보내는 Telemetry 로 바뀐다. 단말은 송신 직후에만 명령을 받아 수십 초~최대 약 5분 걸릴 수 있다.</div>
+          <div className="cap">명령 결과는 단말의 다음 보고 때 반영됩니다. 단말이 명령을 받기까지 수십 초~최대 약 5분 걸릴 수 있습니다.</div>
           {msg && <div className="okl">{msg}</div>}
           <CommandForm target={{ kind: "device", id: d.uuid }} targetLabel={d.site ?? d.uuid}
             basis={basis}
-            blocked={d.state !== "ACTIVE" ? "운영(ACTIVE) 단말에만 보낼 수 있다" : !d.is_online ? "오프라인 단말에는 보낼 수 없다 — 다시 접속하면 보낼 수 있다" : null}
-            onSent={(c) => (setSeq(c.seq), setMsg(`명령 #${c.seq} 발행함${c.payload.dur ? ` · 유지 ${durText(Number(c.payload.dur))}` : ""}`))} />
+            blocked={d.state !== "ACTIVE" ? "운영 단말에만 보낼 수 있습니다" : !d.is_online ? "오프라인 단말에는 보낼 수 없습니다 — 다시 접속하면 보낼 수 있습니다" : null}
+            onSent={(c) => (setSeq(c.seq), setMsg(`명령을 보냈습니다${c.payload.dur ? ` · 유지 ${durText(Number(c.payload.dur))}` : ""}`))} />
           {seq !== null && <CommandResult seq={seq} onClose={() => setSeq(null)} />}
           <div className="bar2"><span className="sp" /><button type="button" className="btn" onClick={onDetail}>단말 상세 열기</button></div>
         </div>

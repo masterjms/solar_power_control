@@ -20,7 +20,7 @@ function PendingSearch({ onSelect }: { onSelect: (uuid: string) => void }) {
   const clean = q.trim().replace(/[^0-9a-fA-F]/g, "");
   async function find() {
     setMsg(null);
-    if (clean.length < 6) return setMsg("뒤 6자리 이상을 넣는다(0~9, A~F)");
+    if (clean.length < 6) return setMsg("뒤 6자리 이상을 넣으세요(0~9, A~F)");
     setBusy(true);
     try {
       const r = await api.pendingSearch(clean);
@@ -61,16 +61,20 @@ function PendingList({ tick, onSelect }: { tick: number; onSelect: (uuid: string
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [error, setError] = useState<string | null>(null);
+  // 꺼진(오프라인) 대기 단말은 기본으로 숨긴다(문제점 45번) — 정리(거절·폐기)할 때만 펼쳐 본다.
+  const [showOff, setShowOff] = useState(false);
+  const [offN, setOffN] = useState(0);
 
   useEffect(() => {
     let alive = true;
     const load = () =>
       api
-        .listDevices({ page, size, state: "PENDING" })
+        .listDevices({ page, size, state: "PENDING", online: showOff ? undefined : "true" })
         .then((r) => {
           if (!alive) return;
           setRows(r.items);
           setTotal(r.total);
+          setOffN(Math.max(0, r.counts.PENDING - (r.counts.PENDING_ONLINE ?? r.counts.PENDING)));
           setError(null);
         })
         .catch((e) => alive && setError(errorText(e)));
@@ -80,24 +84,30 @@ function PendingList({ tick, onSelect }: { tick: number; onSelect: (uuid: string
       alive = false;
       clearInterval(id);
     };
-  }, [tick, page, size]);
+  }, [tick, page, size, showOff]);
 
   return (
     <div className="content">
-      <Card title="승인 대기 단말" className="full" meta={`${nf(total)}대`}>
+      <Card title="승인 대기 단말" className="full" meta={`${nf(total)}대${showOff ? "" : " · 켜져 있는 단말만"}`}>
         <div className="cap">
-          서버에 처음 접속(REGISTER)했지만 아직 승인하지 않은 단말이다. 승인 전에는 Telemetry 를 보내지 않고, 조명은 펌웨어 기본 스케줄로
-          점등한다. 행을 누르면 <b>승인 창</b>이 열린다 — 단말기 정보 확인 → 설치 정보·지도 위치 → 통신 주기 설정 → 설정 변경 → 승인/거절/폐기.
+          서버에 처음 접속했지만 아직 승인하지 않은 단말입니다. 승인 전에는 보고를 보내지 않고, 조명은 단말의 기본 스케줄로
+          켜집니다. 행을 누르면 <b>승인 창</b>이 열립니다 — 단말 정보 확인 → 설치 정보·지도 위치 → 통신 주기 설정 → 설정 변경 → 승인/거절/폐기.
         </div>
         {error && <div className="err">{error}</div>}
         <div className="bar2">
+          {(offN > 0 || showOff) && (
+            <label className="chk2" title="전원이 꺼졌거나 오래 접속하지 않은 승인 대기 단말 — 거절·폐기로 정리할 때 펼쳐 본다">
+              <input type="checkbox" checked={showOff} onChange={(e) => (setShowOff(e.target.checked), setPage(1))} />
+              꺼진 단말도 보기 ({nf(offN)}대)
+            </label>
+          )}
           <span className="sp" />
           <PageSize size={size} onChange={(n) => (setSize(n), setPage(1))} />
         </div>
         <div className="tw">
           <table className="list">
             <thead>
-              <tr><th>UUID</th><th>모델</th><th>펌웨어</th><th>IMEI</th><th>MSISDN</th><th>최초 접속</th><th>마지막 수신</th><th>지역</th><th>시설명</th></tr>
+              <tr><th>UUID</th><th>모델</th><th>펌웨어</th><th>IMEI</th><th>전화번호</th><th>최초 접속</th><th>마지막 수신</th><th>지역</th><th>시설명</th></tr>
             </thead>
             <tbody>
               {rows.map((d) => (
@@ -113,7 +123,7 @@ function PendingList({ tick, onSelect }: { tick: number; onSelect: (uuid: string
                   <td>{d.site || <span className="muted">-</span>}</td>
                 </tr>
               ))}
-              {rows.length === 0 && <tr><td colSpan={9} className="empty">승인 대기 단말이 없습니다.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={9} className="empty">{showOff ? "승인 대기 단말이 없습니다." : "켜져 있는 승인 대기 단말이 없습니다."}</td></tr>}
             </tbody>
           </table>
         </div>

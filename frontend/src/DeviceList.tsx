@@ -1,6 +1,6 @@
 import { MouseEvent, useEffect, useState } from "react";
 import { api, Device, DeviceList as DeviceListRes, STATES, errorText } from "./api";
-import { relTime, str, volt1 } from "./format";
+import { localTime, relTime, str, volt1 } from "./format";
 import { Battery, Card, LampPair, OnlineMark, StateBadge, stateLabel, nf, DEFAULT_PAGE_SIZE, PageSize, Pager } from "./ui";
 
 const REFRESH_MS = 10_000;
@@ -28,11 +28,11 @@ export function RemoteBadge({ d, onReleased }: { d: Device; onReleased?: (msg: s
   const min = Math.max(1, Math.ceil((d.remote_remaining_sec ?? 0) / 60));
   async function release(e: MouseEvent) {
     e.stopPropagation();
-    if (!confirm(`${d.site ?? d.uuid}\n원격 제어를 해제하고 스케줄로 복귀시킬까요? (개별 COMMAND act=auto)`)) return;
+    if (!confirm(`${d.site ?? d.uuid}\n원격 제어를 해제하고 스케줄로 복귀시킬까요?`)) return;
     setBusy(true);
     try {
-      const r = await api.createCommand({ target: { kind: "device", id: d.uuid }, act: "auto", ch: [1, 2] });
-      onReleased?.(`${d.site ?? d.uuid}: 해제 명령 #${r.seq} 발행함 — 단말은 다음 송신 뒤 받는다(최대 약 5분)`);
+      await api.createCommand({ target: { kind: "device", id: d.uuid }, act: "auto", ch: [1, 2] });
+      onReleased?.(`${d.site ?? d.uuid}: 해제 명령을 보냈습니다 — 단말이 받기까지 최대 약 5분 걸릴 수 있습니다`);
     } catch (x) {
       onReleased?.(errorText(x));
     } finally {
@@ -41,8 +41,8 @@ export function RemoteBadge({ d, onReleased }: { d: Device; onReleased?: (msg: s
   }
   return (
     <span className="bar2" style={{ flexWrap: "nowrap" }}>
-      <span className="badge b-blue" title={`원격 조작 ${d.override_act ?? "?"} · ${d.override_level ?? ""} · 명령 번호 ${d.override_seq ?? "-"} · until ${d.override_until ?? "-"}`}>원격 {min}분 남음</span>
-      <button type="button" className="btn sm" disabled={busy || !d.is_online} title={d.is_online ? "스케줄로 복귀(act=auto)" : "오프라인 — 단말이 다시 접속하면 해제할 수 있다"} onClick={release}>해제</button>
+      <span className="badge b-blue" title={`원격 조작 중 — ${min}분 뒤 스케줄로 돌아갑니다`}>원격 {min}분 남음</span>
+      <button type="button" className="btn sm" disabled={busy || !d.is_online} title={d.is_online ? "원격 조작을 끝내고 스케줄로 복귀" : "오프라인 — 단말이 다시 접속하면 해제할 수 있습니다"} onClick={release}>해제</button>
     </span>
   );
 }
@@ -103,7 +103,7 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
           <option value="true">온라인</option>
           <option value="false">오프라인</option>
         </select>
-        <label className="chk2" title="remote=true — Telemetry md=2 이고 원격 조작 유효">
+        <label className="chk2" title="지금 원격 조작을 받고 있는 단말만 봅니다">
           <input type="checkbox" checked={remote} onChange={(e) => (setRemote(e.target.checked), setPage(1))} />원격 조작 중만
         </label>
         <input type="search" placeholder="시설명·UUID·주소·지역 (한 글자도 됨)" aria-label="검색" value={text} onChange={(e) => setText(e.target.value)} style={{ width: 260 }} />
@@ -127,8 +127,7 @@ export default function DeviceList({ tick, selected, onSelect }: Props) {
                 <td>{str(d.site)}</td>
                 <td title={d.node_path ?? "지역 미배정"}>{d.node_id ? shortPath(d) : <span className="muted">미배정</span>}</td>
                 <td className="mono">{d.uuid}</td>
-                <td title={`is_online=${d.is_online} (브로커 online=${d.online}, 수신 보조 규칙 AND)
-last_seen_at ${d.last_seen_at ?? "-"}`}>
+                <td title={`마지막 접속 ${d.last_seen_at ? localTime(d.last_seen_at) : "-"}`}>
                   <OnlineMark on={d.is_online} /> <span className="md">{relTime(d.last_seen_at)}</span>
                 </td>
                 <td><LampPair t={d.last_telemetry} online={d.is_online} /></td>

@@ -1,6 +1,6 @@
 // 목업(docs/spec/ui/solar_light_dashboard_v15.html)의 공통 조각. 카드·배지·자리표시.
-import { ReactNode } from "react";
-import { DeviceState, SettingsSync } from "./api";
+import { ReactNode, createContext, useContext } from "react";
+import { DeviceState, Me, SettingsSync } from "./api";
 
 /** section.card — 목업의 카드 틀. h500 등 크기 클래스는 className 으로. */
 export function Card({
@@ -14,26 +14,6 @@ export function Card({
       </div>
       <div className="cb">{children}</div>
     </section>
-  );
-}
-
-/** 아직 백엔드 API 가 없는 기능의 자리. 목업과 같은 크기·위치에 제목과 "준비 중 (N차)" 만. */
-export function Placeholder({ stage, note }: { stage: string; note?: string }) {
-  return (
-    <div className="ph">
-      <b>준비 중 ({stage})</b>
-      {note && <span>{note}</span>}
-    </div>
-  );
-}
-
-export function PlaceholderCard({
-  title, meta, stage, note, className,
-}: { title: ReactNode; meta?: ReactNode; stage: string; note?: string; className?: string }) {
-  return (
-    <Card title={title} meta={meta} className={className}>
-      <Placeholder stage={stage} note={note} />
-    </Card>
   );
 }
 
@@ -53,7 +33,7 @@ export function stateLabel(s: DeviceState): string {
 /** 승인 상태 배지. 목업의 .badge.b-* 색을 state 에 대응. */
 export function StateBadge({ state }: { state: DeviceState }) {
   const [label, cls] = STATE_LABEL[state] ?? [state, "b-off"];
-  return <span className={`badge ${cls}`} title={state}>{label}</span>;
+  return <span className={`badge ${cls}`}>{label}</span>;
 }
 
 /** 온라인 표시 — 목업의 통신 열처럼 점 + 글자. */
@@ -78,7 +58,7 @@ export function Battery({ sc }: { sc: number | null | undefined }) {
   );
 }
 
-const OFF_TITLE = "통신 두절 — 마지막 보고와 관계없이 소등으로 본다(문제점 15번)";
+const OFF_TITLE = "통신 두절 — 마지막 보고와 관계없이 소등으로 봅니다";
 
 /** 점등 표시 — 목업의 .bulb. online=false(통신 두절)면 소등(문제점 15번). */
 export function Lamp({ on, online }: { on: number | null | undefined; online?: boolean }) {
@@ -124,17 +104,17 @@ export function SiteHint({ value }: { value: string }) {
   const n = [...value].length;
   return (
     <small className={n > SITE_HINT ? "c-warn" : ""}>
-      {n}/{SITE_HINT}자 권장 (단말 OLED 한글 {SITE_HINT}자, 최대 {SITE_MAX})
+      {n}/{SITE_HINT}자 권장 (단말 화면에는 한글 {SITE_HINT}자까지 보임, 최대 {SITE_MAX}자)
     </small>
   );
 }
 
 const SYNC_LABEL: Record<SettingsSync, [string, string, string]> = {
-  unknown: ["읽지 않음", "b-off", "서버가 아직 단말 운전 설정을 모른다 — 단말에서 읽기"],
-  synced: ["단말과 같음", "b-ok", "DB 값 = 단말 값(sh 일치)"],
-  writing: ["쓰는 중", "b-blue", "SETTINGS_SET 보냄, 응답 대기"],
-  local_saved: ["현장에서 저장함", "b-warn", "Telemetry ss 가 바뀜 — 현장 PC 도구·OLED 로 저장했다. 다시 읽어 확인"],
-  device_changed: ["단말과 다름", "b-alarm", "읽어 보니 단말 sh 가 DB 와 다름 — 받아들이기 또는 되돌리기"],
+  unknown: ["읽지 않음", "b-off", "서버가 아직 단말 운전 설정을 모릅니다 — 단말에서 읽어 오세요"],
+  synced: ["단말과 같음", "b-ok", "서버 값과 단말 값이 같음"],
+  writing: ["쓰는 중", "b-blue", "설정 보냄 — 단말 응답 대기"],
+  local_saved: ["현장에서 저장함", "b-warn", "단말에서 스케줄이 바뀜 — 현장에서 PC 도구나 단말 화면으로 저장했습니다. 다시 읽어 확인하세요"],
+  device_changed: ["단말과 다름", "b-alarm", "단말 값이 서버와 다름 — 받아들이기 또는 되돌리기"],
 };
 
 export function syncLabel(s: SettingsSync | null | undefined): string {
@@ -145,7 +125,7 @@ export function syncLabel(s: SettingsSync | null | undefined): string {
 export function SyncBadge({ sync }: { sync: SettingsSync | null | undefined }) {
   const s = sync ?? "unknown";
   const [label, cls, why] = SYNC_LABEL[s] ?? [s, "b-off", ""];
-  return <span className={`badge ${cls}`} title={`${s} — ${why}`}>{label}</span>;
+  return <span className={`badge ${cls}`} title={why}>{label}</span>;
 }
 
 /** 목록 개수 — 모든 목록 화면이 같이 쓴다(문제점 35번): 20·50·100, 기본 20. */
@@ -184,3 +164,17 @@ export function Pager({ page, pages, total, size, onPage }: { page: number; page
 
 /** 전체 건수 → 쪽 수. */
 export const pageCount = (total: number, size: number) => Math.max(1, Math.ceil(total / size));
+
+/** 로그인한 사람(App 이 채운다) — 화면 어디서나 역할을 본다(문제점 43번). */
+export const MeCtx = createContext<Me | null>(null);
+/** 최고관리자인가(로그인 정보를 아직 못 받았거나 개발 PC 면 참 — App 의 isSuper 와 같은 규칙). */
+export function useIsSuper(): boolean {
+  const me = useContext(MeCtx);
+  return !me || me.role === "super_admin";
+}
+/** "자세히" — 기술 정보(원문 JSON·주소·명령 번호·지문 숫자). 접혀 있고 최고관리자에게만 보인다(문제점 43번 A안).
+ *  단말측과 문제를 맞춰 볼 근거로 남긴다. 운영자용 문장은 바깥에 쓴다. */
+export function Detail({ children, summary = "자세히", className }: { children: ReactNode; summary?: string; className?: string }) {
+  if (!useIsSuper()) return null;
+  return <details className={`more ${className ?? ""}`}><summary>{summary}</summary>{children}</details>;
+}

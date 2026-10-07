@@ -24,7 +24,7 @@ function loadSdk(): Promise<any> {
     (cfg) =>
       new Promise((resolve, reject) => {
         if (!cfg.kakao_js_key) {
-          reject(new Error("카카오 JavaScript 키가 없습니다 — 서버 .env 의 KAKAO_JS_KEY"));
+          reject(new Error("지도 설정이 되어 있지 않습니다 — 관리자에게 문의하세요"));
           return;
         }
         const s = document.createElement("script");
@@ -32,13 +32,13 @@ function loadSdk(): Promise<any> {
         s.async = true;
         s.onload = () => {
           if (!window.kakao?.maps) {
-            reject(new Error("카카오 지도 SDK 를 읽지 못했습니다"));
+            reject(new Error("지도를 불러오지 못했습니다 — 지도 키와 사이트 주소 등록을 확인하세요(관리자)"));
             return;
           }
           window.kakao.maps.load(() => resolve(window.kakao));
         };
         s.onerror = () =>
-          reject(new Error("카카오 지도 SDK 를 받지 못했습니다 — 키가 맞는지, 카카오 콘솔 [플랫폼 > Web] 에 이 사이트 주소가 등록됐는지 확인"));
+          reject(new Error("지도를 불러오지 못했습니다 — 지도 키와 사이트 주소 등록을 확인하세요(관리자)"));
         document.head.appendChild(s);
       }),
   );

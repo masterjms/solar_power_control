@@ -183,6 +183,8 @@ export interface DeviceCounts {
   REJECTED: number;
   RETIRED: number;
   online: number;
+  /** 켜져 있는(온라인) 승인 대기 — 등록·승인 목록·메뉴 숫자(문제점 45번) */
+  PENDING_ONLINE?: number;
 }
 
 export interface DeviceList {

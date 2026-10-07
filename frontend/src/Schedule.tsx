@@ -11,7 +11,7 @@ import { FieldCtx, GroupFields, StageBar, useSchema } from "./DeviceConfig";
 import { localTime } from "./format";
 import { parseText, toText, rangeError, utf8Bytes, hoursText } from "./settingsLogic";
 import { RegionTree, TreeNode, useRegions } from "./Tree";
-import { Card, DEFAULT_PAGE_SIZE, Met, OnlineMark, PageSize, Pager, nf, pageCount } from "./ui";
+import { Card, DEFAULT_PAGE_SIZE, Detail, Met, OnlineMark, PageSize, Pager, nf, pageCount } from "./ui";
 
 const REFRESH_MS = 10_000;
 const PROFILE_GROUPS = ["schedule", "stage"];
@@ -20,22 +20,25 @@ const REGION_MAX = 47;
 export const DEPLOY_STATUS: Record<string, [string, string]> = {
   waiting: ["대기(오프라인·차례)", "b-off"],
   reading: ["단말에서 읽는 중", "b-blue"],
-  sent: ["발행함 — 응답 대기", "b-blue"],
+  sent: ["보냄 — 응답 대기", "b-blue"],
   OK: ["적용됨", "b-ok"],
-  CRC: ["CRC 불일치", "b-alarm"],
+  CRC: ["단말 표와 다름", "b-alarm"],
   RULE: ["규칙 위반", "b-alarm"],
   RANGE: ["범위 밖", "b-alarm"],
   BAD: ["형식 오류", "b-alarm"],
   STATE: ["승인 안 됨", "b-warn"],
-  FLASH: ["Flash 실패", "b-alarm"],
+  FLASH: ["단말 저장 실패", "b-alarm"],
   NO_RESPONSE: ["응답 없음", "b-alarm"],
   READ_FAILED: ["읽기 실패", "b-alarm"],
   CANCELLED: ["취소", "b-off"],
   SUPERSEDED: ["새로 보낸 것으로 대체", "b-off"],
 };
+const SCOPE_LABEL: Record<string, string> = { profile: "양식 지정 단말 전부", node: "지역", device: "단말 하나" };
+const scopeText = (j: DeployJob) => j.scope_label ?? SCOPE_LABEL[j.scope_kind] ?? j.scope_kind;
+
 export function DeployBadge({ s }: { s: string }) {
   const [label, cls] = DEPLOY_STATUS[s] ?? [s, "b-off"];
-  return <span className={`badge ${cls}`} title={s}>{label}</span>;
+  return <span className={`badge ${cls}`}>{label}</span>;
 }
 
 interface Form {
@@ -111,7 +114,7 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
     setErr(null);
     setMsg(null);
     if (!f.name.trim()) return setErr("이름을 넣는다");
-    if (!f.region.trim() || regionBytes > REGION_MAX) return setErr(`지역명은 1~${REGION_MAX}B`);
+    if (!f.region.trim() || regionBytes > REGION_MAX) return setErr(`지역명을 고른다(최대 ${REGION_MAX}바이트)`);
     if (!condOk) return setErr("좌표·보정(정수 분 -180~180)을 확인한다");
     if (bad.size) return setErr("범위를 벗어난 항목이 있다");
     const body = {
@@ -121,7 +124,7 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
     setBusy(true);
     try {
       const p = profile ? await api.patchScheduleProfile(profile.id, body) : await api.createScheduleProfile(body);
-      setMsg(`저장함 — v${p.version} · crc ${p.crc}${profile && p.version !== profile.version ? " (판이 올라갔다 — 적용된 단말은 다시 보내야 한다)" : ""}`);
+      setMsg(`저장함 — 판 ${p.version}${profile && p.version !== profile.version ? " (판이 올라갔다 — 적용된 단말은 다시 보내야 한다)" : ""}`);
       onSaved(p);
     } catch (e) {
       setErr(errorText(e));
@@ -142,7 +145,7 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
 
   return (
     <Card className="full" title={profile ? `양식 · ${profile.name}` : "새 스케줄 양식"}
-      meta={profile ? <span className="mono">v{profile.version} · crc {profile.crc}</span> : "조건 + 운전 15개"}>
+      meta={profile ? `판 ${profile.version}` : "조건 + 운전 15개"}>
       <div className="form2">
         <label>이름<input value={f.name} maxLength={60} placeholder="예: 경기 남부 기본" onChange={(e) => setF({ ...f, name: e.target.value })} /></label>
         <label>지역 <small>전국 시·군에서 고르면 대표 좌표가 채워진다</small>
@@ -166,7 +169,7 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
           </Card>
         ))}
       </div>
-      <div className="cap">양식에 넣지 않는 10개(기준 밝기 PWM1~3·Fade·배터리 6개)는 단말마다 다르다 — 보낼 때 그 단말에서 마지막으로 읽은 값을 그대로 보낸다.</div>
+      <div className="cap">양식에 넣지 않는 10개(기준 밝기 3개·페이드·배터리 6개)는 단말마다 다르다 — 보낼 때 그 단말에서 마지막으로 읽은 값을 그대로 보낸다.</div>
       <div className="bar2">
         <button type="button" className="btn pri" disabled={busy} onClick={save}>{profile ? "저장" : "만들기"}</button>
         <button type="button" className="btn" onClick={preview} disabled={!condOk}>미리보기</button>
@@ -178,7 +181,8 @@ function ProfileEditor({ schema, profile, defaults, onSaved, onDeleted }: {
       {err && <div className="err">{err}</div>}
       {prev && (
         <>
-          <div className="cap">미리보기 표 CRC <span className="mono">{prev.crc}</span> — 단말이 같은 식으로 계산해 이 CRC 와 같을 때만 저장한다.</div>
+          <div className="cap">미리보기 — 단말이 같은 식으로 표를 계산해 이 표와 같을 때만 저장한다.</div>
+          <Detail><span className="mono">표 CRC {prev.crc}</span></Detail>
           <div style={{ maxHeight: 280, overflow: "auto" }}>
             <table className="mini">
               <thead><tr><th>날짜</th><th>점등</th><th>소등</th><th className="n">점등 시간</th></tr></thead>
@@ -208,7 +212,7 @@ function JobDetail({ id, onClose, onSelect }: { id: number; onClose: () => void;
   return (
     <div className="cmdres">
       <div className="bar2">
-        <b>보낸 기록 #{job.id}</b> <span>{job.profile_name} v{job.profile_version} · {job.scope_label ?? job.scope_kind}</span>
+        <b>보낸 기록 #{job.id}</b> <span>{job.profile_name} 판 {job.profile_version} · {scopeText(job)}</span>
         <span className="sp" />
         <button type="button" className="btn sm" disabled={retryable === 0} onClick={async () => {
           try { const r = await api.retryDeploy(job.id); setMsg(`다시 보냄 ${r.retried}대${r.skipped ? ` · 횟수 다 써서 건너뜀 ${r.skipped}대` : ""}`); load(); } catch (e) { setErr(errorText(e)); }
@@ -221,7 +225,7 @@ function JobDetail({ id, onClose, onSelect }: { id: number; onClose: () => void;
       </div>
       {msg && <div className="okl">{msg}</div>}
       {err && <div className="err">{err}</div>}
-      <div className="cap">대기 = 오프라인이면 다시 붙을 때 자동, 온라인이면 차례(초당 10대). 30초 무응답이면 새 명령 번호로 3회까지 — 그래도 없으면 "응답 없음".</div>
+      <div className="cap">대기 = 오프라인이면 다시 붙을 때 자동, 온라인이면 차례(초당 10대). 30초 동안 응답이 없으면 3회까지 다시 보낸다 — 그래도 없으면 "응답 없음".</div>
       <div style={{ maxHeight: 360, overflow: "auto" }}>
         <table className="mini">
           <thead><tr><th>단말</th><th>통신</th><th>상태</th><th className="n">회차</th><th>보냄</th><th>응답</th><th>설명</th></tr></thead>
@@ -353,7 +357,7 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
   const deploy = (scope: "profile" | "node" | "device", scopeId: string | null, label: string) =>
     run(async () => {
       if (!profile) return;
-      if (!confirm(`${profile.name} v${profile.version} 을(를) ${label}에 보냅니다.\n단말마다 SETTINGS_SET(25개 + 표 조건)을 보냅니다. 오프라인 단말은 다시 붙으면 자동으로 갑니다.`)) return;
+      if (!confirm(`${profile.name} v${profile.version} 을(를) ${label}에 보냅니다.\n단말마다 설정과 스케줄을 보냅니다. 오프라인 단말은 다시 붙으면 자동으로 갑니다.`)) return;
       const j = await api.createDeploy({ profile_id: profile.id, scope, scope_id: scopeId });
       setJob(j.id);
       return `보내기 #${j.id} 시작 — ${j.total}대`;
@@ -369,7 +373,7 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
             {(profiles ?? []).map((p) => (
               <div key={p.id} className={`tn ${sel === p.id ? "on" : ""}`} role="option" aria-selected={sel === p.id} tabIndex={0}
                 onClick={() => setSel(p.id)} onKeyDown={(e) => e.key === "Enter" && setSel(p.id)}>
-                <span className="tnm">{p.name}<small>v{p.version} · {p.region}</small></span>
+                <span className="tnm">{p.name}<small>판 {p.version} · {p.region}</small></span>
                 <span className={`tct ${p.targets && p.applied === p.targets ? "c-ok" : p.targets ? "c-warn" : ""}`}>{nf(p.applied)}/{nf(p.targets)}</span>
               </div>
             ))}
@@ -441,15 +445,15 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
         </>}>
           <div style={{ maxHeight: 420, overflow: "auto" }}>
             <table className="mini">
-              <thead><tr><th>단말</th><th>통신</th><th>지정 양식</th><th>적용</th><th>단말 표</th><th>진행</th><th>오늘 점등~소등</th><th>DIP4</th><th /></tr></thead>
+              <thead><tr><th>단말</th><th>통신</th><th>지정 양식</th><th>적용</th><th>단말 표 일치</th><th>진행</th><th>오늘 점등~소등</th><th>DIP4</th><th /></tr></thead>
               <tbody>
                 {shownDevs.map((d) => (
                   <tr key={d.uuid}>
                     <td data-click onClick={() => onSelect(d.uuid)}>{d.site ?? "-"} <small className="mono muted">{d.uuid.slice(-8)}</small></td>
                     <td><OnlineMark on={d.is_online} /></td>
-                    <td>{d.profile_name ? <>{d.profile_name} <small className="muted">v{d.profile_version} {d.source === "device" ? "· 예외" : ""}</small></> : <span className="muted">지정 없음</span>}</td>
-                    <td>{d.profile_id ? (d.applied_ok ? <span className="badge b-ok">적용됨</span> : d.applied_crc ? <span className="badge b-warn" title={`적용된 판 v${d.applied_version} ${d.applied_crc}`}>옛 판·단말과 다름</span> : <span className="badge b-off">미적용</span>) : ""}</td>
-                    <td className="mono" title={d.device_region ?? ""}>{d.device_crc ?? <span className="muted">모름</span>}{d.profile_crc && d.device_crc ? (d.device_crc === d.profile_crc ? " ✓" : " ✗") : ""}</td>
+                    <td>{d.profile_name ? <>{d.profile_name} <small className="muted">판 {d.profile_version} {d.source === "device" ? "· 예외" : ""}</small></> : <span className="muted">지정 없음</span>}</td>
+                    <td>{d.profile_id ? (d.applied_ok ? <span className="badge b-ok">적용됨</span> : d.applied_crc ? <span className="badge b-warn" title={`적용된 판 ${d.applied_version}`}>옛 판·단말과 다름</span> : <span className="badge b-off">미적용</span>) : ""}</td>
+                    <td title={d.device_region ?? ""}>{!d.device_crc ? <span className="muted">모름</span> : !d.profile_crc ? "" : d.device_crc === d.profile_crc ? <span className="c-ok">단말과 같음</span> : <span className="c-warn">다름</span>}</td>
                     <td>{d.deploy_status ? <DeployBadge s={d.deploy_status} /> : ""}</td>
                     <td>{d.today_on ? `${d.today_on} ~ ${d.today_off}` : ""}</td>
                     <td>{d.dip4 === null ? "" : d.dip4 ? "ON" : <span className="c-warn" title="DIP4 OFF: 단계 무시, 시작 밝기로만 운전">OFF</span>}</td>
@@ -473,7 +477,7 @@ export default function Schedule({ tick, onSelect }: { tick: number; onSelect: (
             <tbody>
               {jobs.map((j) => (
                 <tr key={j.id} data-click className={job === j.id ? "sel" : ""} onClick={() => setJob(j.id)}>
-                  <td>{j.id}</td><td>{j.profile_name} v{j.profile_version}</td><td>{j.scope_label ?? j.scope_kind}</td>
+                  <td>{j.id}</td><td>{j.profile_name} 판 {j.profile_version}</td><td>{scopeText(j)}</td>
                   <td>{jobSummary(j)}</td><td>{j.created_by ?? ""} · {localTime(j.created_at)}</td>
                   <td>{j.cancelled_at ? "취소" : j.finished_at ? localTime(j.finished_at) : <span className="c-blue">진행 중</span>}</td>
                 </tr>

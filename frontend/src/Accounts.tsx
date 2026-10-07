@@ -10,8 +10,8 @@ const EXPIRY_LABEL: Record<string, string> = {
   "7d": "7일", "15d": "15일", "30d": "30일", "90d": "90일", "180d": "180일", "365d": "1년", never: "무기한",
 };
 const ROLE_OPTS: [Role, string, string][] = [
-  ["region_admin", "지역관리자", "맡은 시·도 안의 단말만 보고 조작한다"],
-  ["guest", "게스트", "맡은 시·도의 대시보드만 본다(버튼 없음)"],
+  ["region_admin", "지역관리자", "맡은 시·도 안의 단말만 보고 조작합니다"],
+  ["guest", "게스트", "맡은 시·도의 대시보드만 봅니다(버튼 없음)"],
   ["super_admin", "최고관리자", "모든 기능(최대 3명)"],
 ];
 const REASON: Record<string, string> = { ok: "성공", bad_password: "비밀번호 틀림", expired: "기간 만료", disabled: "사용 중지" };
@@ -22,7 +22,7 @@ function fieldErrors(e: unknown): Record<string, string> {
 
 /** 시·도 여러 개 고르기 — 칩을 눌러 켜고 끈다. */
 function RegionPicker({ regions, value, onChange }: { regions: AccountList["regions"]; value: number[]; onChange: (v: number[]) => void }) {
-  if (!regions.length) return <span className="muted">트리에 시·도가 아직 없다 — 지역(법정동)에서 먼저 추가</span>;
+  if (!regions.length) return <span className="muted">시·도가 아직 없습니다 — 지역(법정동) 화면에서 먼저 추가하세요</span>;
   return (
     <span className="chips">
       {regions.map((r) => {
@@ -69,7 +69,7 @@ function AccountForm({ data, onDone }: { data: AccountList; onDone: (msg: string
       <label>아이디 <small>영문·숫자·_·- 3~32자</small>
         <input value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />
         {errs.username && <small className="c-alarm">{errs.username}</small>}</label>
-      <label>처음 비밀번호 <small>8자 이상 — 본인이 로그인 뒤 바꾼다</small>
+      <label>처음 비밀번호 <small>8자 이상 — 본인이 로그인 뒤 바꿉니다</small>
         <input type="password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
         {errs.password && <small className="c-alarm">{errs.password}</small>}</label>
       <label className="w2">역할
@@ -84,11 +84,11 @@ function AccountForm({ data, onDone }: { data: AccountList; onDone: (msg: string
         <small>{ROLE_OPTS.find((o) => o[0] === role)?.[2]}</small>
         {errs.role && <small className="c-alarm">{errs.role}</small>}</label>
       {role !== "super_admin" && (
-        <label className="w2">맡을 시·도 <small>여러 개 고를 수 있다</small>
+        <label className="w2">맡을 시·도 <small>여러 개 고를 수 있습니다</small>
           <RegionPicker regions={data.regions} value={regions} onChange={setRegions} />
           {errs.region_ids && <small className="c-alarm">{errs.region_ids}</small>}</label>
       )}
-      <label className="w2">사용 기간 <small>지나면 로그인이 막힌다(지우지는 않음 — 연장 가능)</small>
+      <label className="w2">사용 기간 <small>지나면 로그인이 막힙니다(지우지는 않음 — 연장 가능)</small>
         <span className="chips">
           {data.expiry_choices.map((k) => (
             <button key={k} type="button" className={`chip ${expires === k ? "on" : ""}`} aria-pressed={expires === k} onClick={() => setExpires(k)}>{EXPIRY_LABEL[k] ?? k}</button>
@@ -139,14 +139,14 @@ function AccountEdit({ a, data, onDone, onClose }: { a: Account; data: AccountLi
         <div className="w2 bar2">
           <button type="button" className="btn pri" onClick={() => run(() => api.patchAccount(a.id!, {
             role, region_ids: role === "super_admin" ? null : regions, ...(expires ? { expires } : {}),
-          }), `${a.username} 저장함`)}>저장</button>
+          }), `${a.username} 저장했습니다`)}>저장</button>
           <button type="button" className="btn" onClick={() => run(() => api.patchAccount(a.id!, { disabled: !a.disabled }), `${a.username} ${a.disabled ? "사용 재개" : "사용 중지"}`)}>
             {a.disabled ? "사용 재개" : "사용 중지"}
           </button>
           <span className="sp" />
           <button type="button" className="btn danger" onClick={() => confirm(`${a.username} 계정을 지울까요? 되돌릴 수 없습니다.`) && run(() => api.deleteAccount(a.id!), `${a.username} 지움`)}>삭제</button>
         </div>
-        <label className="w2">비밀번호 재설정 <small>8자 이상 — 그 계정의 지금 로그인은 끊긴다</small>
+        <label className="w2">비밀번호 재설정 <small>8자 이상 — 그 계정의 지금 로그인은 끊깁니다</small>
           <span className="bar2" style={{ flexWrap: "nowrap" }}>
             <input type="password" value={pw} autoComplete="new-password" style={{ flex: 1 }} onChange={(e) => setPw(e.target.value)} />
             <button type="button" className="btn" disabled={pw.length < 8} onClick={() => run(() => api.resetPassword(a.id!, pw), `${a.username} 비밀번호 재설정`)}>재설정</button>
@@ -193,7 +193,7 @@ export default function Accounts({ role }: { role: string | null }) {
                   <td>{a.role_label}</td>
                   <td>{a.role === "super_admin" || a.role === "admin" ? <span className="muted">전 지역</span> : a.regions.join(", ")}</td>
                   <td className={a.expired ? "c-alarm" : a.expiring ? "c-warn" : ""}>{a.expires_at ? `${localTime(a.expires_at)}${a.expired ? " (만료)" : a.expiring ? " (곧 만료)" : ""}` : "무기한"}</td>
-                  <td>{a.source === "env" ? <span className="muted">.env 계정</span> : a.disabled ? <span className="c-alarm">사용 중지</span> : a.expired ? <span className="c-alarm">만료</span> : "사용 중"}</td>
+                  <td>{a.source === "env" ? <span className="muted">기본 관리자 계정</span> : a.disabled ? <span className="c-alarm">사용 중지</span> : a.expired ? <span className="c-alarm">만료</span> : "사용 중"}</td>
                   <td title={a.last_login_at ?? ""}>{a.last_login_at ? relTime(a.last_login_at) : "-"}</td>
                   <td>{a.created_by ?? "-"}</td>
                   <td>{a.source === "db" && <button type="button" className="btn sm" onClick={() => setEdit(edit === a.id ? null : a.id)}>바꾸기</button>}</td>

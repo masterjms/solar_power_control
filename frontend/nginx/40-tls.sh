@@ -39,6 +39,12 @@ server {
     ssl_session_cache shared:SSL:1m;
     ssl_session_timeout 1h;
 
+    # www.<도메인> 으로 오면 맨 도메인으로(문제점 46번) — 로그인 쿠키·카카오 지도 등록 주소를 하나로 둔다.
+    # 인증서에 www 이름도 있어야 이 응답까지 온다(docs/04 §6.9).
+    if ($host ~* ^www\.(.+)$) {
+        return 301 https://$1$request_uri;
+    }
+
     include /etc/nginx/iotlight/routes.conf;
 }
 

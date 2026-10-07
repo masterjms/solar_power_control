@@ -7,7 +7,7 @@ import {
   SettingsSchema, SettingsSent, SettingsSync, SettingsTbl, SettingsTblIn, errorText,
 } from "./api";
 import { eventSummary, localTime, relTime, str } from "./format";
-import { Card, Met, OnlineMark, StateBadge, SyncBadge, nf, syncLabel } from "./ui";
+import { Card, Detail, Met, OnlineMark, StateBadge, SyncBadge, nf, stateLabel, syncLabel } from "./ui";
 import {
   RuleError, TBL_SRC, allItems, checkRules, effPwm, fmtVal, hoursText, parseText, rangeError, regionError,
   signed, sliderStep, stageKeys, toText, utf8Bytes,
@@ -33,6 +33,25 @@ function uuidFromHash(): string | null {
   const parts = location.hash.replace(/^#/, "").split("/");
   return parts[0] === "config" && parts[1] ? parts[1].toUpperCase() : null;
 }
+
+/** 설정 요청·이벤트 종류 → 화면 이름(모르는 종류는 그대로). */
+const KIND_NAME: Record<string, string> = {
+  SETTINGS_GET: "단말에서 읽기", SETTINGS_SET: "설정 보내기", SETTINGS_SENT: "설정 보내기", SETTINGS_ACK: "단말 응답", SETTINGS: "단말 설정 보고",
+};
+const parseJson = (t: unknown): unknown => {
+  if (typeof t !== "string") return t;
+  try { return JSON.parse(t); } catch { return t; }
+};
+/** 변경 이력의 스케줄 표 값 → 한 마디(지역 이름이 있으면 그것). */
+const tblText = (v: unknown): string => {
+  if (v === null || v === undefined || v === "") return "-";
+  if (typeof v === "object" && v && "region" in v && (v as { region?: unknown }).region) return `${String((v as { region: unknown }).region)} 표`;
+  return "표 있음";
+};
+const kindName = (k: string) => KIND_NAME[k] ?? k;
+/** 단말 응답 결과 → 화면 글자. */
+const resultLabel = (r: string | null | undefined) =>
+  !r ? "-" : r === "OK" ? "성공" : r === "TIMEOUT" || r === "NO_RESPONSE" ? "무응답" : r === "EXPIRED" ? "만료" : "실패";
 
 const SYNC_CLS: Record<SettingsSync, string> = {
   unknown: "c-off", synced: "c-ok", writing: "c-blue", local_saved: "c-warn", device_changed: "c-alarm",
@@ -104,11 +123,11 @@ function DevicePicker({ selected, tick }: { selected: string | null; tick: numbe
       <div className="bar2">
         <select value={scope} aria-label="승인 상태" onChange={(e) => setScope(e.target.value as ScopeFilter)}>
           <option value="rw">읽기 가능 (승인 대기·운영)</option>
-          <option value="ACTIVE">운영 ACTIVE (쓰기 가능)</option>
-          <option value="PENDING">승인 대기 PENDING</option>
+          <option value="ACTIVE">운영 (쓰기 가능)</option>
+          <option value="PENDING">승인 대기</option>
           <option value="">전체</option>
         </select>
-        <label className="chk2" title="settings_sync 가 local_saved / device_changed 인 단말만">
+        <label className="chk2" title="현장에서 저장했거나 단말 값이 서버 값과 다른 단말만">
           <input type="checkbox" checked={attention} onChange={(e) => setAttention(e.target.checked)} />확인 필요만
         </label>
       </div>
@@ -129,11 +148,11 @@ function DevicePicker({ selected, tick }: { selected: string | null; tick: numbe
                 const s = d.settings_sync ?? "unknown";
                 return (
                   <div key={d.uuid} className={`tn ${selected === d.uuid ? "on" : ""}`} role="treeitem" aria-selected={selected === d.uuid}
-                    tabIndex={0} style={{ paddingLeft: 22 }} title={`${d.uuid} · ${d.state} · 설정 ${syncLabel(s)}`}
+                    tabIndex={0} style={{ paddingLeft: 22 }} title={`${d.uuid} · ${stateLabel(d.state)} · 설정 ${syncLabel(s)}`}
                     onClick={() => pick(d.uuid)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), pick(d.uuid))}>
                     <span className="dot" style={{ background: d.is_online ? "var(--ok)" : "var(--off)", margin: "0 6px" }} />
                     <span className="tnm">{d.site ?? "(시설명 없음)"}<small>{d.uuid.slice(-8)}</small></span>
-                    <span className={`tct ${SYNC_CLS[s]}`}>{d.state === "ACTIVE" ? syncLabel(s) : `${d.state === "PENDING" ? "승인 대기" : d.state} · ${syncLabel(s)}`}</span>
+                    <span className={`tct ${SYNC_CLS[s]}`}>{d.state === "ACTIVE" ? syncLabel(s) : `${d.state === "PENDING" ? "승인 대기" : stateLabel(d.state)} · ${syncLabel(s)}`}</span>
                   </div>
                 );
               })}
@@ -206,7 +225,7 @@ function Field({ c, it }: { c: FieldCtx; it: SettingsItem }) {
   const dirty = isDirty(c, it);
   const bad = c.bad.has(it.key) || !!c.serverErr[it.key] || (!!c.values && !!rangeError(it, parseText(it, c.edit[it.key])));
   return (
-    <div className={`fld ${bad ? "bad" : ""} ${c.values ? "" : "ref"}`.trim()} title={`${it.key} · 범위 ${toText(it, it.min)}~${toText(it, it.max)} · 기본 ${toText(it, it.default)}`}>
+    <div className={`fld ${bad ? "bad" : ""} ${c.values ? "" : "ref"}`.trim()} title={`범위 ${toText(it, it.min)}~${toText(it, it.max)} · 기본 ${toText(it, it.default)}`}>
       <label>{dirty && <span className="mk edit" title="편집함, 아직 안 보냄" />}{it.label}</label>
       <div className="in"><Slider c={c} it={it} /></div>
       <NumInput c={c} it={it} />
@@ -228,7 +247,7 @@ function TimeField({ c, h, m, pwm }: { c: FieldCtx; h: SettingsItem; m: Settings
   const mv = parseText(m, shownText(c, m));
   const time = hv === null || mv === null ? "" : `${pad2(hv)}:${pad2(mv)}`;
   return (
-    <div className={`fld tfld ${bad ? "bad" : ""} ${c.values ? "" : "ref"}`.trim()} title={its.map((i) => i.key).join(" · ")}>
+    <div className={`fld tfld ${bad ? "bad" : ""} ${c.values ? "" : "ref"}`.trim()}>
       <label>{dirty && <span className="mk edit" title="편집함, 아직 안 보냄" />}{label}</label>
       <div className="in">
         <input type="time" className="tm" value={time} disabled={c.disabled} aria-label={`${label} 시각`} step={60}
@@ -274,7 +293,7 @@ export function StageBar({ schema, pv, tbl }: { schema: SettingsSchema; pv: (k: 
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig]);
-  if (!tbl || !today) return <div className="cap">오늘 밤 막대는 단말에서 읽은 뒤(표 조건을 알아야) 보인다.</div>;
+  if (!tbl || !today) return <div className="cap">오늘 밤 밝기 막대는 단말에서 읽은 뒤에 보입니다(1년 스케줄 조건이 필요합니다).</div>;
 
   const toMin = (t: string) => {
     const [a, b] = t.split(":").map(Number);
@@ -300,7 +319,7 @@ export function StageBar({ schema, pv, tbl }: { schema: SettingsSchema; pv: (k: 
   segs.sort((a, b) => a.from - b.from);
   const hhmm = (t: number) => `${pad2(Math.floor((((t % 1440) + 1440) % 1440) / 60))}:${pad2((((t % 1440) + 1440) % 1440) % 60)}`;
   return (
-    <div className="stbar" title="DIP4 가 ON 일 때 다단계가 쓰인다">
+    <div className="stbar" title="현장 스위치 4번이 켜져 있을 때 다단계가 쓰입니다">
       <div className="bar">
         {segs.map((sg, i) => {
           const to = i + 1 < segs.length ? segs[i + 1].from : night;
@@ -444,8 +463,8 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
       const d = tblIn(ik);
       const v = tbl[k].trim() === "" ? NaN : Number(tbl[k]);
       const lo = d?.min ?? -180, hi = d?.max ?? 180;
-      if (!Number.isFinite(v)) tblErrs[k] = "숫자를 넣는다";
-      else if (int && !Number.isInteger(v)) tblErrs[k] = "정수 분";
+      if (!Number.isFinite(v)) tblErrs[k] = "숫자를 넣습니다";
+      else if (int && !Number.isInteger(v)) tblErrs[k] = "분 단위 정수로 넣습니다";
       else if (v < lo || v > hi) tblErrs[k] = `${lo} ~ ${hi}`;
     };
     chk("lat", "lat", false);
@@ -486,14 +505,14 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
   const pending = st?.pending ?? null;
   const writeBlock: string | null =
     !st ? "불러오는 중" :
-    state !== "ACTIVE" ? "쓰기는 운영(ACTIVE) 단말만" :
-    !online ? "오프라인 — 단말이 다시 접속해야 쓸 수 있다" :
-    !values ? "아직 단말에서 읽지 않았다 — 먼저 '단말에서 읽기'" :
-    pending ? `${pending.kind} 명령 번호 ${pending.seq} 응답 대기 중` :
+    state !== "ACTIVE" ? "보내기는 운영 중인 단말만 됩니다" :
+    !online ? "오프라인 — 단말이 다시 접속해야 보낼 수 있습니다" :
+    !values ? "아직 단말에서 읽지 않았습니다 — 먼저 '단말에서 읽기'를 누릅니다" :
+    pending ? `'${kindName(pending.kind)}' 단말 응답 대기 중` :
     rangeBad.length ? `범위를 벗어난 값: ${rangeBad.map((i) => i.label).join(", ")}` :
-    rules.length ? "규칙 위반 — 빨간 줄을 고친다" :
-    withTbl && !tblOk ? "1년 스케줄 조건을 고친다" :
-    !dirty && !withTbl ? "바뀐 값이 없다" : null;
+    rules.length ? "규칙에 맞지 않는 값이 있습니다 — 빨간 줄을 고칩니다" :
+    withTbl && !tblOk ? "1년 스케줄 조건을 고칩니다" :
+    !dirty && !withTbl ? "바뀐 값이 없습니다" : null;
 
   function handleErr(e: unknown) {
     setActErr(errorText(e));
@@ -501,10 +520,10 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
       // detail.key = 항목 키, 표 조건은 "tbl.lat" 꼴(detail.field 로 올 때도 있다) → 표 칸 이름으로
       const d = (e.err.detail ?? {}) as { key?: string; field?: string; rule?: string };
       const k = (d.key ?? d.field)?.replace(/^tbl\./, "");
-      if (k) setServerErr({ [k]: `서버 ${e.err.code}: ${e.err.message}` });
+      if (k) setServerErr({ [k]: e.err.message });
       else if (d.rule) {
         const rule = schema.rules.find((r) => r.id === d.rule);
-        setServerErr({ __rule: `서버 규칙 위반 ${d.rule}${rule ? ` (${rule.text})` : ""} — ${e.err.message}` });
+        setServerErr({ __rule: `규칙에 맞지 않음${rule ? `: ${rule.text}` : ""} — ${e.err.message}` });
       }
     }
   }
@@ -536,7 +555,7 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
     items.forEach((it) => (vals[it.key] = parsed[it.key]!));
     const lines = dirtyKeys.map((k) => `${itemOf(k)?.label ?? k}: ${fmtVal(itemOf(k), values[k])} → ${fmtVal(itemOf(k), vals[k])}`);
     if (withTbl) lines.push(`1년 스케줄 조건: ${tbl.region} · ${tbl.lat}, ${tbl.lon} · 보정 ${tbl.on}/${tbl.off}분`);
-    if (!confirm(`${dev?.site ?? uuid}\n단말에 씁니다(25개 전부${withTbl ? " + 표 조건" : ""}). 단말은 받자마자 적용하고 Flash 에 저장합니다.\n\n${lines.join("\n")}`)) return;
+    if (!confirm(`${dev?.site ?? uuid}\n단말에 보냅니다(25개 전부${withTbl ? " + 1년 스케줄 조건" : ""}). 단말은 받자마자 적용하고 저장합니다.\n\n${lines.join("\n")}`)) return;
     run(async () => {
       const r = await api.putSettings(uuid, { values: vals, tbl: withTbl ? tblBody() : null });
       setSent({ kind: "SETTINGS_SET", label: "단말에 쓰기", r });
@@ -549,18 +568,18 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
   }
 
   function doAccept() {
-    if (!confirm("단말이 보고한 값을 DB 에 받아들입니다(서버 값이 단말 값으로 바뀜). 계속할까요?")) return;
+    if (!confirm("단말이 보고한 값을 서버 값으로 받아들입니다(서버 값이 단말 값으로 바뀝니다). 계속할까요?")) return;
     run(async () => {
       await api.acceptSettings(uuid);
       dirtyCount.current = 0;
       loadedJson.current = "";
-      setActMsg("단말 값을 받아들였다 — DB = 단말 값");
+      setActMsg("단말 값을 받아들였습니다 — 이제 서버 값과 단말 값이 같습니다");
       await load();
     });
   }
 
   function doRevert() {
-    if (!confirm("서버(DB) 값을 단말에 다시 씁니다(SETTINGS_SET). 현장에서 바꾼 값은 사라집니다. 계속할까요?")) return;
+    if (!confirm("서버 값을 단말에 다시 보냅니다. 현장에서 바꾼 값은 사라집니다. 계속할까요?")) return;
     run(async () => {
       const r = await api.revertSettings(uuid);
       setSent({ kind: "SETTINGS_SET", label: "서버 값으로 되돌리기", r });
@@ -580,7 +599,7 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
     setPrevErr(null);
     setPrev(null);
     if (tblErrs.lat || tblErrs.lon || tblErrs.on || tblErrs.off) {
-      setPrevErr("위도·경도·보정을 먼저 고친다(보정은 비우지 말고 0)");
+      setPrevErr("위도·경도·보정을 먼저 고칩니다(보정은 비우지 말고 0을 넣습니다)");
       return;
     }
     try {
@@ -620,8 +639,8 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
 
   const groupMeta = (id: string, n: number): ReactNode => {
     if (id === stageGroupId && dip !== null)
-      return <span className={dip & 0x08 ? "c-ok" : "c-warn"}>DIP4 {dip & 0x08 ? "ON — 다단계 사용" : "OFF — 다단계 안 씀"}</span>;
-    if (id === battGroupId && bat) return <span>배터리 계통 <b>{bat}V</b> — {bat}V 값이 쓰인다</span>;
+      return <span className={dip & 0x08 ? "c-ok" : "c-warn"}>현장 스위치 4번 {dip & 0x08 ? "켜짐 — 다단계 사용" : "꺼짐 — 다단계 안 씀"}</span>;
+    if (id === battGroupId && bat) return <span>배터리 계통 <b>{bat}V</b> — {bat}V 값이 쓰입니다</span>;
     return `${n}개`;
   };
 
@@ -637,54 +656,58 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
         </>}
       >
         <div className="grid5">
-          <Met l="마지막 전체 읽기" v={st.read_at ? localTime(st.read_at) : "읽지 않음"} h={st.read_at ? relTime(st.read_at) : "서버는 아직 이 단말 값을 모른다"} cls={st.read_at ? "" : "o"} />
-          <Met l="설정 지문 sh (DB / 단말)" v={<span className="mono">{str(st.sh_db)} / {str(st.sh_device)}</span>}
-            h={st.sh_db && st.sh_device ? (st.sh_db === st.sh_device ? "단말과 같음" : "단말과 다름") : "-"} cls={st.sh_db && st.sh_device && st.sh_db !== st.sh_device ? "a" : ""} />
-          <Met l="저장 번호 ss (기준 / Telemetry)" v={`${str(st.ss_known)} / ${str(st.ss_telemetry)}`}
-            h={ssDiff ? "단말과 다름 — 현장에서 저장함" : "현장 저장 신호"} cls={ssDiff ? "w" : ""} />
-          <Met l="대기 중 요청" v={pending ? `${pending.kind} #${pending.seq}` : "없음"}
-            h={pending ? `시도 ${pending.attempts}/3 · 보냄 ${localTime(pending.sent_at)}` : "무응답 30초면 새 명령 번호로 재발송(최대 3회)"} cls={pending ? "w" : ""} />
-          <Met l="마지막 결과" v={st.last_result ?? "-"} h={localTime(st.last_result_at)} cls={st.last_result && st.last_result !== "OK" ? "a" : st.last_result === "OK" ? "k" : ""} />
+          <Met l="마지막 전체 읽기" v={st.read_at ? localTime(st.read_at) : "읽지 않음"} h={st.read_at ? relTime(st.read_at) : "서버는 아직 이 단말 값을 모릅니다"} cls={st.read_at ? "" : "o"} />
+          <Met l="설정 비교 (서버 / 단말)" v={st.sh_db && st.sh_device ? (st.sh_db === st.sh_device ? "단말과 같음" : "단말과 다름") : "-"}
+            h={<Detail><span className="mono">설정 지문 서버 {str(st.sh_db)} / 단말 {str(st.sh_device)}</span></Detail>} cls={st.sh_db && st.sh_device && st.sh_db !== st.sh_device ? "a" : ""} />
+          <Met l="현장 저장" v={ssDiff ? "현장에서 저장함" : st.ss_known !== null && st.ss_telemetry !== null ? "단말과 같음" : "-"}
+            h={<>{ssDiff ? "단말 보고의 저장 번호가 서버 기준과 다름" : "현장에서 저장하면 여기에 표시됩니다"}<Detail>저장 번호 기준 {str(st.ss_known)} / 보고 {str(st.ss_telemetry)}</Detail></>} cls={ssDiff ? "w" : ""} />
+          <Met l="대기 중 요청" v={pending ? `${kindName(pending.kind)} — 응답 대기` : "없음"}
+            h={pending ? <>{`시도 ${pending.attempts}/3 · 보냄 ${localTime(pending.sent_at)}`}<Detail>명령 번호 {pending.seq}</Detail></> : "30초 안에 응답이 없으면 다시 보냅니다(최대 3회)"} cls={pending ? "w" : ""} />
+          <Met l="마지막 결과" v={resultLabel(st.last_result)}
+            h={<>{localTime(st.last_result_at)}{st.last_result && st.last_result !== "OK" && <Detail>결과 값 {st.last_result}</Detail>}</>}
+            cls={st.last_result && st.last_result !== "OK" ? "a" : st.last_result === "OK" ? "k" : ""} />
         </div>
 
         <div className="bar2">
           <button type="button" className="btn" disabled={!canRead || !!pending || busy} onClick={doRead}
-            title={canRead ? "SETTINGS_GET — 25개 값·표 조건·현장 스위치를 한 번에" : !online ? "오프라인 — 단말이 다시 접속해야 읽을 수 있다" : "읽기는 승인 대기(PENDING)·운영(ACTIVE) 단말만"}>
+            title={canRead ? "25개 값·1년 스케줄 조건·현장 스위치를 한 번에 읽어 옵니다" : !online ? "오프라인 — 단말이 다시 접속해야 읽을 수 있습니다" : "읽기는 승인 대기·운영 단말만 됩니다"}>
             단말에서 읽기
           </button>
-          <button type="button" className="btn pri" disabled={!!writeBlock || busy} onClick={doWrite} title={writeBlock ?? "SETTINGS_SET — 25개 전부(+ 표 조건을 고르면 tbl)"}>
+          <button type="button" className="btn pri" disabled={!!writeBlock || busy} onClick={doWrite} title={writeBlock ?? "25개 값을 모두 보냅니다(표 조건을 고르면 1년 스케줄 조건도)"}>
             단말에 쓰기{dirty ? ` (${dirtyKeys.length}개 바뀜${withTbl ? " + 표" : ""})` : withTbl ? " (표 조건)" : ""}
           </button>
           {dirty && <button type="button" className="btn" onClick={discardEdits}>편집 취소</button>}
           <span className="sp" />
-          <span className="cap">{dirty && <><span className="mk edit" /> 편집, 안 보냄 · </>}쓰기 = 적용 + Flash 저장 한 번에(LTE)</span>
+          <span className="cap">{dirty && <><span className="mk edit" /> 편집, 안 보냄 · </>}보내면 단말이 바로 적용하고 저장합니다</span>
         </div>
         {writeBlock && (dirty || withTbl) && <div className="cap c-warn">쓰기 막힘: {writeBlock}</div>}
-        {!canRead && <div className="cap c-warn">이 단말은 {dev.state} — 읽기는 PENDING·ACTIVE, 쓰기는 ACTIVE 만.</div>}
-        {canRead && state === "PENDING" && values && <div className="cap">승인 대기 단말 — 읽기만 된다. 승인(ACTIVE) 뒤에 쓸 수 있다.</div>}
+        {!canRead && <div className="cap c-warn">이 단말은 {stateLabel(dev.state)}{online ? "" : " · 오프라인"} 상태입니다 — 읽기는 승인 대기·운영 단말, 보내기는 운영 단말만 됩니다(둘 다 접속 중일 때).</div>}
+        {canRead && state === "PENDING" && values && <div className="cap">승인 대기 단말 — 읽기만 됩니다. 승인한 뒤에 보낼 수 있습니다.</div>}
 
         {sync === "unknown" && (
           <div className="confirm">
-            <b>읽지 않음</b> — 서버는 이 단말의 운전 설정을 아직 모른다. 단말은 출하 기본값이나 현장 PC 도구로 넣은 값으로 이미 운전 중이다.
-            기본값을 가정해 쓰면 현장 설정을 덮어쓰므로 <b>먼저 단말에서 읽는다.</b> 아래 회색 값은 펌웨어 기본값(참고)일 뿐 단말 값이 아니다.
+            <b>읽지 않음</b> — 서버는 이 단말의 운전 설정을 아직 모릅니다. 단말은 출하 기본값이나 현장 PC 도구로 넣은 값으로 이미 운전 중입니다.
+            기본값을 가정해 보내면 현장 설정을 덮어쓰므로 <b>먼저 단말에서 읽습니다.</b> 아래 회색 값은 펌웨어 기본값(참고)일 뿐 단말 값이 아닙니다.
           </div>
         )}
         {sync === "local_saved" && (
           <div className="confirm">
-            <b>현장에서 저장함</b> — Telemetry 의 스케줄 저장 번호(ss {str(st.ss_telemetry)})가 서버 기준(ss {str(st.ss_known)})과 다르다.
-            현장에서 PC 도구·OLED·엔코더로 저장했다. 값이 바뀌었는지는 <b>다시 읽어야</b> 안다(자동으로 읽지 않는다).
+            <b>현장에서 저장함</b> — 단말이 보고한 저장 번호가 서버 기준과 다릅니다.
+            현장에서 PC 도구·단말 화면·다이얼로 저장한 것입니다. 값이 바뀌었는지는 <b>다시 읽어야</b> 압니다(자동으로 읽지 않습니다).
+            <Detail>저장 번호 보고 {str(st.ss_telemetry)} / 서버 기준 {str(st.ss_known)}</Detail>
             <div className="row"><button type="button" className="btn pri" disabled={!canRead || !!pending || busy} onClick={doRead}>다시 읽기</button></div>
           </div>
         )}
         {sync === "device_changed" && (
           <div className="confirm">
-            <b>단말과 다름</b> — 읽어 보니 단말 값이 DB 와 다르다(sh {str(st.sh_device)} ≠ {str(st.sh_db)}). 서버는 자동으로 덮어쓰지 않는다. 어느 쪽을 기준으로 할지 고른다.
+            <b>단말과 다름</b> — 읽어 보니 단말 값이 서버 값과 다릅니다. 서버는 자동으로 덮어쓰지 않습니다. 어느 쪽을 기준으로 할지 고릅니다.
+            <Detail><span className="mono">설정 지문 단말 {str(st.sh_device)} / 서버 {str(st.sh_db)}</span></Detail>
             <div style={{ overflowX: "auto", marginTop: 8 }}>
               <table className="mini">
-                <thead><tr><th>항목</th><th className="n">서버(DB)</th><th className="n">단말</th></tr></thead>
+                <thead><tr><th>항목</th><th className="n">서버</th><th className="n">단말</th></tr></thead>
                 <tbody>
                   {st.diff.map((d) => (
-                    <tr key={d.key}><td>{itemOf(d.key)?.label ?? d.key} <small className="muted">{d.key}</small></td>
+                    <tr key={d.key}><td>{itemOf(d.key)?.label ?? d.key}</td>
                       <td className="n">{fmtVal(itemOf(d.key), d.db)}</td><td className="n c-alarm">{fmtVal(itemOf(d.key), d.device)}</td></tr>
                   ))}
                   {st.diff.length === 0 && <tr><td colSpan={3} className="muted">값 차이 목록 없음</td></tr>}
@@ -692,27 +715,31 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
               </table>
             </div>
             <div className="row">
-              <button type="button" className="btn" disabled={busy} onClick={doAccept} title="POST …/settings/accept — DB ← 단말 보고값">단말 값 받아들이기</button>
-              <button type="button" className="btn pri" disabled={busy || state !== "ACTIVE" || !!pending || !online} onClick={doRevert} title={online ? "POST …/settings/revert — DB 값을 SETTINGS_SET" : "오프라인 — 단말이 다시 접속해야 보낼 수 있다"}>서버 값으로 되돌리기</button>
+              <button type="button" className="btn" disabled={busy} onClick={doAccept} title="단말이 보고한 값을 서버 값으로 삼습니다">단말 값 받아들이기</button>
+              <button type="button" className="btn pri" disabled={busy || state !== "ACTIVE" || !!pending || !online} onClick={doRevert} title={online ? "서버 값을 단말에 다시 보냅니다" : "오프라인 — 단말이 다시 접속해야 보낼 수 있습니다"}>서버 값으로 되돌리기</button>
             </div>
           </div>
         )}
 
         {sent && (
           <div className="recv">
-            <div>발행함: <b>{sent.label} · {sent.kind} 명령 번호 {sent.r.seq}</b> · {localTime(sent.r.sent_at)}
-              {sent.r.sh_expected ? <> · 예상 sh <span className="mono">{sent.r.sh_expected}</span></> : null}
-              {sent.r.payload_bytes ? ` · ${sent.r.payload_bytes}B` : ""}</div>
+            <div>보냄: <b>{sent.label}</b> · {localTime(sent.r.sent_at)}</div>
             <div>단말 응답: {sentDone
-              ? <b className={st.last_result === "OK" ? "c-ok" : "c-alarm"}>{st.last_result ?? "-"} · {syncLabel(sync)} ({localTime(st.last_result_at)})</b>
-              : <b className="c-warn">대기 중 — 단말은 다음 송신 뒤 받을 수 있음(최대 ti 약 {tiMin}분). 3초마다 확인{pending ? ` · 시도 ${pending.attempts}/3` : ""}</b>}
+              ? <b className={st.last_result === "OK" ? "c-ok" : "c-alarm"}>{resultLabel(st.last_result)} · {syncLabel(sync)} ({localTime(st.last_result_at)})</b>
+              : <b className="c-warn">대기 중 — 단말은 다음 보고 뒤에 받습니다(보고 주기 약 {tiMin}분). 3초마다 확인합니다{pending ? ` · 시도 ${pending.attempts}/3` : ""}</b>}
             </div>
+            <Detail>
+              <span className="mono">{sent.kind} · 명령 번호 {sent.r.seq}
+                {sent.r.sh_expected ? ` · 예상 설정 지문 ${sent.r.sh_expected}` : ""}
+                {sent.r.payload_bytes ? ` · ${sent.r.payload_bytes}B` : ""}
+                {sentDone && st.last_result ? ` · 결과 ${st.last_result}` : ""}</span>
+            </Detail>
           </div>
         )}
         {actMsg && <div className="okl">{actMsg}</div>}
         {actErr && <div className="err">{actErr}</div>}
         {serverErr.__rule && <div className="err">{serverErr.__rule}</div>}
-        {rules.map((r) => <div key={r.id} className="err">규칙 {r.id}: {r.text}</div>)}
+        {rules.map((r) => <div key={r.id} className="err">규칙에 맞지 않음: {r.text}</div>)}
       </Card>
 
       {/* ---------- 설정 그룹(스키마 순서) ---------- */}
@@ -736,17 +763,17 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
 
       {/* ---------- 1년 스케줄 ---------- */}
       <Card className="full" title="1년 스케줄"
-        meta={t ? <span>근거: {t.region || "-"} · {(t.lat_e6 / 1e6).toFixed(4)}, {(t.lon_e6 / 1e6).toFixed(4)} · 보정 {signed(t.on)} / {signed(t.off)}분 · {TBL_SRC[t.src] ?? `src ${t.src}`}</span> : "단말 표 정보 없음(읽지 않음)"}>
-        <div className="cap">표(372일)는 주고받지 않는다. 조건(지역·좌표·보정)만 보내면 단말이 같은 식으로 직접 계산하고 CRC 가 같을 때만 저장한다.</div>
+        meta={t ? <span>근거: {t.region || "-"} · {(t.lat_e6 / 1e6).toFixed(4)}, {(t.lon_e6 / 1e6).toFixed(4)} · 보정 {signed(t.on)} / {signed(t.off)}분 · {TBL_SRC[t.src] ?? "알 수 없음"}</span> : "단말 표 정보 없음(읽지 않음)"}>
+        <div className="cap">표(372일)는 주고받지 않습니다. 조건(지역·좌표·보정)만 보내면 단말이 같은 식으로 직접 계산하고, 서버 계산과 같을 때만 저장합니다.</div>
         {t ? (
           <div className="grid4">
             <Met l="지역" v={t.region || "-"} h={`${utf8Bytes(t.region)}/${regionMax}B`} />
-            <Met l="표 계산 좌표" v={`${(t.lat_e6 / 1e6).toFixed(6)}, ${(t.lon_e6 / 1e6).toFixed(6)}`} h="설치 좌표(CONFIG lat/lon)와 다를 수 있다" />
-            <Met l="보정 (점등 / 소등)" v={`${signed(t.on)} / ${signed(t.off)}분`} h={`만든 쪽: ${TBL_SRC[t.src] ?? t.src} (src ${t.src}) · ss ${t.ss}`} />
-            <Met l="표 CRC (단말 / 서버 계산)" v={<span className="mono">{t.crc} / {str(t.crc_expected)}</span>}
-              h={t.matches === null ? "비교 불가" : t.matches ? "✓ 조건대로 만든 표" : "✗ 현장에서 손댄 표"} cls={t.matches === false ? "a" : t.matches ? "k" : ""} />
+            <Met l="표 계산 좌표" v={`${(t.lat_e6 / 1e6).toFixed(6)}, ${(t.lon_e6 / 1e6).toFixed(6)}`} h="단말 설치 좌표와 다를 수 있습니다" />
+            <Met l="보정 (점등 / 소등)" v={`${signed(t.on)} / ${signed(t.off)}분`} h={<>만든 쪽: {TBL_SRC[t.src] ?? "알 수 없음"}<Detail>src {t.src} · 저장 번호 {t.ss}</Detail></>} />
+            <Met l="표 확인 (단말 / 서버 계산)" v={t.matches === null ? "비교 불가" : t.matches ? "✓ 조건대로 만든 표" : "✗ 현장에서 손댄 표"}
+              h={<Detail><span className="mono">표 CRC 단말 {t.crc} / 서버 계산 {str(t.crc_expected)}</span></Detail>} cls={t.matches === false ? "a" : t.matches ? "k" : ""} />
           </div>
-        ) : <div className="muted">아직 단말에서 읽지 않아 표 조건을 모른다.</div>}
+        ) : <div className="muted">아직 단말에서 읽지 않아 1년 스케줄 조건을 모릅니다.</div>}
 
         <div className="form5">
           <label><span>지역 · <b className={utf8Bytes(tbl.region) > regionMax ? "c-alarm" : ""}>{utf8Bytes(tbl.region)}/{regionMax}B</b></span>
@@ -777,20 +804,21 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
         </div>
         <div className="bar2">
           <button type="button" className="btn" onClick={doPreview} disabled={!tbl.lat || !tbl.lon}>미리보기</button>
-          <label className="chk2" title="체크하면 SETTINGS_SET 에 tbl(조건 + 서버 계산 CRC)을 싣는다. 안 하면 표는 그대로 둔다">
+          <label className="chk2" title="체크하면 1년 스케줄 조건도 함께 보냅니다. 안 하면 단말의 표는 그대로 둡니다">
             <input type="checkbox" checked={withTbl} disabled={!values} onChange={(e) => setWithTbl(e.target.checked)} />표 조건도 함께 쓰기
           </label>
           {tblTouched.current && <button type="button" className="btn sm" onClick={resetTbl}>단말 값으로</button>}
-          {withTbl && !tblOk && <span className="cap c-alarm">조건을 고쳐야 쓸 수 있다</span>}
+          {withTbl && !tblOk && <span className="cap c-alarm">조건을 고쳐야 보낼 수 있습니다</span>}
           <span className="sp" />
-          <span className="cap">보정은 표에 들어가고, 시작/종료 Offset 은 운전 중에 더한다(별개). 연도 입력 없음.</span>
+          <span className="cap">보정은 표에 들어가고, 시작/종료 Offset 은 운전 중에 더합니다(별개). 연도는 넣지 않습니다.</span>
         </div>
         {prevErr && <div className="err">{prevErr}</div>}
         {prev && (
           <>
             <div className="cap">
-              미리보기 표 CRC <span className="mono">{prev.crc}</span> (lat_e6 {prev.lat_e6}, lon_e6 {prev.lon_e6})
-              {t && (prev.crc === t.crc ? <b className="c-ok"> — 지금 단말 표와 같다</b> : <b className="c-warn"> — 지금 단말 표({t.crc})와 다르다. 쓰면 표가 바뀐다</b>)}
+              미리보기 결과
+              {t && (prev.crc === t.crc ? <b className="c-ok"> — 지금 단말 표와 같습니다</b> : <b className="c-warn"> — 지금 단말 표와 다릅니다. 보내면 표가 바뀝니다</b>)}
+              <Detail><span className="mono">표 CRC 미리보기 {prev.crc}{t ? ` / 단말 ${t.crc}` : ""} · 좌표 {prev.lat_e6}, {prev.lon_e6}</span></Detail>
             </div>
             <div style={{ maxHeight: 360, overflow: "auto" }}>
               <table className="mini">
@@ -807,7 +835,7 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
       </Card>
 
       {/* ---------- 현장 스위치(읽기 전용) ---------- */}
-      <Card title="현장 스위치 (읽기 전용)" meta="SETTINGS dev · 서버가 바꿀 수 없다">
+      <Card title="현장 스위치 (읽기 전용)" meta="서버에서 바꿀 수 없습니다">
         {st.dev ? (
           <>
             <div className="dips">
@@ -816,8 +844,9 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
                 return <span key={i} className={on ? "on" : ""} title={`DIP${i + 1} ${on ? "ON" : "OFF"}${i === 3 ? " — 다단계 밝기" : ""}`}><b>DIP{i + 1}</b>{on ? "ON" : "OFF"}</span>;
               })}
             </div>
-            <div className="cap">dip = {dip} (DIP1 = bit0 … DIP8 = bit7, ON = 1). DIP4 = 다단계 밝기 사용.</div>
-            <Met l="배터리 계통" v={bat ? `${bat}V` : "아직 모름"} h={bat ? `${bat}V 차단/복귀 전압이 쓰인다` : "MPPT 에서 아직 못 받음(0)"} />
+            <div className="cap">DIP4 = 다단계 밝기 사용.</div>
+            <Detail><span className="mono">dip = {dip} (DIP1 = bit0 … DIP8 = bit7, ON = 1)</span></Detail>
+            <Met l="배터리 계통" v={bat ? `${bat}V` : "아직 모름"} h={bat ? `${bat}V 차단/복귀 전압이 쓰입니다` : "충전 제어기(MPPT)에서 아직 못 받음"} />
           </>
         ) : <div className="muted">읽지 않음</div>}
       </Card>
@@ -831,9 +860,13 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
               {(hist ?? []).map((h, i) => (
                 <tr key={i}>
                   <td title={h.changed_at}>{localTime(h.changed_at)}</td><td>{byText(h.by)}</td>
-                  <td title={h.key}>{itemOf(h.key)?.label ?? h.key}</td>
-                  <td className="n">{fmtVal(itemOf(h.key), h.old)} → <b>{fmtVal(itemOf(h.key), h.new)}</b></td>
-                  <td className="wrap">{str(h.note)}</td>
+                  <td>{h.key === "tbl" ? "스케줄 표" : itemOf(h.key)?.label ?? h.key}</td>
+                  {h.key === "tbl" /* 표는 JSON 이라 결과만 — 원문은 자세히(문제점 43번) */
+                    ? <td className="n">{tblText(h.old)} → <b>{tblText(h.new)}</b></td>
+                    : <td className="n">{fmtVal(itemOf(h.key), h.old)} → <b>{fmtVal(itemOf(h.key), h.new)}</b></td>}
+                  {h.key === "tbl" /* 표 내용(JSON)은 비고에 온다 — 지역 이름만, 원문은 자세히 */
+                    ? <td className="wrap">{tblText(parseJson(h.note))}<Detail><code className="payload">{str(h.note)}</code></Detail></td>
+                    : <td className="wrap">{str(h.note)}</td>}
                 </tr>
               ))}
               {hist && hist.length === 0 && <tr><td colSpan={5} className="muted">이력 없음</td></tr>}
@@ -844,16 +877,16 @@ function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: Setti
       </Card>
 
       {/* ---------- 통신 기록 ---------- */}
-      <Card className="full" title="통신 기록" meta="이 단말의 SETTINGS 이벤트 · cmd / result">
+      <Card className="full" title="통신 기록" meta="이 단말과 운전 설정을 주고받은 기록">
         <ul className="log">
           {ev.map((e) => (
-            <li key={e.id} title={JSON.stringify(e.payload)}>
+            <li key={e.id}>
               <span className="t">{localTime(e.received_at)}</span>
-              <span className={e.kind.endsWith("_GET") || e.kind.endsWith("_SET") ? "dn" : "up"}>{e.kind}</span>
-              <span className="body">{eventSummary(e.kind, e.payload)}</span>
+              <span className={e.kind.endsWith("_GET") || e.kind.endsWith("_SET") ? "dn" : "up"}>{kindName(e.kind)}</span>
+              <span className="body"><Detail>{e.kind} · {eventSummary(e.kind, e.payload)}</Detail></span>
             </li>
           ))}
-          {ev.length === 0 && <li><span className="t">-</span><span /><span className="muted">SETTINGS 이벤트 없음</span></li>}
+          {ev.length === 0 && <li><span className="t">-</span><span /><span className="muted">기록 없음</span></li>}
         </ul>
       </Card>
     </>
@@ -877,13 +910,13 @@ export default function DeviceConfig({ tick, onSelect }: { tick: number; onSelec
         <DevicePicker selected={uuid} tick={tick} />
       </div>
       <div className="cfgr">
-        {error && <Card title="운전 설정" className="full"><div className="err">항목 정의(GET /api/settings/schema)를 못 읽었다 — {error}</div></Card>}
+        {error && <Card title="운전 설정" className="full"><div className="err">설정 항목 정보를 불러오지 못했습니다 — {error}</div></Card>}
         {!error && !schema && <Card title="운전 설정" className="full"><div className="muted">항목 정의 불러오는 중…</div></Card>}
         {schema && !uuid && (
-          <Card title="운전 설정" className="full" meta={`ui_items ${schema.version}`}>
+          <Card title="운전 설정" className="full">
             <div className="ph">
-              <b>왼쪽에서 단말을 고른다</b>
-              <span>서버는 새 단말의 운전 설정을 모른다 — 고른 뒤 "단말에서 읽기"로 25개 값과 1년 스케줄 조건을 받아 온다(읽고 나서 쓴다).</span>
+              <b>왼쪽에서 단말을 고릅니다</b>
+              <span>서버는 새 단말의 운전 설정을 모릅니다 — 고른 뒤 "단말에서 읽기"로 25개 값과 1년 스케줄 조건을 받아 옵니다(읽고 나서 보냅니다).</span>
             </div>
           </Card>
         )}

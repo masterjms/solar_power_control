@@ -6,9 +6,15 @@ import { api, Device, GeoResult, Profile, errorText } from "./api";
 import { localTime, relTime, str } from "./format";
 import { LocationPicker } from "./KakaoMap";
 import { RegionTree, TreeNode, isLeaf, pathOf, useRegions } from "./Tree";
-import { Met, OnlineMark, SiteHint, StateBadge } from "./ui";
+import { Met, OnlineMark, SiteHint, StateBadge, stateLabel } from "./ui";
 
 const SITE_MAX = 24;
+
+/** 저장·변경 안내에 보이는 항목 이름(필드명 대신). */
+const FIELD_LABEL: Record<string, string> = {
+  site: "시설명", node_id: "지역", address: "주소", lat: "위도", lon: "경도", profile_id: "통신 주기 설정",
+};
+const fieldNames = (keys: string[]) => keys.map((k) => FIELD_LABEL[k] ?? k).join(", ");
 
 interface Props {
   uuid: string;
@@ -157,7 +163,7 @@ export default function Approval({ uuid, onChanged, onClose }: Props) {
     setBusy(true);
     try {
       await api.patchConfig(uuid, changed);
-      setSaveMsg(`저장함 — ${Object.keys(changed).join(", ")}`);
+      setSaveMsg(`저장함 — ${fieldNames(Object.keys(changed))}`);
       await load(true);
       onChanged();
     } catch (e) {
@@ -172,16 +178,16 @@ export default function Approval({ uuid, onChanged, onClose }: Props) {
     setStateErr(null);
     let reason: string | null = null;
     if (to === "REJECTED") {
-      const p = prompt(`${dev!.site ?? uuid}\n거절 사유 — REGISTER_ACK 로 단말에도 내려간다`);
+      const p = prompt(`${dev!.site ?? uuid}\n거절 사유 — 승인 정보와 함께 단말에도 전달됩니다`);
       if (p === null) return;
       reason = p.trim() || null;
     }
-    if (to === "RETIRED" && !confirm(`${dev!.site ?? uuid}\n폐기하면 단말의 승인 정보(REGISTER_ACK retain)를 지웁니다. 계속할까요?`)) return;
-    if (to === "ACTIVE" && !confirm(`${dev!.site ?? uuid}\n${savedLeaf ? pathOf(savedLeaf) : ""}\n승인합니다. 단말은 다음 송신 때 받습니다.`)) return;
+    if (to === "RETIRED" && !confirm(`${dev!.site ?? uuid}\n폐기하면 단말의 승인 정보를 지웁니다. 계속할까요?`)) return;
+    if (to === "ACTIVE" && !confirm(`${dev!.site ?? uuid}\n${savedLeaf ? pathOf(savedLeaf) : ""}\n승인합니다. 단말은 다음 보고 때 받습니다.`)) return;
     setBusy(true);
     try {
       const r = await api.patchState(uuid, { state: to, ...(reason ? { reason } : {}) });
-      setStateMsg(`${to === "ACTIVE" ? "승인" : to === "REJECTED" ? "거절" : "폐기"}함 — 단말에 REGISTER_ACK ${r.published ? "보냄" : "못 보냄(브로커 끊김, 다음 접속 때 자동)"}`);
+      setStateMsg(`${to === "ACTIVE" ? "승인" : to === "REJECTED" ? "거절" : "폐기"}함 — ${r.published ? "단말에 승인 정보를 보냈습니다" : "단말 통신 서버와 연결이 끊겨 지금은 못 보냈습니다. 다음 접속 때 자동 전달됩니다"}`);
       onChanged();
       await load(false);
     } catch (e) {
@@ -201,7 +207,7 @@ export default function Approval({ uuid, onChanged, onClose }: Props) {
       <div className="db appr">
         {error && <div className="err">{error}</div>}
 
-        <Step no={1} title="단말기 정보" sub="처음 접속(REGISTER) 때 단말이 보낸 값" done>
+        <Step no={1} title="단말기 정보" sub="처음 접속 때 단말이 보낸 값" done>
           <div className="grid2">
             <Met l="모델" v={str(dev.device_model)} />
             <Met l="펌웨어" v={str(dev.fw)} />
@@ -237,7 +243,7 @@ export default function Approval({ uuid, onChanged, onClose }: Props) {
           )}
           {results && results.length === 0 && <div className="cap">검색 결과 없음</div>}
           <div className="form2" style={{ marginTop: 8 }}>
-            <label className="w2">주소 address<input value={address} onChange={(e) => (setAddress(e.target.value), setTouched(true))} /></label>
+            <label className="w2">주소<input value={address} onChange={(e) => (setAddress(e.target.value), setTouched(true))} /></label>
           </div>
           <div className="cap" style={{ margin: "8px 0 4px" }}>지도 위치 보정 — 핀을 끌거나 지도를 누르면 좌표가 바뀌고 주소·법정동을 다시 찾는다.</div>
           <LocationPicker lat={lat} lon={lon} onMove={onPin} />
@@ -248,7 +254,7 @@ export default function Approval({ uuid, onChanged, onClose }: Props) {
               <div className="row"><button type="button" className="btn pri" onClick={() => addRegion(suggest)}>트리에 추가하고 고르기</button></div>
             </div>
           )}
-          <h4 style={{ marginTop: 12 }}>지역 (법정동) <span>{leaf ? pathOf(leaf) : "미선택"}{leaf?.r.grp ? ` · grp ${leaf.r.grp}` : ""}</span></h4>
+          <h4 style={{ marginTop: 12 }}>지역 (법정동) <span>{leaf ? pathOf(leaf) : "미선택"}{leaf?.r.grp ? ` · 그룹 ${leaf.r.grp}` : ""}</span></h4>
           <input type="search" placeholder="법정동 찾기" aria-label="트리 필터" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
           {treeErr && <div className="err">{treeErr}</div>}
           <RegionTree tree={tree} selected={nodeId} canSelect={isLeaf} filter={filter} className="short"
@@ -256,9 +262,9 @@ export default function Approval({ uuid, onChanged, onClose }: Props) {
             empty={list ? "지역이 없습니다. 주소 검색이나 지도로 법정동을 추가한다." : "불러오는 중…"} />
         </Step>
 
-        <Step no={3} title="통신 주기 설정" sub="보고 주기(ti)·keepalive(ka)" done={profileId === dev.profile_id}>
+        <Step no={3} title="통신 주기 설정" sub="보고 주기 · 접속 유지 주기" done={profileId === dev.profile_id}>
           <select value={profileId ?? ""} onChange={(e) => (setProfileId(Number(e.target.value)), setTouched(true))} style={{ width: "100%" }}>
-            {profiles.map((p) => <option key={p.id} value={p.id}>{p.name} (ti {p.ti}초 / ka {p.ka}초)</option>)}
+            {profiles.map((p) => <option key={p.id} value={p.id}>{p.name} (보고 {p.ti}초 / 접속 유지 {p.ka}초)</option>)}
             {!profiles.some((p) => p.id === dev.profile_id) && <option value={dev.profile_id}>#{dev.profile_id} {dev.profile_name ?? ""}</option>}
           </select>
         </Step>
@@ -267,16 +273,16 @@ export default function Approval({ uuid, onChanged, onClose }: Props) {
           <div className="bar2">
             <button type="button" className="btn pri" disabled={!dirty || busy} onClick={save}>설정 변경</button>
             {dirty && <button type="button" className="btn" onClick={() => fill(dev)}>되돌리기</button>}
-            <span className="cap">{dirty ? `바뀜: ${Object.keys(changed).join(", ")}` : "바뀐 것 없음"}</span>
+            <span className="cap">{dirty ? `바뀜: ${fieldNames(Object.keys(changed))}` : "바뀐 것 없음"}</span>
           </div>
           {saveMsg && <div className="okl">{saveMsg}</div>}
           {saveErr && <div className="err">{saveErr}</div>}
         </Step>
 
-        <Step no={5} title="승인 상태" sub={`지금: ${dev.state}`} done={dev.state !== "PENDING"}>
+        <Step no={5} title="승인 상태" sub={`지금: ${stateLabel(dev.state)}`} done={dev.state !== "PENDING"}>
           <div className="grid2">
-            <Met l="상태" v={<StateBadge state={dev.state} />} h={dev.state === "PENDING" ? "승인 전에는 Telemetry 를 보내지 않는다" : str(dev.state_reason)} />
-            <Met l="설치 위치(저장된 값)" v={savedLeaf ? savedLeaf.r.name : "미배정"} h={`${str(dev.site)}${dev.grp ? ` · grp ${dev.grp}` : ""}`} />
+            <Met l="상태" v={<StateBadge state={dev.state} />} h={dev.state === "PENDING" ? "승인 전에는 단말이 보고를 보내지 않습니다" : str(dev.state_reason)} />
+            <Met l="설치 위치(저장된 값)" v={savedLeaf ? savedLeaf.r.name : "미배정"} h={`${str(dev.site)}${dev.grp ? ` · 그룹 ${dev.grp}` : ""}`} />
           </div>
           <div className="bar2" style={{ marginTop: 12 }}>
             <button type="button" className="btn pri" disabled={dev.state !== "PENDING" || !!approveBlock || busy} onClick={() => setState("ACTIVE")} title={approveBlock ?? ""}>승인</button>

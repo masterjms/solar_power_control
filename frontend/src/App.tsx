@@ -16,7 +16,7 @@ import GroupControl from "./GroupControl";
 import Alarms from "./Alarms";
 import Schedule from "./Schedule";
 import { logout } from "./Login";
-import { nf } from "./ui";
+import { nf, MeCtx } from "./ui";
 
 const REFRESH_MS = 10_000;
 
@@ -132,7 +132,7 @@ export default function App() {
     setTheme(t);
   }
 
-  const pending = counts?.PENDING ?? 0;
+  const pending = counts?.PENDING_ONLINE ?? counts?.PENDING ?? 0; // 켜져 있는 대기만(문제점 45번)
   const total = counts ? counts.PENDING + counts.ACTIVE + counts.SUSPENDED + counts.REJECTED + counts.RETIRED : null;
   // 서버 이상이면 무엇이 문제인지 그 자리에 적는다(문제점 41번). 정상이면 "서버 정상" 한 마디.
   const problems: string[] = [];
@@ -144,6 +144,7 @@ export default function App() {
   const cur = PAGES.find((p) => p.id === page)!;
 
   return (
+    <MeCtx.Provider value={me}>
     <div className="shell">
       <aside className="side">
         <div className="logo"><b>Solar Light Control</b><span>태양광 조명 통합관제</span></div>
@@ -174,22 +175,17 @@ export default function App() {
           </div>
           <span className="sp" />
           {isSuper && health?.test_account_enabled && (
-            <span className="pill warn" title="MQTT_TEST_ACCOUNT_ENABLED — 1차 공용 시험 계정(solarlte-test)이 아직 열려 있음. 운영 전 닫을 것">
-              <span className="dot" style={{ background: "var(--warn)" }} />공용 시험 계정 열림
+            <span className="pill warn" title="모든 단말이 같이 쓰는 시험용 접속 계정이 열려 있습니다 — 운영 전에 닫으세요(서버 상태 화면)">
+              <span className="dot" style={{ background: "var(--warn)" }} />시험용 접속 계정 열림
             </span>
           )}
           {health && health.telemetry_dropped > 0 && (
-            <span className="pill alarm" title="telemetry_dropped">Telemetry 유실 {nf(health.telemetry_dropped)}</span>
+            <span className="pill alarm" title="서버가 받은 보고를 저장하지 못한 건수 — 서버 상태 화면 참고">보고 저장 실패 {nf(health.telemetry_dropped)}건</span>
           )}
           <span className={`pill ${problems.length ? "alarm" : ""}`} title="자세한 내용은 서버 상태 화면">
             <span className="dot" style={{ background: serverOk ? "var(--ok)" : problems.length ? "var(--alarm)" : "var(--off)" }} />
             {serverOk ? "서버 정상" : problems.length ? problems.join(" · ") : "서버 확인 중"}
           </span>
-{isSuper && (
-                    <span className="pill" title="활성 HMAC 키(ADR-003)">
-            HMAC {health ? (health.hmac_keys?.length ? health.hmac_keys.join(", ") : "없음") : "-"}
-          </span>
-          )}
           <span className={`pill ${me?.role === "super_admin" ? "role" : ""}`}
             title={meErr ?? (me?.regions?.length ? `맡은 시·도: ${me.regions.join(", ")}` : "전 지역") + (me?.expires_at ? ` · ${new Date(me.expires_at).toLocaleDateString("ko-KR")} 까지` : "")}>
             {me ? `${me.user} · ${ROLE_LABEL[me.role] ?? me.role}${me.regions?.length ? ` · ${me.regions.join("·")}` : ""}` : meErr ? "사용자 확인 실패" : "사용자 -"}
@@ -243,6 +239,7 @@ export default function App() {
         )}
       </aside>
     </div>
+    </MeCtx.Provider>
   );
 }
 

@@ -11,7 +11,7 @@ export function CitySelect({ value, onPick, disabled }: { value: string; onPick:
         const c = cityOf(e.target.value);
         if (c) onPick(c);
       }}>
-      {!cur && <option value="">시·군을 고른다</option>}
+      {!cur && <option value="">시·군을 고르세요</option>}
       {cur && !known && <option value="__cur">지금 값: {cur} (목록 밖)</option>}
       {CITY_GROUPS.map(([g, cs]) => (
         <optgroup key={g} label={g}>

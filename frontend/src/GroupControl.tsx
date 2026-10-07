@@ -4,7 +4,7 @@ import { ReactNode, useState } from "react";
 import { CommandTargetRef, DeviceCounts, Role } from "./api";
 import { CommandForm, CommandHistory, CommandResult } from "./Command";
 import { RegionTree, TreeSel, isLeaf, leavesOf, pathOf, useRegions } from "./Tree";
-import { Card, nf } from "./ui";
+import { Card, Detail, nf } from "./ui";
 
 interface Props {
   role: Role | null;
@@ -34,9 +34,9 @@ export default function GroupControl({ role, counts, tick, onSelect }: Props) {
       <>
         <div className="tpath">선택: <b>전체</b> (지역 배정과 무관하게 모든 단말)</div>
         <div className="grid2">
-          <div className="met"><div className="l">운영(ACTIVE)</div><div className="v">{nf(counts?.ACTIVE)}대</div><div className="h">등록 단말 {nf(total)}대</div></div>
-          <div className="met"><div className="l">보낼 주소</div><div className="v mono">iotlight/all/cmd</div><div className="h">1회</div></div>
+          <div className="met"><div className="l">운영</div><div className="v">{nf(counts?.ACTIVE)}대</div><div className="h">등록 단말 {nf(total)}대</div></div>
         </div>
+        <Detail><div className="topic">보낼 주소: <code>iotlight/all/cmd</code> 1회</div></Detail>
         {!isSuper && <div className="err">전체 명령은 최고관리자만 보낼 수 있다.</div>}
       </>
     );
@@ -49,11 +49,11 @@ export default function GroupControl({ role, counts, tick, onSelect }: Props) {
       <>
         <div className="tpath">선택: <b>{pathOf(node)}</b>{leaf && node.r.bjd_code ? ` (${node.r.bjd_code})` : ""}</div>
         <div className="grid2">
-          <div className="met"><div className="l">단말 (하위 전체)</div><div className="v">{nf(node.r.device_count)}대</div><div className="h">운영(ACTIVE) {nf(node.r.active_count)}대 — 이들에게만 보낸다</div></div>
-          <div className="met"><div className="l">보낼 주소</div>
-            <div className={leaf ? "v mono" : "v"}>{leaf ? `iotlight/group/${node.r.grp ?? "?"}/cmd` : `법정동 주소 ${nf(leaves.length)}개`}</div>
-            <div className="h">{leaf ? "그룹 주소로 1회" : "하위 법정동 주소마다 1회, 명령 번호는 하나"}</div></div>
+          <div className="met"><div className="l">단말 (하위 전체)</div><div className="v">{nf(node.r.device_count)}대</div><div className="h">운영 {nf(node.r.active_count)}대 — 이들에게만 보낸다</div></div>
         </div>
+        <Detail>
+          <div className="topic">보낼 주소: <code>{leaf ? `iotlight/group/${node.r.grp ?? "?"}/cmd` : `법정동 주소 ${nf(leaves.length)}개`}</code> — {leaf ? "그룹 주소로 1회" : "하위 법정동 주소마다 1회, 명령 번호는 하나"}</div>
+        </Detail>
       </>
     );
   }
@@ -71,15 +71,15 @@ export default function GroupControl({ role, counts, tick, onSelect }: Props) {
           onSelect={(s) => (setSel(s), setOnlySel(false))}
           filter={filter}
           className="tall"
-          root={{ label: "전체", selectable: isSuper, note: isSuper ? "전체 단말 (iotlight/all/cmd)" : "전체 명령은 최고관리자만" }}
+          root={{ label: "전체", selectable: isSuper, note: isSuper ? "전체 단말" : "전체 명령은 최고관리자만" }}
           empty={list ? "지역이 없습니다. '지역(법정동)'에서 추가한다." : "불러오는 중…"}
         />
-        <div className="cap">채널마다 마지막에 받은 명령 하나(개별·그룹·전체 경로 무관 — F/W 2026-09-27-9). 유지시간이 지나면 이전 명령으로 돌아가지 않고 스케줄로 복귀한다. 개별 명령은 단말 상세(드로어)에서.</div>
+        <div className="cap">채널마다 마지막에 받은 명령 하나만 따른다(개별·그룹·전체 어느 쪽으로 보냈든). 유지시간이 지나면 이전 명령으로 돌아가지 않고 스케줄로 복귀한다. 개별 명령은 단말 상세(드로어)에서.</div>
       </Card>
 
       <div className="col">
         <Card title="선택한 대상" meta={role ? (isSuper ? "최고관리자" : "관리자") : ""}>{summary}</Card>
-        <Card title="명령" meta="§3.10.7 COMMAND">
+        <Card title="명령">
           <CommandForm target={target} targetLabel={label} blocked={blocked} onSent={(c) => setSeq(c.seq)} />
         </Card>
       </div>

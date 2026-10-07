@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { ApiErrorException, Device, GeoResult, Health, Role, api, errorText } from "./api";
 import { relTime, str } from "./format";
 import { RegionTree, TreeSel, isLeaf, pathOf, useRegions } from "./Tree";
-import { Card, OnlineMark, StateBadge, nf } from "./ui";
+import { Card, Detail, OnlineMark, StateBadge, nf } from "./ui";
 
 interface Props {
   role: Role | null;
@@ -28,8 +28,8 @@ export default function Regions({ role, health, tick, onSelect }: Props) {
         <input type="search" placeholder="이름 · 법정동코드로 찾기" aria-label="트리 필터" value={filter} onChange={(e) => setFilter(e.target.value)} />
         {error && <div className="err">{error}</div>}
         <RegionTree tree={tree} selected={sel} onSelect={setSel} filter={filter} className="tall"
-          empty={list ? "아직 지역이 없습니다. 오른쪽 '법정동 추가'로 만든다." : "불러오는 중…"} />
-        <div className="cap">시도 &gt; 시군구 &gt; 법정동(동). 동만 그룹이다(group = 법정동코드 + 00). 숫자 = 그 아래 단말 수.</div>
+          empty={list ? "아직 지역이 없습니다. 오른쪽 '법정동 추가'로 만드세요." : "불러오는 중…"} />
+        <div className="cap">시도 &gt; 시군구 &gt; 법정동(동). 동 단위로 한 번에 명령을 보낼 수 있습니다. 숫자 = 그 아래 단말 수.</div>
       </Card>
 
       <div className="col">
@@ -37,7 +37,7 @@ export default function Regions({ role, health, tick, onSelect }: Props) {
           <NodeCard key={node.r.id} nodeId={node.r.id} tree={tree} isSuper={isSuper} tick={tick} onSelect={onSelect}
             onChanged={reload} onDeleted={() => (setSel(null), reload())} />
         ) : (
-          <Card title="선택한 지역"><div className="cap">왼쪽 트리에서 지역을 고른다.</div></Card>
+          <Card title="선택한 지역"><div className="cap">왼쪽 트리에서 지역을 고르세요.</div></Card>
         )}
         <AddRegion isSuper={isSuper} dev={health?.env === "dev"} onAdded={(id) => (reload(), setSel(id))} />
       </div>
@@ -79,7 +79,7 @@ function NodeCard({ nodeId, tree, isSuper, tick, onSelect, onChanged, onDeleted 
     setErr(null);
     try {
       await api.patchRegion(r.id, { name: n });
-      setMsg("이름을 바꿨다.");
+      setMsg("이름을 바꿨습니다.");
       onChanged();
     } catch (x) {
       setErr(errorText(x));
@@ -87,7 +87,7 @@ function NodeCard({ nodeId, tree, isSuper, tick, onSelect, onChanged, onDeleted 
   }
 
   async function remove() {
-    if (!confirm(`${pathOf(node)} 을(를) 지울까요?\n하위 지역이나 배정된 단말이 있으면 지워지지 않는다(409).`)) return;
+    if (!confirm(`${pathOf(node)} 을(를) 지울까요?\n하위 지역이나 배정된 단말이 있으면 지워지지 않습니다.`)) return;
     setMsg(null);
     setErr(null);
     try {
@@ -102,22 +102,24 @@ function NodeCard({ nodeId, tree, isSuper, tick, onSelect, onChanged, onDeleted 
     <Card title={r.name} meta={LEVEL_LABEL[r.level] ?? r.level}>
       <div className="tpath">경로: <b>{pathOf(node)}</b></div>
       <div className="grid2">
-        <div className="met"><div className="l">단말 (하위 전체)</div><div className="v">{nf(r.device_count)}대</div><div className="h">운영(ACTIVE) {nf(r.active_count)}대</div></div>
-        <div className="met"><div className="l">{leaf ? "법정동코드 / group" : "하위"}</div>
+        <div className="met"><div className="l">단말 (하위 전체)</div><div className="v">{nf(r.device_count)}대</div><div className="h">운영 {nf(r.active_count)}대</div></div>
+        <div className="met"><div className="l">{leaf ? "법정동코드" : "하위 지역"}</div>
           <div className="v mono">{leaf ? str(r.bjd_code) : `${nf(node.children.length)}개`}</div>
-          <div className="h">{leaf ? `group ${str(r.grp)} → iotlight/group/${str(r.grp)}/cmd` : "동이 아니라 그룹이 아니다"}</div></div>
+          <div className="h">{leaf ? "이 동 단말에 한 번에 명령을 보낼 수 있음" : "동 단위로 묶어 명령을 보냅니다"}</div></div>
         <div className="met"><div className="l">좌표</div><div className="v">{r.lat !== null ? `${r.lat}, ${r.lon}` : "-"}</div><div className="h">"오늘 밤" 계산 기준(없으면 서울)</div></div>
-        <div className="met"><div className="l">id</div><div className="v">{r.id}</div><div className="h">parent {str(r.parent_id)}</div></div>
       </div>
+      <Detail>
+        <div className="cap mono">id {r.id} · parent {str(r.parent_id)}{leaf ? ` · group ${str(r.grp)} → iotlight/group/${str(r.grp)}/cmd` : ""}</div>
+      </Detail>
       {isSuper ? (
         <form className="bar2" onSubmit={rename}>
           <input value={name} onChange={(e) => setName(e.target.value)} aria-label="이름" style={{ flex: 1, minWidth: 160 }} />
           <button type="submit" className="btn" disabled={!name.trim() || name.trim() === r.name}>이름 바꾸기</button>
           <button type="button" className="btn danger" onClick={remove} disabled={node.children.length > 0 || r.device_count > 0}
-            title={node.children.length > 0 || r.device_count > 0 ? "하위 지역이나 단말이 있으면 지울 수 없다" : ""}>삭제</button>
+            title={node.children.length > 0 || r.device_count > 0 ? "하위 지역이나 단말이 있으면 지울 수 없습니다" : ""}>삭제</button>
         </form>
       ) : (
-        <div className="cap">이름 바꾸기·삭제·추가는 최고관리자만 한다.</div>
+        <div className="cap">이름 바꾸기·삭제·추가는 최고관리자만 할 수 있습니다.</div>
       )}
       {msg && <div className="okl">{msg}</div>}
       {err && <div className="err">{err}</div>}
@@ -136,7 +138,7 @@ function NodeCard({ nodeId, tree, isSuper, tick, onSelect, onChanged, onDeleted 
                   <td>{d.remote_active ? <span className="badge b-blue">원격 {Math.ceil((d.remote_remaining_sec ?? 0) / 60)}분</span> : <span className="muted">-</span>}</td>
                 </tr>
               ))}
-              {devs && devs.length === 0 && <tr><td colSpan={5} className="muted">배정된 단말이 없다.</td></tr>}
+              {devs && devs.length === 0 && <tr><td colSpan={5} className="muted">배정된 단말이 없습니다.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -158,7 +160,7 @@ function AddRegion({ isSuper, dev, onAdded }: { isSuper: boolean; dev: boolean; 
   if (!isSuper) {
     return (
       <Card title="법정동 추가" meta="최고관리자">
-        <div className="cap">트리 편집은 최고관리자만 한다(§3.9.3 #9).</div>
+        <div className="cap">지역 편집은 최고관리자만 할 수 있습니다.</div>
       </Card>
     );
   }
@@ -187,7 +189,7 @@ function AddRegion({ isSuper, dev, onAdded }: { isSuper: boolean; dev: boolean; 
     setMsg(null);
     try {
       const r = await api.createRegionFromAddress({ pick: g });
-      setMsg(`${g.sido} > ${g.sigungu} > ${r.name} (${str(r.bjd_code)}) — 추가됨(이미 있으면 그 지역)`);
+      setMsg(`${g.sido} > ${g.sigungu} > ${r.name} (${str(r.bjd_code)}) — 추가했습니다(이미 있으면 그 지역)`);
       onAdded(r.id);
     } catch (x) {
       setErr(errorText(x));
@@ -198,8 +200,8 @@ function AddRegion({ isSuper, dev, onAdded }: { isSuper: boolean; dev: boolean; 
 
   async function manual(e: FormEvent) {
     e.preventDefault();
-    if (!/^\d{10}$/.test(man.bjd_code)) { setErr("법정동코드는 숫자 10자리"); return; }
-    if (!man.sido.trim() || !man.sigungu.trim() || !man.dong.trim()) { setErr("시도·시군구·법정동을 모두 넣는다"); return; }
+    if (!/^\d{10}$/.test(man.bjd_code)) { setErr("법정동코드는 숫자 10자리입니다"); return; }
+    if (!man.sido.trim() || !man.sigungu.trim() || !man.dong.trim()) { setErr("시도·시군구·법정동을 모두 넣으세요"); return; }
     const body: { sido: string; sigungu: string; dong: string; bjd_code: string; lat?: number; lon?: number } = {
       sido: man.sido.trim(), sigungu: man.sigungu.trim(), dong: man.dong.trim(), bjd_code: man.bjd_code,
     };
@@ -212,7 +214,7 @@ function AddRegion({ isSuper, dev, onAdded }: { isSuper: boolean; dev: boolean; 
     setMsg(null);
     try {
       const r = await api.createRegionFromAddress(body);
-      setMsg(`${body.sido} > ${body.sigungu} > ${r.name} (${str(r.bjd_code)}) — 추가됨`);
+      setMsg(`${body.sido} > ${body.sigungu} > ${r.name} (${str(r.bjd_code)}) — 추가했습니다`);
       onAdded(r.id);
     } catch (x) {
       setErr(errorText(x));
@@ -222,12 +224,12 @@ function AddRegion({ isSuper, dev, onAdded }: { isSuper: boolean; dev: boolean; 
   }
 
   return (
-    <Card title="법정동 추가" meta="카카오 주소 검색 → 고르기">
+    <Card title="법정동 추가" meta="주소 검색 → 고르기">
       <form className="bar2" onSubmit={search}>
         <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="예: 경기도 군포시 금산로 91 / 안양동" aria-label="주소 검색" style={{ flex: 1, minWidth: 200 }} />
         <button type="submit" className="btn pri" disabled={busy || !q.trim()}>검색</button>
       </form>
-      <div className="cap">결과를 고르면 시도·시군구·법정동을 찾거나 만들고(상위까지), 동을 트리에 넣는다. 코드를 손으로 치지 않는다.</div>
+      <div className="cap">결과를 고르면 시도·시군구·법정동이 트리에 자동으로 들어갑니다. 코드를 직접 칠 필요가 없습니다.</div>
       {res && (
         <ul className="picklist">
           {res.map((g, i) => (
@@ -244,8 +246,8 @@ function AddRegion({ isSuper, dev, onAdded }: { isSuper: boolean; dev: boolean; 
       )}
       {geoDown && (
         <div className="confirm">
-          주소 검색을 쓸 수 없다(503 <code>GEO_UNAVAILABLE</code> — 서버에 카카오 키 <code>KAKAO_REST_API_KEY</code> 없음).
-          {dev ? " 개발 환경이라 아래에 직접 넣을 수 있다." : " 운영자에게 키 설정을 요청한다."}
+          주소 검색이 설정되어 있지 않습니다 — 관리자에게 문의하세요.
+          {dev ? " 개발 환경이라 아래에 직접 넣을 수 있습니다." : ""}
         </div>
       )}
       {geoDown && dev && (
@@ -257,8 +259,8 @@ function AddRegion({ isSuper, dev, onAdded }: { isSuper: boolean; dev: boolean; 
           <label>위도 <small>선택</small><input value={man.lat} inputMode="decimal" onChange={(e) => setMan({ ...man, lat: e.target.value })} /></label>
           <label>경도 <small>선택</small><input value={man.lon} inputMode="decimal" onChange={(e) => setMan({ ...man, lon: e.target.value })} /></label>
           <div className="w2 bar2">
-            <button type="submit" className="btn pri" disabled={busy}>직접 추가 (dev)</button>
-            <span className="cap">APP_ENV=dev 에서만 서버가 받는다.</span>
+            <button type="submit" className="btn pri" disabled={busy}>직접 추가</button>
+            <span className="cap">개발 환경에서만 쓰는 수동 추가</span>
           </div>
         </form>
       )}

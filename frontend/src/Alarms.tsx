@@ -29,13 +29,38 @@ export function durText(sec: number): string {
   return `${Math.floor(sec / 86400)}일 ${Math.floor((sec % 86400) / 3600)}시간`;
 }
 
-/** 마지막 값 한 줄 — er 는 16진, cv 는 단말/서버, 재부팅 횟수, 마지막 수신 등. */
+/** er 비트 → 운영자용 짧은 말. */
+const ER_KO: [number, string][] = [
+  [0x0001, "배터리 부족"],
+  [0x0002, "시계 오류"],
+  [0x0004, "LED 고장"],
+  [0x0010, "MPPT 응답 없음"],
+  [0x0020, "스케줄 오류"],
+  [0x0040, "LTE 끊김"],
+];
+
+/** 마지막 값 한 줄 — 운영자가 읽는 짧은 결과. 원래 코드·숫자는 alarmRaw(마우스를 올리면). */
 export function alarmValue(a: Alarm): string {
+  const v = a.value ?? {};
+  if (typeof v.er === "number") {
+    const er = v.er;
+    const names = ER_KO.filter(([bit]) => er & bit).map(([, n]) => n);
+    return names.length ? names.join(", ") : er === 0 ? "정상" : "알 수 없는 오류";
+  }
+  if ("cv_device" in v) return "설정 반영 대기";
+  if ("count_today" in v) return `오늘 재부팅 ${v.count_today}회`;
+  if ("last_seen_at" in v) return `마지막 수신 ${relTime(v.last_seen_at as string | null)}`;
+  if ("ss_known" in v) return "현장에서 설정이 바뀜";
+  if ("applied_crc" in v) return "스케줄 다름";
+  if ("md" in v) return v.md === 1 ? "현장 수동 조작 중" : v.md === 2 ? "원격 조작 중" : "조작 상태 확인 필요";
+  return "";
+}
+
+/** 마지막 값의 원래 코드 — 단말측과 맞춰 볼 때(툴팁). */
+export function alarmRaw(a: Alarm): string {
   const v = a.value ?? {};
   if (typeof v.er === "number") return `er 0x${v.er.toString(16).padStart(4, "0")}`;
   if ("cv_device" in v) return `cv 단말 ${v.cv_device} / 서버 ${v.cv_server}`;
-  if ("count_today" in v) return `오늘 재부팅 ${v.count_today}회`;
-  if ("last_seen_at" in v) return `마지막 수신 ${relTime(v.last_seen_at as string | null)}`;
   if ("ss_known" in v) return `ss 서버 ${v.ss_known ?? "-"} / 단말 ${v.ss_telemetry ?? "-"}`;
   if ("applied_crc" in v) return `적용 ${v.applied_crc} / 단말 ${v.device_crc}`;
   if ("md" in v) return `md ${v.md}`;
@@ -76,7 +101,7 @@ export default function Alarms({ tick, onSelect }: { tick: number; onSelect: (uu
   return (
     <div className="content">
       <Card title="알람" className="full"
-        meta={<span>서버가 30초마다 판정 · 한 단말·한 항목은 열린 알람 1건 · 해제되면 이력</span>}>
+        meta={<span>서버가 30초마다 확인 · 해결되면 이력으로 넘어갑니다</span>}>
         <div className="tabs">
           {TABS.map((k) => (
             <button key={k} type="button" aria-pressed={tab === k} onClick={() => (setTab(k), setPage(1))}>
@@ -110,7 +135,7 @@ export default function Alarms({ tick, onSelect }: { tick: number; onSelect: (uu
                   <td title={a.first_seen_at}>{localTime(a.first_seen_at)}</td>
                   <td>{durText(a.duration_sec)}</td>
                   {status === "closed" && <td title={a.closed_at ?? ""}>{localTime(a.closed_at)}</td>}
-                  <td className="mono">{alarmValue(a)}</td>
+                  <td title={alarmRaw(a) || undefined}>{alarmValue(a)}</td>
                 </tr>
               ))}
               {rows.length === 0 && <tr><td colSpan={status === "closed" ? 9 : 8} className="empty">{res ? (status === "open" ? "열린 알람이 없습니다." : "이력이 없습니다.") : "불러오는 중…"}</td></tr>}

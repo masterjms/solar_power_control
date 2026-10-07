@@ -49,10 +49,10 @@ export default function Profiles({ onChanged }: Props) {
       const r = await api.patchProfile(p.id, body);
       const bumped = r.bumped_devices ?? 0;
       setMsg(
-        `#${p.id} 저장됨` +
+        `"${e.name}" 저장됨` +
           (body.ti !== undefined || body.ka !== undefined
-            ? ` — ${bumped}대에 다음 송신 때 CONFIG 전송 (bumped_devices=${bumped})`
-            : " (이름만 — 단말에 안 나감)"),
+            ? ` — 단말 ${bumped}대에 각 단말의 다음 보고 때 반영됩니다`
+            : " (이름만 바뀜 — 단말에는 보내지 않습니다)"),
       );
       setEdit((m) => {
         const c = { ...m };
@@ -67,12 +67,12 @@ export default function Profiles({ onChanged }: Props) {
   }
 
   async function del(p: Profile) {
-    if (!confirm(`통신 주기 설정 #${p.id} "${p.name}" 삭제? (단말이 쓰고 있으면 409)`)) return;
+    if (!confirm(`통신 주기 설정 "${p.name}"을(를) 삭제할까요? (쓰고 있는 단말이 있으면 지워지지 않습니다)`)) return;
     setMsg(null);
     setError(null);
     try {
       await api.deleteProfile(p.id);
-      setMsg(`#${p.id} 삭제됨`);
+      setMsg(`"${p.name}" 삭제됨`);
       await load();
       onChanged();
     } catch (err) {
@@ -86,7 +86,7 @@ export default function Profiles({ onChanged }: Props) {
     setError(null);
     try {
       const r = await api.createProfile({ name: nName.trim(), ti: Number(nTi), ka: Number(nKa) });
-      setMsg(`#${r.id} "${r.name}" 추가됨`);
+      setMsg(`"${r.name}" 추가됨`);
       setNName("");
       await load();
     } catch (err) {
@@ -96,24 +96,22 @@ export default function Profiles({ onChanged }: Props) {
 
   return (
     <>
-      <Card title="통신 주기 설정" meta={`${rows.length}개 · /api/profiles`}>
+      <Card title="통신 주기 설정" meta={`${rows.length}개`}>
         <div className="cap">
-          ti = Telemetry 주기(60~3600초), ka = keepalive(60~1800초). ti/ka 를 바꾸면 그 주기 설정을 쓰는 단말 전부 cv_server +1
-          → 각 단말의 다음 송신 때 CONFIG_SET 이 나간다(즉시 발행 아님, §1.1.10). id 1 은 삭제 불가.
+          보고 주기·접속 유지 주기. 바꾸면 이 설정을 쓰는 단말마다 다음 보고 때 반영됩니다. 기본 설정은 지울 수 없습니다.
         </div>
         {error && <div className="err">{error}</div>}
-        {msg && <code className="payload">{msg}</code>}
+        {msg && <div className="okl">{msg}</div>}
         <div className="tw">
           <table className="list">
             <thead>
-              <tr><th>id</th><th>이름</th><th>ti (초)</th><th>ka (초)</th><th>단말 수</th><th></th></tr>
+              <tr><th>이름</th><th>보고 주기(초)</th><th>접속 유지(초)</th><th>단말 수</th><th></th></tr>
             </thead>
             <tbody>
               {rows.map((p) => {
                 const e = getEdit(p);
                 return (
                   <tr key={p.id}>
-                    <td className="muted">{p.id}</td>
                     <td><input value={e.name} onChange={(ev) => setField(p, "name", ev.target.value)} style={{ width: 220 }} /></td>
                     <td><input type="number" min={60} max={3600} value={e.ti} onChange={(ev) => setField(p, "ti", ev.target.value)} /></td>
                     <td><input type="number" min={60} max={1800} value={e.ka} onChange={(ev) => setField(p, "ka", ev.target.value)} /></td>
@@ -127,16 +125,16 @@ export default function Profiles({ onChanged }: Props) {
                   </tr>
                 );
               })}
-              {rows.length === 0 && <tr><td colSpan={6} className="empty">없음</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={5} className="empty">없음</td></tr>}
             </tbody>
           </table>
         </div>
       </Card>
-      <Card title="통신 주기 설정 추가" meta="POST /api/profiles">
+      <Card title="통신 주기 설정 추가">
         <form onSubmit={create} className="form2">
           <label className="w2">이름<input value={nName} required onChange={(e) => setNName(e.target.value)} placeholder="예: 2,200원 관제" /></label>
-          <label>ti (초)<input type="number" min={60} max={3600} value={nTi} onChange={(e) => setNTi(e.target.value)} /></label>
-          <label>ka (초)<input type="number" min={60} max={1800} value={nKa} onChange={(e) => setNKa(e.target.value)} /></label>
+          <label>보고 주기(초)<input type="number" min={60} max={3600} value={nTi} onChange={(e) => setNTi(e.target.value)} /></label>
+          <label>접속 유지(초)<input type="number" min={60} max={1800} value={nKa} onChange={(e) => setNKa(e.target.value)} /></label>
           <div className="w2"><button type="submit" className="btn pri">추가</button></div>
         </form>
       </Card>

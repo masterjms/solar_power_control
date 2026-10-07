@@ -404,3 +404,7 @@ API 는 그대로 401 `{code: LOGIN_FAILED, message}`. 화면은 `api.userMessag
 - `GET /api/accounts/logins?page=&size=` — 바뀜(예전 `?limit=` 목록 응답은 없앰, 화면만 씀).
 - `GET /api/commands?page=&size=&uuid=&node_id=` · `GET /api/schedule/deploy?page=&size=` — `page` 를 주면 위 모양, 안 주면 예전처럼 `?limit=` 목록(시나리오·도구 호환).
 - 단말·알람·승인 대기(`/api/devices?state=PENDING`)·최근 활동은 원래 이 모양.
+
+### 단말 목록 counts.PENDING_ONLINE (2026-10-07, 문제점 45번)
+`GET /api/devices` 의 `counts` 에 `PENDING_ONLINE`(켜져 있는 승인 대기 수)을 더했다. 등록·승인 화면·메뉴 숫자는 이 값과 `?state=PENDING&online=true` 를 쓴다.
+
