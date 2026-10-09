@@ -408,3 +408,8 @@ API 는 그대로 401 `{code: LOGIN_FAILED, message}`. 화면은 `api.userMessag
 ### 단말 목록 counts.PENDING_ONLINE (2026-10-07, 문제점 45번)
 `GET /api/devices` 의 `counts` 에 `PENDING_ONLINE`(켜져 있는 승인 대기 수)을 더했다. 등록·승인 화면·메뉴 숫자는 이 값과 `?state=PENDING&online=true` 를 쓴다.
 
+## 단말 기록 내보내기 (2026-10-09, 문제점 48번)
+`GET /api/devices/{uuid}/export?days=7` (1~90) → `.xlsx` 한 파일(`Content-Disposition` 에 한국어 파일 이름 `단말기록_<시설명>_<날짜>_<N>일.xlsx`).
+시트: 단말 정보 / 알람 / 명령 이력(이 단말 결과·보낸 횟수·응답 원문) / 보고(값은 화면 단위 — V·A·W·kWh, 오류 코드·내용, 원문 JSON) / 이벤트(한국어 종류 + 코드 + 원문) / 설정 변경(화면 이름·단위 + 항목 코드).
+시각은 한국 시각. 보고는 최대 20만 줄. 범위 밖 단말 404, 게스트 403(허용 목록에 없음). CSV 가 아닌 이유: 기록 종류마다 열이 달라 CSV 면 파일이 5개가 된다.
+의존성: `openpyxl` (pyproject·Dockerfile 둘 다).

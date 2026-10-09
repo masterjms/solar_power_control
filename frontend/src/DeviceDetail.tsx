@@ -78,6 +78,19 @@ const EV_NAME: Record<string, string> = {
 };
 const evName = (kind: string) => EV_NAME[kind] ?? kind;
 
+/** 기록 내보내기(문제점 48번) — 알람·명령 이력·보고·이벤트·설정 변경을 엑셀 파일 하나로(시트별). */
+function ExportButton({ uuid }: { uuid: string }) {
+  const [days, setDays] = useState(7);
+  return (
+    <span className="exp" title="이 단말의 알람·명령 이력·보고·이벤트·설정 변경을 엑셀 파일로 받습니다">
+      <select className="psize" value={days} aria-label="내보낼 기간" onChange={(e) => setDays(Number(e.target.value))}>
+        {[1, 7, 30, 90].map((d) => <option key={d} value={d}>최근 {d}일</option>)}
+      </select>
+      <a className="btn sm" href={`/api/devices/${encodeURIComponent(uuid)}/export?days=${days}`} download>내보내기</a>
+    </span>
+  );
+}
+
 /** 말단 법정동 고르기(드로어 설정 패널용). 펼 때만 트리를 읽는다. */
 function NodePicker({ value, onPick }: { value: number | null; onPick: (id: number, label: string) => void }) {
   const { tree, list, error } = useRegions();
@@ -375,6 +388,7 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
       </div>
       {dev && <StateBadge state={dev.state} />}
       {dev && <OnlineMark on={dev.is_online} />}
+      {dev && <ExportButton uuid={uuid} />}
       <button type="button" className="x" onClick={onClose} aria-label="닫기">✕</button>
     </div>
   );

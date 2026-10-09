@@ -357,7 +357,7 @@ interface SentNote {
   r: SettingsSent;
 }
 
-const byText = (by: string) => (by === "device_read" ? "단말에서 읽음" : by === "server_write" ? "서버가 씀" : by);
+const byText = (by: string) => ({ device_read: "단말에서 읽음", server_write: "서버가 씀", local: "현장" } as Record<string, string>)[by] ?? by;
 
 function SettingsPanel({ uuid, schema, onSelect }: { uuid: string; schema: SettingsSchema; onSelect: (u: string) => void }) {
   const [dev, setDev] = useState<Device | null>(null);

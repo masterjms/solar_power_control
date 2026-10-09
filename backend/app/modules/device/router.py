@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import datetime as dt
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import Principal, current_user
 from app.db import get_db
 from app.modules.deps import get_config_sync, get_publisher
-from app.modules.device import service
+from app.modules.device import export, service
 from app.modules.device.schemas import (
     ConfigPatch,
     ConfigPatchOut,
@@ -17,8 +20,8 @@ from app.modules.device.schemas import (
     DeviceOut,
     DevicePage,
     EnergyToday,
-    MapPoint,
     EventOut,
+    MapPoint,
     PingOut,
     RegisterAckOut,
     StateOut,
@@ -84,6 +87,21 @@ async def pending_search(
 @router.get(f"/{_UUID_PATH}", response_model=DeviceOut)
 async def get_device(uuid: str, db: AsyncSession = Depends(get_db)) -> DeviceOut:
     return await service.get_device(db, _uuid(uuid))
+
+
+@router.get(f"/{_UUID_PATH}/export")
+async def export_device(
+    uuid: str, days: int = Query(default=7, ge=1, le=90),
+    me: Principal = Depends(current_user), db: AsyncSession = Depends(get_db),
+) -> Response:
+    """한 단말의 기록(알람·명령 이력·보고·이벤트·설정 변경)을 엑셀 파일로(문제점 48번)."""
+    u = uuid.strip().upper()
+    await service.get_device(db, u)  # 없으면 404
+    data, name = await export.build(db, u, days, me.user)
+    return Response(
+        data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=\"device_{u[-6:]}.xlsx\"; filename*=UTF-8''{quote(name)}",
+                 "Cache-Control": "no-store"})
 
 
 @router.get(f"/{_UUID_PATH}/telemetry", response_model=list[TelemetryOut])

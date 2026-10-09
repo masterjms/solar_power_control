@@ -21,6 +21,8 @@ dependencies = [
     "python-multipart>=0.0.17",
     # 5차 카카오 로컬 주소 검색 프록시(app/core/kakao_geo.py). 비동기 HTTP 클라이언트.
     "httpx>=0.28",
+    # 단말 기록 내보내기 .xlsx (app/modules/device/export.py, 문제점 48번). 순수 파이썬.
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

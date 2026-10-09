@@ -18,7 +18,7 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir \
       "fastapi>=0.115" "uvicorn[standard]>=0.32" "pydantic>=2.9" "pydantic-settings>=2.6" \
       "sqlalchemy[asyncio]>=2.0.36" "asyncpg>=0.30" "alembic>=1.14" "aiomqtt>=2.3" \
-      "apscheduler>=3.10,<4" "python-multipart>=0.0.17" "httpx>=0.28"
+      "apscheduler>=3.10,<4" "python-multipart>=0.0.17" "httpx>=0.28" "openpyxl>=3.1"
 
 COPY alembic.ini entrypoint.sh ./
 COPY alembic ./alembic

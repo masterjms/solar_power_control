@@ -200,8 +200,8 @@ details.info .grid2{margin-top:var(--s2)}
 .steps .no{width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:var(--f1); background:var(--soft); border:1px solid var(--line); color:var(--muted)}
 .steps .s{font-size:var(--f1); color:var(--muted)}
 .log{list-style:none; margin:0; padding:0; font-variant-numeric:tabular-nums; font-size:var(--f1); overflow:auto; flex:1; min-height:120px; max-height:360px}
-.log li{padding:6px 0; border-bottom:1px solid var(--line2); display:grid; grid-template-columns:132px 96px minmax(0,1fr); gap:var(--s2)}
-.log .t{color:var(--muted2)} .log .dn{color:var(--blue)} .log .up{color:var(--ok)} .log .er{color:var(--alarm)}
+.log li{padding:6px 0; border-bottom:1px solid var(--line2); display:grid; grid-template-columns:max-content 96px minmax(0,1fr); gap:var(--s2)} /* 시각은 한 줄(문제점 47번) */
+.log .t{color:var(--muted2); white-space:nowrap} .log .dn{color:var(--blue)} .log .up{color:var(--ok)} .log .er{color:var(--alarm)}
 .log .body{white-space:normal; word-break:break-all}
 .state{height:28px; padding:0 var(--s3); border-radius:999px; font-size:var(--f1); display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line); color:var(--muted)}
 .state.ok{border-color:var(--ok); color:var(--ok); background:var(--bg-ok)}
@@ -391,3 +391,6 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 details.more{margin-top:var(--s2); font-size:var(--f1); color:var(--muted)}
 details.more summary{cursor:pointer; width:max-content}
 details.more[open] summary{margin-bottom:var(--s1)}
+.dh .exp{display:inline-flex; gap:6px; align-items:center; margin-left:auto} /* 기록 내보내기(문제점 48번) */
+.dh .exp select{height:28px}
+.dh .exp + .x{margin-left:0}
