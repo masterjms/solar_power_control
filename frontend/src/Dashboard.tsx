@@ -94,6 +94,14 @@ export default function Dashboard({ counts, total, tick, onSelect, readOnly = fa
   // 승인 대기는 켜져 있는 단말만 센다 — 등록·승인 목록과 같은 숫자(문제점 45번)
   const pendingOn = counts ? counts.PENDING_ONLINE ?? counts.PENDING : undefined;
   const pendingOff = counts ? counts.PENDING - (pendingOn ?? 0) : 0;
+  // 막대는 칸이 겹치지 않게 나눈다(문제점 49번): 켜진 대기는 파랑, 꺼진 대기는 오프라인 회색에 든다.
+  const bar: [number | null | undefined, string][] = (() => {
+    if (!counts || total === null || online === null) return [];
+    const pend = pendingOn ?? 0;
+    const on = Math.max(0, online - pend);
+    const stop = stopped ?? 0;
+    return [[on, "var(--ok)"], [Math.max(0, total - on - pend - stop), "var(--off)"], [pend, "var(--blue)"], [stop, "var(--warn)"]];
+  })();
 
   // 조명 상태: last_telemetry.on. 통신 두절은 마지막 보고와 관계없이 소등(문제점 15번).
   const lamp = useMemo(() => {
@@ -131,9 +139,9 @@ export default function Dashboard({ counts, total, tick, onSelect, readOnly = fa
       <div className="pair">
         <Card
           title="단말 상태"
-          meta={<><span>{total === null ? "-" : `${nf(total)}대 등록`}</span><a className="btn sm c-blue" href="#pending">승인 대기 {nf(pendingOn)}</a></>}
+          meta={<span>{total === null ? "-" : `${nf(total)}대 등록`}</span>}
         >
-          <SBar label="상태 비율" segs={[[online, "var(--ok)"], [offline, "var(--off)"], [counts?.PENDING, "var(--blue)"], [stopped, "var(--warn)"]]} />
+          <SBar label="상태 비율" segs={bar} />
           <div className="keys">
             <a className="key" href="#devices"><span className="l"><span className="dot" style={{ background: "var(--ok)" }} />온라인</span><span className="v c-ok">{nf(online)}</span><span className="m">{total ? `${Math.round(((online ?? 0) / total) * 100)}%` : ""}</span></a>
             <a className="key" href="#devices"><span className="l"><span className="dot" style={{ background: "var(--off)" }} />오프라인</span><span className="v c-off">{nf(offline)}</span><span className="m">{total ? `${Math.round(((offline ?? 0) / total) * 100)}%` : ""}</span></a>

@@ -102,3 +102,19 @@ async def device_alarms(db: AsyncSession, uuid: str, limit: int) -> list[AlarmOu
         _order(_base("closed", None, None, None, uuid), "closed").limit(limit)
     )).all()
     return [_out(r, now, tree) for r in [*open_rows, *closed]]
+
+
+async def device_alarm_page(db: AsyncSession, uuid: str, size: int, offset: int) -> tuple[list[AlarmOut], int]:
+    """단말 상세 알람 한 쪽(문제점 50번) — 열린 알람 먼저, 이어서 이력. (한 쪽, 전체 건수)."""
+    now = dt.datetime.now(dt.timezone.utc)
+    tree = await load_tree(db)
+    open_rows = (await db.execute(_order(_base("open", None, None, None, uuid), "open"))).all()
+    closed_q = _base("closed", None, None, None, uuid)
+    closed_n = int(await db.scalar(select(func.count()).select_from(closed_q.subquery())) or 0)
+    head = open_rows[offset:offset + size]
+    rest = size - len(head)
+    closed = []
+    if rest > 0:
+        closed = (await db.execute(
+            _order(closed_q, "closed").offset(max(0, offset - len(open_rows))).limit(rest))).all()
+    return [_out(r, now, tree) for r in [*head, *closed]], len(open_rows) + closed_n

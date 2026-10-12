@@ -106,6 +106,46 @@ export function eventSummary(kind: string, payload: unknown): string {
   }
 }
 
+/** 이벤트 내용 → 운영자가 읽는 한 줄(문제점 50번: "자세히" 없이 바로 보인다). 원문은 내보내기(엑셀)에 있다. */
+const EV_KEY: Record<string, string> = {
+  fw: "펌웨어", cv: "설정 번호", ti: "보고 주기", ka: "접속 유지", ss: "저장 번호", device_model: "모델",
+  sq: "순번", last_sq: "이전 순번", prev_sq: "이전 순번", gap: "빠진 수", site: "시설명", reason: "사유",
+  grp: "그룹", lat: "위도", lon: "경도", result: "결과", ok: "결과", err: "오류", state: "상태",
+};
+const EV_STATE: Record<string, string> = { PENDING: "승인 대기", ACTIVE: "운영", SUSPENDED: "일시 중지", REJECTED: "거절", RETIRED: "폐기" };
+const EV_SOURCE: Record<string, string> = { broker_log: "단말 통신 서버 기록", lwt: "끊김 알림", backend: "서버" };
+export function eventText(kind: string, payload: unknown): string {
+  const p = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
+  const val = (k: string, v: unknown): string => {
+    if (k === "state") return EV_STATE[String(v)] ?? String(v);
+    if (k === "ti" || k === "ka") return `${String(v)}초`;
+    if (typeof v === "boolean") return v ? "예" : "아니오";
+    return typeof v === "object" ? JSON.stringify(v) : String(v);
+  };
+  const pick = (keys: string[]) => keys.filter((k) => p[k] !== undefined && p[k] !== null && p[k] !== "")
+    .map((k) => `${EV_KEY[k] ?? k} ${val(k, p[k])}`).join(" · ");
+  const notSent = p.published === false ? " · 아직 못 보냄(다음 접속 때 전달)" : "";
+  switch (kind) {
+    case "REGISTER": return pick(["fw", "device_model", "cv", "ti", "ka", "ss"]);
+    case "REGISTER_ACK": return pick(["state", "site", "grp", "reason"]) + notSent;
+    case "STATE_CHANGE": {
+      const from = p.from ?? p.old_state ?? p.prev;
+      const to = p.to ?? p.new_state ?? p.state;
+      const base = from !== undefined || to !== undefined ? `${EV_STATE[String(from)] ?? str(from)} → ${EV_STATE[String(to)] ?? str(to)}` : "";
+      return [base, pick(["site", "reason"])].filter(Boolean).join(" · ");
+    }
+    case "CONFIG_SET": return pick(["cv", "ti", "ka", "lat", "lon", "reason"]) + notSent;
+    case "CONFIG_ACK": return pick(["cv", "result", "ok", "err"]);
+    case "ONLINE": case "OFFLINE": case "LWT": {
+      const src = p.source ? EV_SOURCE[String(p.source)] ?? String(p.source) : "";
+      return [src, pick(["reason"])].filter(Boolean).join(" · ");
+    }
+    case "LOST": case "REBOOT": return pick(["sq", "last_sq", "prev_sq", "gap"]);
+    case "PING": case "PONG": return "";
+    default: return pick(Object.keys(EV_KEY));
+  }
+}
+
 /** 배터리 전압 x100 → 소수 1자리 "24.5 V"(문제점 #11). */
 export function volt1(v: number | null | undefined): string {
   return v === null || v === undefined ? "" : `${(v / 100).toFixed(1)} V`;

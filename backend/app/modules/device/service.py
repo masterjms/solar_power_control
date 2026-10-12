@@ -24,7 +24,7 @@ from sqlalchemy.orm import aliased
 from app.config import settings
 from app.constants import STATE_TRANSITIONS, DeviceState, EventKind, MsgType
 from app.core import energy, ids, mqtt_accounts, presence
-from app.core.access import check_node, current_scope, device_allowed, in_scope, node_allowed
+from app.core.access import check_node, current_scope, in_scope
 from app.core.command_rules import channel_remaining, remote_status
 from app.core.config_rules import (
     bump_cv_server,
@@ -50,14 +50,14 @@ from app.models.settings import DeviceSettings
 from app.models.system import MqttAccountExport
 from app.models.telemetry import Telemetry
 from app.modules.device.schemas import (
-    EnergyToday,
-    MapPoint,
     ConfigPatch,
     ConfigPatchOut,
     DeleteOut,
     DeviceOut,
     DevicePage,
+    EnergyToday,
     EventOut,
+    MapPoint,
     PingOut,
     RegisterAckOut,
     StateOut,
@@ -293,9 +293,14 @@ async def get_device(db: AsyncSession, uuid: str) -> DeviceOut:
     return _to_out(device, profile, _now(), await load_tree(db), sync)
 
 
+async def count_telemetry(db: AsyncSession, uuid: str) -> int:
+    """쪽 넘기기용 전체 건수(문제점 50번)."""
+    return int(await db.scalar(select(func.count()).select_from(Telemetry).where(Telemetry.uuid == uuid)) or 0)
+
+
 async def list_telemetry(
     db: AsyncSession, uuid: str, *, since: dt.datetime | None, until: dt.datetime | None,
-    limit: int,
+    limit: int, offset: int = 0,
 ) -> list[TelemetryOut]:
     if await db.get(Device, uuid) is None:
         raise DeviceNotFound(detail={"uuid": uuid})
@@ -305,7 +310,7 @@ async def list_telemetry(
     if until is not None:
         stmt = stmt.where(Telemetry.received_at < until)
     rows = (
-        await db.execute(stmt.order_by(Telemetry.received_at.desc()).limit(limit))
+        await db.execute(stmt.order_by(Telemetry.received_at.desc()).offset(offset).limit(limit))
     ).scalars().all()
     return [
         TelemetryOut(
@@ -319,16 +324,18 @@ async def list_telemetry(
 
 
 async def list_events(
-    db: AsyncSession, uuid: str, *, kind: str | None, limit: int
-) -> list[EventOut]:
+    db: AsyncSession, uuid: str, *, kind: str | None, limit: int, offset: int = 0,
+) -> tuple[list[EventOut], int]:
+    """최신순 (한 쪽, 전체 건수)."""
     stmt = select(DeviceEvent).where(DeviceEvent.uuid == uuid)
     if kind:
         stmt = stmt.where(DeviceEvent.kind == kind.upper())
+    total = int(await db.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
     rows = (
         await db.execute(stmt.order_by(DeviceEvent.received_at.desc(), DeviceEvent.id.desc())
-                         .limit(limit))
+                         .offset(offset).limit(limit))
     ).scalars().all()
-    return [EventOut.model_validate(r) for r in rows]
+    return [EventOut.model_validate(r) for r in rows], total
 
 
 # ── REGISTER_ACK (관리자 경로 — 즉시 발행) ───────────────────────────────

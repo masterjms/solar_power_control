@@ -280,3 +280,21 @@ class EnergyToday(BaseModel):
     no_value: bool = False
     #: device = 단말이 보낸 eg·eu, server = 옛 펌웨어라 서버가 적분.
     source: str = "device"
+
+
+class TelemetryPage(BaseModel):
+    """최근 보고 한 쪽(문제점 50번)."""
+
+    items: list[TelemetryOut]
+    total: int
+    page: int
+    size: int
+
+
+class EventPage(BaseModel):
+    """이벤트 한 쪽(문제점 50번)."""
+
+    items: list[EventOut]
+    total: int
+    page: int
+    size: int

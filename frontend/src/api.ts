@@ -882,6 +882,13 @@ export const api = {
     return request<AlarmPage>(`/api/alarms?${q}`);
   },
   deviceAlarms: (uuid: string, limit = 30) => request<Alarm[]>(`/api/devices/${uuid}/alarms?limit=${limit}`),
+  /** 단말 상세 목록 한 쪽(문제점 50번) — 알람(열린 것 먼저)·최근 보고·이벤트. */
+  deviceAlarmPage: (uuid: string, page: number, size: number) =>
+    request<Paged<Alarm>>(`/api/devices/${uuid}/alarms?page=${page}&size=${size}`),
+  telemetryPage: (uuid: string, page: number, size: number) =>
+    request<Paged<Telemetry>>(`/api/devices/${uuid}/telemetry?page=${page}&size=${size}`),
+  eventPage: (uuid: string, page: number, size: number) =>
+    request<Paged<DeviceEvent>>(`/api/devices/${uuid}/events?page=${page}&size=${size}`),
 
   // S-25 스케줄 배포
   scheduleKeys: () => request<{ keys: string[]; defaults: Record<string, number> }>("/api/schedule/profile-keys"),

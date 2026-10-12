@@ -1,11 +1,11 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
-  Alarm, api, ConfigPatchBody, ConfigPatchRes, Device, DeviceEvent, DeviceSchedule, DeviceState, Profile, Telemetry,
+  Alarm, api, ConfigPatchBody, ConfigPatchRes, Device, DeviceEvent, DeviceSchedule, DeviceState, Paged, Profile, Telemetry,
   errorText,
 } from "./api";
-import { SeverityBadge, alarmValue, durText as almDur } from "./Alarms";
-import { dayEnergy, div100, erLabel, eventSummary, hex, localTime, mdLabel, pct, relTime, str } from "./format";
-import { Battery, Detail, Lamp, Met, OnlineMark, SiteHint, StateBadge, SyncBadge, stateLabel } from "./ui";
+import { SeverityBadge, alarmRaw, alarmValue, durText as almDur } from "./Alarms";
+import { dayEnergy, div100, erLabel, eventSummary, eventText, hex, localTime, mdLabel, pct, relTime, str } from "./format";
+import { Battery, DEFAULT_PAGE_SIZE, Detail, Lamp, Met, OnlineMark, PageSize, Pager, SiteHint, StateBadge, SyncBadge, nf, pageCount, stateLabel } from "./ui";
 import { CommandForm, CommandHistory, CommandResult, durText, useLedBasis } from "./Command";
 import { RemoteBadge } from "./DeviceList";
 import { RegionTree, isLeaf, pathOf, useRegions } from "./Tree";
@@ -112,8 +112,6 @@ function NodePicker({ value, onPick }: { value: number | null; onPick: (id: numb
 /** 단말 상세 드로어(§3.9.2 화면 2). 승인·설정·원격 제어·PING·삭제·이력 전부 여기. */
 export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Props) {
   const [dev, setDev] = useState<Device | null>(null);
-  const [tm, setTm] = useState<Telemetry[]>([]);
-  const [ev, setEv] = useState<DeviceEvent[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -148,10 +146,8 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
 
   const load = useCallback(async () => {
     try {
-      const [d, t, e] = await Promise.all([api.getDevice(uuid), api.telemetry(uuid, 50), api.events(uuid, 50)]);
+      const d = await api.getDevice(uuid);
       setDev(d);
-      setTm(t);
-      setEv(e);
       setError(null);
       if (!formTouched.current) {
         setProfileId(String(d.profile_id));
@@ -622,78 +618,123 @@ export default function DeviceDetail({ uuid, onChanged, onDeleted, onClose }: Pr
         </details>
 
         {/* ---------- 최근 텔레메트리 ---------- */}
-        <div className="sec">
-          <h4>최근 보고 <span>{tm.length}건</span></h4>
-          <div style={{ overflowX: "auto" }}>
-            <table className="mini">
-              <thead>
-                <tr><th>받은 시각</th><th className="n">순번</th><th className="n">설정 번호</th><th className="n">배터리 V</th><th className="n">배터리 A</th><th className="n">충전량</th><th className="n">패널 W</th><th className="n">부하 A</th><th className="n">조명</th><th>오류</th></tr>
-              </thead>
-              <tbody>
-                {tm.map((t, i) => (
-                  <tr key={i}>
-                    <td>{localTime(t.received_at)}</td><td className="n">{str(t.sq)}</td><td className="n">{str(t.cv)}</td>
-                    <td className="n">{div100(t.bv)}</td><td className="n">{div100(t.bi, "", true)}</td><td className="n">{pct(t.sc)}</td>
-                    <td className="n">{div100(t.pp)}</td><td className="n">{div100(t.li)}</td><td className="n">{str(t.on)}</td><td>{erLabel(t.er)}</td>
-                  </tr>
-                ))}
-                {tm.length === 0 && <tr><td colSpan={10} className="muted">없음 (아직 보고 전)</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <DeviceTelemetry uuid={uuid} />
 
         {/* ---------- 이벤트 ---------- */}
-        <div className="sec">
-          <h4>이벤트 <span>{ev.length}건</span></h4>
-          <ul className="log">
-            {ev.map((e) => (
-              <li key={e.id}>
-                <span className="t">{localTime(e.received_at)}</span>
-                <span className={evClass(e.kind)}>{evName(e.kind)}</span>
-                <span className="body"><Detail>{e.kind} · {eventSummary(e.kind, e.payload)}</Detail></span>
-              </li>
-            ))}
-            {ev.length === 0 && <li><span className="t">-</span><span /><span className="muted">없음</span></li>}
-          </ul>
-        </div>
+        <DeviceEvents uuid={uuid} />
       </div>
     </>
   );
 }
 
-/** 이 단말의 열린 알람 + 최근 이력(ADR-009). */
-function DeviceAlarms({ uuid }: { uuid: string }) {
-  const [rows, setRows] = useState<Alarm[] | null>(null);
+/** 단말 상세 목록 공통(문제점 50번) — 개수 고르기(20/50/100) + 쪽 넘기기, 10초마다 다시 읽는다. */
+function usePaged<T>(load: (page: number, size: number) => Promise<Paged<T>>, key: string) {
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
+  const [res, setRes] = useState<Paged<T> | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => setPage(1), [key]);
   useEffect(() => {
     let alive = true;
-    const load = () => api.deviceAlarms(uuid, 10).then((r) => alive && setRows(r)).catch(() => alive && setRows([]));
-    load();
-    const t = setInterval(load, REFRESH_MS);
+    const run = () => load(page, size).then((r) => alive && (setRes(r), setErr(null))).catch((e) => alive && setErr(errorText(e)));
+    run();
+    const t = setInterval(run, REFRESH_MS);
     return () => {
       alive = false;
       clearInterval(t);
     };
-  }, [uuid]);
-  const open = (rows ?? []).filter((a) => !a.closed_at);
+    // load 는 매번 새 함수 — key·page·size 가 바뀔 때만 다시 읽는다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, page, size]);
+  return { page, size, setPage, setSize, res, err };
+}
+
+/** 목록 머리(건수 + 개수 고르기)와 꼬리(쪽 넘기기) — 단말 상세의 모든 목록이 같은 모양. */
+function ListFrame<T>({ title, sub, pg, children }: {
+  title: string; sub?: string; pg: ReturnType<typeof usePaged<T>>; children: ReactNode;
+}) {
+  const total = pg.res?.total ?? 0;
   return (
     <div className="sec">
-      <h4>알람 <span>열림 {open.length}건 · 최근 이력</span></h4>
+      <h4>{title} <span>{pg.res ? `${nf(total)}건` : "불러오는 중…"}{sub ? ` · ${sub}` : ""}</span></h4>
+      <div className="bar2"><span className="sp" /><PageSize size={pg.size} onChange={(n) => (pg.setSize(n), pg.setPage(1))} /></div>
+      {pg.err && <div className="err">{pg.err}</div>}
+      <div style={{ overflowX: "auto" }}>{children}</div>
+      <Pager page={pg.page} pages={pageCount(total, pg.size)} total={total} size={pg.size} onPage={pg.setPage} />
+    </div>
+  );
+}
+
+/** 이 단말의 알람 — 열린 것 먼저, 이어서 이력(ADR-009). */
+function DeviceAlarms({ uuid }: { uuid: string }) {
+  const pg = usePaged<Alarm>((page, size) => api.deviceAlarmPage(uuid, page, size), uuid);
+  const rows = pg.res?.items ?? [];
+  return (
+    <ListFrame title="알람" sub="열린 알람 먼저" pg={pg}>
       <table className="mini">
+        <thead><tr><th>등급</th><th>항목</th><th>마지막 값</th><th>발생</th><th>해제 · 지속</th></tr></thead>
         <tbody>
-          {(rows ?? []).map((a) => (
+          {rows.map((a) => (
             <tr key={a.id}>
               <td><SeverityBadge s={a.severity} /></td>
               <td>{a.label}</td>
-              <td className="mono">{alarmValue(a)}</td>
-              <td>{localTime(a.first_seen_at)}</td>
-              <td>{a.closed_at ? `해제 ${localTime(a.closed_at)}` : <b className="c-alarm">열림 · {almDur(a.duration_sec)}</b>}</td>
+              <td title={alarmRaw(a)}>{alarmValue(a)}</td>
+              <td className="nw">{localTime(a.first_seen_at)}</td>
+              <td className="nw">{a.closed_at ? `해제 ${localTime(a.closed_at)}` : <b className="c-alarm">열림 · {almDur(a.duration_sec)}</b>}</td>
             </tr>
           ))}
-          {rows && rows.length === 0 && <tr><td className="muted">알람 없음</td></tr>}
+          {pg.res && rows.length === 0 && <tr><td colSpan={5} className="muted">알람 없음</td></tr>}
         </tbody>
       </table>
-    </div>
+    </ListFrame>
+  );
+}
+
+/** 최근 보고(텔레메트리). */
+function DeviceTelemetry({ uuid }: { uuid: string }) {
+  const pg = usePaged<Telemetry>((page, size) => api.telemetryPage(uuid, page, size), uuid);
+  const rows = pg.res?.items ?? [];
+  return (
+    <ListFrame title="최근 보고" pg={pg}>
+      <table className="mini">
+        <thead>
+          <tr><th>받은 시각</th><th className="n">순번</th><th className="n">설정 번호</th><th className="n">배터리 V</th><th className="n">배터리 A</th><th className="n">충전량</th><th className="n">패널 W</th><th className="n">부하 A</th><th className="n">조명</th><th>오류</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((t, i) => (
+            <tr key={i}>
+              <td className="nw">{localTime(t.received_at)}</td><td className="n">{str(t.sq)}</td><td className="n">{str(t.cv)}</td>
+              <td className="n">{div100(t.bv)}</td><td className="n">{div100(t.bi, "", true)}</td><td className="n">{pct(t.sc)}</td>
+              <td className="n">{div100(t.pp)}</td><td className="n">{div100(t.li)}</td><td className="n">{t.on === 1 ? "켜짐" : t.on === 0 ? "꺼짐" : "-"}</td><td>{erLabel(t.er)}</td>
+            </tr>
+          ))}
+          {pg.res && rows.length === 0 && <tr><td colSpan={10} className="muted">없음 (아직 보고 전)</td></tr>}
+        </tbody>
+      </table>
+    </ListFrame>
+  );
+}
+
+/** 이벤트 — 시각 · 종류 · 내용(바로 보임, 문제점 50번). 열이 줄마다 같은 자리에 오도록 표로. */
+function DeviceEvents({ uuid }: { uuid: string }) {
+  const pg = usePaged<DeviceEvent>((page, size) => api.eventPage(uuid, page, size), uuid);
+  const rows = pg.res?.items ?? [];
+  return (
+    <ListFrame title="이벤트" pg={pg}>
+      <table className="mini ev">
+        <thead><tr><th>시각</th><th>종류</th><th>내용</th></tr></thead>
+        <tbody>
+          {rows.map((e) => (
+            <tr key={e.id}>
+              <td className="nw">{localTime(e.received_at)}</td>
+              <td className={`nw ev-${evClass(e.kind)}`}>{evName(e.kind)}</td>
+              <td className="wrap">{eventText(e.kind, e.payload) || <span className="muted">-</span>}</td>
+            </tr>
+          ))}
+          {pg.res && rows.length === 0 && <tr><td colSpan={3} className="muted">없음</td></tr>}
+        </tbody>
+      </table>
+    </ListFrame>
   );
 }
 

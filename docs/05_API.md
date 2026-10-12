@@ -413,3 +413,6 @@ API 는 그대로 401 `{code: LOGIN_FAILED, message}`. 화면은 `api.userMessag
 시트: 단말 정보 / 알람 / 명령 이력(이 단말 결과·보낸 횟수·응답 원문) / 보고(값은 화면 단위 — V·A·W·kWh, 오류 코드·내용, 원문 JSON) / 이벤트(한국어 종류 + 코드 + 원문) / 설정 변경(화면 이름·단위 + 항목 코드).
 시각은 한국 시각. 보고는 최대 20만 줄. 범위 밖 단말 404, 게스트 403(허용 목록에 없음). CSV 가 아닌 이유: 기록 종류마다 열이 달라 CSV 면 파일이 5개가 된다.
 의존성: `openpyxl` (pyproject·Dockerfile 둘 다).
+
+### 단말 상세 목록 쪽 넘기기 (2026-10-12, 문제점 50번)
+`GET /api/devices/{uuid}/alarms|telemetry|events?page=&size=` → `{items,total,page,size}`(알람은 열린 것 먼저, 이어서 이력). `page` 가 없으면 예전처럼 `?limit=` 목록.

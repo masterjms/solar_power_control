@@ -200,7 +200,7 @@ details.info .grid2{margin-top:var(--s2)}
 .steps .no{width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:var(--f1); background:var(--soft); border:1px solid var(--line); color:var(--muted)}
 .steps .s{font-size:var(--f1); color:var(--muted)}
 .log{list-style:none; margin:0; padding:0; font-variant-numeric:tabular-nums; font-size:var(--f1); overflow:auto; flex:1; min-height:120px; max-height:360px}
-.log li{padding:6px 0; border-bottom:1px solid var(--line2); display:grid; grid-template-columns:max-content 96px minmax(0,1fr); gap:var(--s2)} /* 시각은 한 줄(문제점 47번) */
+.log li{padding:6px 0; border-bottom:1px solid var(--line2); display:grid; grid-template-columns:172px 96px minmax(0,1fr); gap:var(--s2)} /* 시각 한 줄(47번)·열 맞춤(50번) — 가장 긴 시각도 들어가는 고정 폭 */
 .log .t{color:var(--muted2); white-space:nowrap} .log .dn{color:var(--blue)} .log .up{color:var(--ok)} .log .er{color:var(--alarm)}
 .log .body{white-space:normal; word-break:break-all}
 .state{height:28px; padding:0 var(--s3); border-radius:999px; font-size:var(--f1); display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line); color:var(--muted)}
@@ -394,3 +394,9 @@ details.more[open] summary{margin-bottom:var(--s1)}
 .dh .exp{display:inline-flex; gap:6px; align-items:center; margin-left:auto} /* 기록 내보내기(문제점 48번) */
 .dh .exp select{height:28px}
 .dh .exp + .x{margin-left:0}
+/* 링크로 만든 버튼도 버튼 모양 그대로 — 밑줄 없이(문제점 48번: 내보내기·알람 화면) */
+a.btn{display:inline-flex; align-items:center; justify-content:center; text-decoration:none; color:var(--text)}
+a.btn:hover{text-decoration:none; border-color:var(--blue)}
+/* 단말 상세 목록(문제점 50번) — 시각·종류는 줄바꿈 없이, 열은 표로 맞춘다 */
+.mini td.nw{white-space:nowrap}
+.mini.ev .ev-dn{color:var(--blue)} .mini.ev .ev-up{color:var(--ok)} .mini.ev .ev-er{color:var(--alarm)}

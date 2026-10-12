@@ -21,12 +21,14 @@ from app.modules.device.schemas import (
     DevicePage,
     EnergyToday,
     EventOut,
+    EventPage,
     MapPoint,
     PingOut,
     RegisterAckOut,
     StateOut,
     StatePatch,
     TelemetryOut,
+    TelemetryPage,
 )
 from app.mqtt.config_sync import ConfigSyncQueue
 from app.mqtt.publisher import MqttPublisher
@@ -104,25 +106,39 @@ async def export_device(
                  "Cache-Control": "no-store"})
 
 
-@router.get(f"/{_UUID_PATH}/telemetry", response_model=list[TelemetryOut])
+@router.get(f"/{_UUID_PATH}/telemetry", response_model=list[TelemetryOut] | TelemetryPage)
 async def get_telemetry(
     uuid: str,
     since: dt.datetime | None = Query(default=None, alias="from"),
     until: dt.datetime | None = Query(default=None, alias="to"),
     limit: int = Query(default=200, ge=1, le=5000),
+    page: int | None = Query(default=None, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-) -> list[TelemetryOut]:
-    return await service.list_telemetry(db, _uuid(uuid), since=since, until=until, limit=limit)
+) -> list[TelemetryOut] | TelemetryPage:
+    """page 를 주면 {items,total,page,size}(문제점 50번 — 단말 상세 목록 공통), 없으면 예전처럼 목록만."""
+    u = _uuid(uuid)
+    if page is None:
+        return await service.list_telemetry(db, u, since=since, until=until, limit=limit)
+    items = await service.list_telemetry(db, u, since=None, until=None, limit=size, offset=(page - 1) * size)
+    return TelemetryPage(items=items, total=await service.count_telemetry(db, u), page=page, size=size)
 
 
-@router.get(f"/{_UUID_PATH}/events", response_model=list[EventOut])
+@router.get(f"/{_UUID_PATH}/events", response_model=list[EventOut] | EventPage)
 async def get_events(
     uuid: str,
     kind: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
+    page: int | None = Query(default=None, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-) -> list[EventOut]:
-    return await service.list_events(db, _uuid(uuid), kind=kind, limit=limit)
+) -> list[EventOut] | EventPage:
+    """page 를 주면 {items,total,page,size}(문제점 50번), 없으면 예전처럼 목록만(limit)."""
+    if page is None:
+        items, _ = await service.list_events(db, _uuid(uuid), kind=kind, limit=limit)
+        return items
+    items, total = await service.list_events(db, _uuid(uuid), kind=kind, limit=size, offset=(page - 1) * size)
+    return EventPage(items=items, total=total, page=page, size=size)
 
 
 @router.patch(f"/{_UUID_PATH}/state", response_model=StateOut)

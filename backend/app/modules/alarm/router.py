@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.modules.alarm import service
-from app.modules.alarm.schemas import AlarmOut, AlarmPage
+from app.modules.alarm.schemas import AlarmOut, AlarmPage, DeviceAlarmPage
 
 router = APIRouter(tags=["alarms"])
 
@@ -27,9 +27,15 @@ async def list_alarms(
                                      size=size)
 
 
-@router.get("/api/devices/{uuid}/alarms", response_model=list[AlarmOut])
+@router.get("/api/devices/{uuid}/alarms", response_model=list[AlarmOut] | DeviceAlarmPage)
 async def device_alarms(
-    uuid: str, limit: int = Query(default=30, ge=1, le=500), db: AsyncSession = Depends(get_db),
-) -> list[AlarmOut]:
-    """그 단말의 열린 알람 전부 + 최근 이력 limit 건."""
-    return await service.device_alarms(db, uuid.strip().upper(), limit)
+    uuid: str, limit: int = Query(default=30, ge=1, le=500),
+    page: int | None = Query(default=None, ge=1), size: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> list[AlarmOut] | DeviceAlarmPage:
+    """그 단말의 열린 알람 전부 + 최근 이력 limit 건. page 를 주면 열린 것 먼저 이어서 쪽으로(문제점 50번)."""
+    u = uuid.strip().upper()
+    if page is None:
+        return await service.device_alarms(db, u, limit)
+    items, total = await service.device_alarm_page(db, u, size, (page - 1) * size)
+    return DeviceAlarmPage(items=items, total=total, page=page, size=size)

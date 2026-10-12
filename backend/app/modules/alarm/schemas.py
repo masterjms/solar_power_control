@@ -38,3 +38,12 @@ class AlarmPage(BaseModel):
     size: int
     #: 열린 알람 탭별 건수 {all, fault, comm, pending, config, local}
     counts: dict[str, int]
+
+
+class DeviceAlarmPage(BaseModel):
+    """단말 상세의 알람 한 쪽(문제점 50번) — 열린 알람 먼저."""
+
+    items: list[AlarmOut]
+    total: int
+    page: int
+    size: int
