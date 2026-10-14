@@ -394,8 +394,8 @@ a.btn:hover{text-decoration:none; border-color:var(--blue)}
 .mini td.nw{white-space:nowrap}
 .mini.ev .ev-dn{color:var(--blue)} .mini.ev .ev-up{color:var(--ok)} .mini.ev .ev-er{color:var(--alarm)}
 
-/* ===== 로그인 화면(문제점 25번, 단말측 시안 login.html) — lg- 접두어로 앱 화면과 섞이지 않게 ===== */
-.lg{--lg-accent:#4fb8ff; --lg-text:#eef3fa; --lg-muted:rgba(226,234,246,.62); --lg-line:rgba(255,255,255,.14); --lg-glass:rgba(10,20,40,.38);
+/* ===== 로그인 화면(문제점 25번, 단말측 시안 login.html) — lg- 접두어로 앱 화면과 섞이지 않게. 맨 바깥은 .lg-page(.lg 는 스케줄 막대 범례가 쓴다 — 52번) ===== */
+.lg-page{--lg-accent:#4fb8ff; --lg-text:#eef3fa; --lg-muted:rgba(226,234,246,.62); --lg-line:rgba(255,255,255,.14); --lg-glass:rgba(10,20,40,.38);
   position:relative; min-height:100vh; min-height:100dvh; color:var(--lg-text); background:#07101f; overflow:hidden}
 .lg-bgwrap{position:fixed; inset:0; z-index:0; transition:transform .6s cubic-bezier(.2,.7,.2,1)}
 .lg-bg{position:absolute; inset:-3%; background:url(/brand/login-bg.jpg) center/cover no-repeat, linear-gradient(135deg,#0b1e33,#123a5a 55%,#1d5a73);

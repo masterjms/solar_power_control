@@ -53,7 +53,7 @@ export function Login({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <div className="lg">
+    <div className="lg-page">
       <LoginBackdrop />
       <main className="lg-main">
         <form ref={card} className="lg-card" onSubmit={submit} noValidate>
@@ -201,7 +201,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     api.me().then(() => setState("in")).catch((e) => setState(e instanceof ApiErrorException && e.status === 401 ? "out" : "in"));
     return () => window.removeEventListener(AUTH_EVENT, out);
   }, []);
-  if (state === "checking") return <div className="lg"><div className="lg-shade" /><main className="lg-main"><div className="lg-wait">확인 중…</div></main></div>;
+  if (state === "checking") return <div className="lg-page"><div className="lg-shade" /><main className="lg-main"><div className="lg-wait">확인 중…</div></main></div>;
   if (state === "out") return <Login onDone={() => setState("in")} />;
   return <>{children}</>;
 }
