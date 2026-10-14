@@ -338,14 +338,7 @@ pre.json{margin:0; font-family:var(--mono); font-size:var(--f1); white-space:pre
 .fld .tm::-webkit-calendar-picker-indicator{margin-left:2px; padding:0}
 .fld .tm::-webkit-datetime-edit{padding:0}
 /* 로그인(문제점 16번) — 폰에서도 한 화면 */
-.login{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px; background:var(--bg)}
-.login-box{width:100%; max-width:360px; display:flex; flex-direction:column; gap:var(--s3); background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:24px}
-.login-box .logo{display:flex; flex-direction:column; gap:2px; margin-bottom:var(--s2)}
-.login-box .logo b{font-size:var(--f4)}
-.login-box .logo span{font-size:var(--f1); color:var(--muted)}
-.login-box label{display:flex; flex-direction:column; gap:6px; font-size:var(--f1); color:var(--muted)}
-.login-box .inp{height:44px; font-size:var(--f-touch); width:100%}
-.login-box .btn{height:44px; font-size:var(--f-touch)}
+.side .logo.img img{max-width:100%; max-height:44px; display:block}
 /* ===== 스마트폰(문제점 16번) — 메뉴는 위쪽 가로 스크롤 줄, 카드는 한 줄로 ===== */
 @media (max-width:760px){
   .shell{grid-template-columns:minmax(0,1fr)}
@@ -400,3 +393,72 @@ a.btn:hover{text-decoration:none; border-color:var(--blue)}
 /* 단말 상세 목록(문제점 50번) — 시각·종류는 줄바꿈 없이, 열은 표로 맞춘다 */
 .mini td.nw{white-space:nowrap}
 .mini.ev .ev-dn{color:var(--blue)} .mini.ev .ev-up{color:var(--ok)} .mini.ev .ev-er{color:var(--alarm)}
+
+/* ===== 로그인 화면(문제점 25번, 단말측 시안 login.html) — lg- 접두어로 앱 화면과 섞이지 않게 ===== */
+.lg{--lg-accent:#4fb8ff; --lg-text:#eef3fa; --lg-muted:rgba(226,234,246,.62); --lg-line:rgba(255,255,255,.14); --lg-glass:rgba(10,20,40,.38);
+  position:relative; min-height:100vh; min-height:100dvh; color:var(--lg-text); background:#07101f; overflow:hidden}
+.lg-bgwrap{position:fixed; inset:0; z-index:0; transition:transform .6s cubic-bezier(.2,.7,.2,1)}
+.lg-bg{position:absolute; inset:-3%; background:url(/brand/login-bg.jpg) center/cover no-repeat, linear-gradient(135deg,#0b1e33,#123a5a 55%,#1d5a73);
+  animation:lg-kenburns 40s ease-in-out infinite alternate; transform-origin:60% 60%; will-change:transform}
+@keyframes lg-kenburns{from{transform:scale(1)}to{transform:scale(1.08) translate(-1%,-1%)}}
+.lg-shade{position:fixed; inset:0; z-index:1; pointer-events:none;
+  background:radial-gradient(ellipse 60% 55% at 50% 42%,rgba(6,14,30,.15),rgba(6,14,30,.55) 100%),
+    linear-gradient(180deg,rgba(6,14,30,.35) 0%,rgba(6,14,30,0) 40%,rgba(6,14,30,.45) 100%)}
+.lg-fx{position:fixed; inset:0; z-index:2; pointer-events:none}
+.lg-main{position:relative; z-index:3; min-height:100vh; min-height:100dvh; display:grid; place-items:center; padding:24px 16px 56px}
+.lg-wait{color:var(--lg-muted)}
+.lg-card{width:min(380px,100%); padding:40px 36px 28px; border-radius:20px; background:var(--lg-glass);
+  backdrop-filter:blur(18px) saturate(140%); -webkit-backdrop-filter:blur(18px) saturate(140%);
+  border:1px solid var(--lg-line); box-shadow:0 30px 80px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.08);
+  position:relative; overflow:hidden; opacity:0; transform:translateY(18px); animation:lg-rise .9s .2s cubic-bezier(.2,.7,.2,1) forwards}
+.lg-card::before{content:""; position:absolute; inset:-1px; border-radius:inherit; padding:1px; pointer-events:none;
+  background:conic-gradient(from var(--lg-a),transparent 0 70%,rgba(79,184,255,.9) 80%,rgba(255,179,92,.8) 88%,transparent 95%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0); -webkit-mask-composite:xor; mask-composite:exclude;
+  animation:lg-spin 6s linear infinite}
+@property --lg-a{syntax:"<angle>"; initial-value:0deg; inherits:false}
+@keyframes lg-spin{to{--lg-a:360deg}}
+@keyframes lg-rise{to{opacity:1; transform:none}}
+.lg-card.lg-shake{opacity:1; transform:none; animation:lg-shake .4s}
+@keyframes lg-shake{20%,60%{transform:translateX(-6px)}40%,80%{transform:translateX(6px)}}
+.lg-brand{display:flex; align-items:center; gap:12px; margin-bottom:30px}
+.lg-brand.img{justify-content:center} .lg-brand.img img{max-width:100%; max-height:84px}
+.lg-logo{width:40px; height:40px; border-radius:12px; display:grid; place-items:center; flex:none;
+  background:linear-gradient(135deg,rgba(255,179,92,.95),rgba(79,184,255,.95)); box-shadow:0 0 24px rgba(79,184,255,.45)}
+.lg-logo svg{width:22px; height:22px}
+.lg-brand h1{margin:0; font-size:18px; font-weight:700; letter-spacing:-.01em}
+.lg-brand p{margin:2px 0 0; font-size:12px; color:var(--lg-muted); letter-spacing:.06em}
+.lg-field{position:relative; margin-bottom:14px}
+.lg-field input{width:100%; height:52px; padding:18px 14px 6px 44px; border-radius:12px; border:1px solid var(--lg-line);
+  background:rgba(255,255,255,.06); color:var(--lg-text); font:inherit; font-size:16px; outline:none; transition:border-color .25s,box-shadow .25s,background .25s}
+.lg-field input#lg-pw{padding-right:44px}
+.lg-field input:focus{border-color:rgba(79,184,255,.7); background:rgba(255,255,255,.09); box-shadow:0 0 0 4px rgba(79,184,255,.15),0 0 22px rgba(79,184,255,.25)}
+.lg-field label{position:absolute; left:44px; top:16px; font-size:14px; color:var(--lg-muted); pointer-events:none; transition:all .2s}
+.lg-field input:focus+label,.lg-field input:not(:placeholder-shown)+label{top:7px; font-size:11px; color:var(--lg-accent)}
+.lg-field > svg{position:absolute; left:14px; top:17px; color:var(--lg-muted); transition:color .25s}
+.lg-field input:focus~svg{color:var(--lg-accent)}
+.lg-toggle{position:absolute; right:10px; top:12px; width:28px; height:28px; border:0; background:none; color:var(--lg-muted); cursor:pointer; border-radius:8px; display:grid; place-items:center}
+.lg-toggle:hover{color:var(--lg-text)}
+.lg-row{display:flex; justify-content:space-between; align-items:center; margin:6px 2px 18px; font-size:13px; color:var(--lg-muted)}
+.lg-row label{display:flex; align-items:center; gap:8px; cursor:pointer}
+.lg-row input{accent-color:var(--lg-accent); width:15px; height:15px}
+.lg-link{border:0; background:none; padding:0; font:inherit; color:var(--lg-muted); cursor:pointer}
+.lg-link:hover{color:var(--lg-text)}
+.lg-hint{margin:-8px 2px 14px; font-size:12px; line-height:1.5; color:var(--lg-muted)}
+.lg-err{margin:-6px 2px 14px; font-size:13px; color:#ffb4ab}
+.lg-btn{position:relative; width:100%; height:52px; border:0; border-radius:12px; cursor:pointer; overflow:hidden; font:inherit; font-size:15px; font-weight:600;
+  color:#06121f; letter-spacing:.02em; background:linear-gradient(90deg,#ffc27a,#7cc9ff); box-shadow:0 8px 28px rgba(79,184,255,.35); transition:transform .15s,box-shadow .25s}
+.lg-btn:hover{box-shadow:0 10px 34px rgba(79,184,255,.55)}
+.lg-btn:active{transform:scale(.985)}
+.lg-btn::after{content:""; position:absolute; top:0; left:-60%; width:40%; height:100%;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.55),transparent); transform:skewX(-20deg); animation:lg-shine 3.6s ease-in-out infinite}
+@keyframes lg-shine{0%,60%{left:-60%}100%{left:130%}}
+.lg-btn .spin{display:none; width:20px; height:20px; border:2px solid rgba(6,18,31,.25); border-top-color:#06121f; border-radius:50%; animation:lg-rot .7s linear infinite; margin:0 auto}
+.lg-btn.loading .label{display:none} .lg-btn.loading .spin{display:block}
+@keyframes lg-rot{to{transform:rotate(360deg)}}
+.lg-status{display:flex; align-items:center; justify-content:center; gap:8px; margin-top:22px; padding-top:18px; border-top:1px solid var(--lg-line); font-size:12px; color:var(--lg-muted); text-align:center}
+.lg-dot{width:7px; height:7px; flex:none; border-radius:50%; background:#4ade80; animation:lg-pulse 2s infinite}
+.lg-dot.down{background:#f87171; animation:none} .lg-dot.wait{background:#94a3b8; animation:none}
+@keyframes lg-pulse{0%{box-shadow:0 0 0 0 rgba(74,222,128,.55)}70%{box-shadow:0 0 0 9px rgba(74,222,128,0)}100%{box-shadow:0 0 0 0 rgba(74,222,128,0)}}
+.lg-foot{position:fixed; bottom:16px; left:0; right:0; z-index:3; text-align:center; font-size:11px; color:rgba(226,234,246,.4); letter-spacing:.04em}
+@media (max-width:420px){ .lg-card{padding:32px 22px 22px} }
+@media (prefers-reduced-motion:reduce){ .lg-bg,.lg-card::before,.lg-btn::after,.lg-dot{animation:none} .lg-card{animation:none; opacity:1; transform:none} }

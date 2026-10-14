@@ -35,6 +35,8 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 class LoginIn(BaseModel):
     user: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=256)
+    #: 로그인 유지 — 기본 켬(예전 동작). 끄면 브라우저를 닫을 때 로그아웃.
+    remember: bool = True
 
 
 def _accounts() -> dict[str, str]:
@@ -79,9 +81,11 @@ async def login(body: LoginIn, request: Request, response: Response,
                     request.headers.get("X-Real-IP", "-"))
         raise LoginFailed()
     await _log(db, user, True, "ok", request)
-    ttl = settings.session_hours * 3600
+    # 로그인 유지(문제점 25번 로그인 화면): 켜면 SESSION_HOURS 동안 쿠키 유지, 끄면 브라우저를 닫을 때
+    # 사라지는 쿠키 + 토큰 자체도 12시간 뒤 만료(브라우저가 세션을 되살려도 길게 남지 않게).
+    ttl = settings.session_hours * 3600 if body.remember else min(12 * 3600, settings.session_hours * 3600)
     response.set_cookie(
-        ws.COOKIE, ws.issue(_key(accts), user, ttl), max_age=ttl, path="/", httponly=True,
+        ws.COOKIE, ws.issue(_key(accts), user, ttl), max_age=ttl if body.remember else None, path="/", httponly=True,
         samesite="lax",
         secure=request.headers.get("X-Forwarded-Proto") == "https",
     )

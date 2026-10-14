@@ -812,7 +812,7 @@ export const api = {
     return request<ActivityPage>(`/api/activity?${qs}`);
   },
   pendingSearch: (suffix: string) => request<{ count: number; uuid: string | null }>(`/api/devices/pending-search?suffix=${encodeURIComponent(suffix)}`),
-  login: (user: string, password: string) => request<{ user: string }>("/api/auth/login", json("POST", { user, password })),
+  login: (user: string, password: string, remember = true) => request<{ user: string }>("/api/auth/login", json("POST", { user, password, remember })),
   logout: () => request<{ ok: boolean }>("/api/auth/logout", json("POST")),
   uiConfig: () => request<UiConfig>("/api/ui-config"),
   serverSettings: () => request<ServerSettings>("/api/server-settings"),

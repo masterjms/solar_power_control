@@ -9,7 +9,7 @@ import DeviceConfig from "./DeviceConfig";
 import Profiles from "./Profiles";
 import System from "./System";
 import Accounts from "./Accounts";
-import { PasswordModal } from "./Login";
+import { PasswordModal, BrandLogo } from "./Login";
 import ServerSettings from "./ServerSettings";
 import Regions from "./Regions";
 import GroupControl from "./GroupControl";
@@ -147,7 +147,7 @@ export default function App() {
     <MeCtx.Provider value={me}>
     <div className="shell">
       <aside className="side">
-        <div className="logo"><b>Solar Light Control</b><span>태양광 조명 통합관제</span></div>
+        <BrandLogo variant={theme === "dark" ? "dark" : "light"} />
         <nav className="nav">
           {PAGES.filter((p) => pageAllowed(p.id, me?.role)).map((p) => (
             <a key={p.id} href={`#${p.id}`} className={page === p.id ? "on" : ""}>

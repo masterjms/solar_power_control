@@ -416,3 +416,7 @@ API 는 그대로 401 `{code: LOGIN_FAILED, message}`. 화면은 `api.userMessag
 
 ### 단말 상세 목록 쪽 넘기기 (2026-10-12, 문제점 50번)
 `GET /api/devices/{uuid}/alarms|telemetry|events?page=&size=` → `{items,total,page,size}`(알람은 열린 것 먼저, 이어서 이력). `page` 가 없으면 예전처럼 `?limit=` 목록.
+
+### 로그인 유지 (2026-10-14, 문제점 25번)
+`POST /api/auth/login` 본문에 `remember`(기본 true). true = 쿠키 `Max-Age` = SESSION_HOURS(기본 7일), false = 세션 쿠키(브라우저 닫으면 사라짐) + 토큰 12시간 만료.
+
