@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# 새 EC2(Ubuntu 24.04, t3.small) 최초 셋업. 여러 번 실행해도 안전하다(멱등).
+# 새 EC2(Ubuntu 24.04, t3.small) 최초 셋업 — 우리 개발·운영 서버(git clone 방식). 여러 번 실행해도 안전하다(멱등).
+# 다른 클라우드·기관 서버에 납품할 때는 setup-server.sh(클라우드 무관 준비) + 납품 묶음(scripts/install-offline.sh)을 쓴다 — docs/08.
 #
 #   ssh ubuntu@<EIP>
 #   curl -fsSL https://raw.githubusercontent.com/masterjms/solar_power_control/main/infra/scripts/setup-ec2.sh | bash
@@ -84,7 +85,7 @@ else
 fi
 
 # ── 5. ufw ───────────────────────────────────────────────────────────
-# OS 방화벽은 포트 단위만 연다. 접속원 IP 제한은 AWS Security Group 에서 한다:
+# OS 방화벽은 포트 단위만 연다. 접속원 IP 제한은 클라우드 방화벽(AWS 는 Security Group)에서 한다:
 #   1883 (평문, 1차~3차) — 시험 단말 회선(통신사 NAT 대역)과 시험 PC IP 로만 제한할 것.
 #                         4차 이후 운영 계정을 거부하고 호스트 공개를 닫는다.
 #   8883 (TLS, 4차)      — 인터넷 전체 허용 가능.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
 # AWS 비용 일일 요약 → Slack (cron 으로 매일 아침 실행)
+# ※ AWS 전용(Cost Explorer). 다른 클라우드·기관 서버에서는 cron 에 넣지 않는다 — 비용은 그 클라우드 콘솔에서 본다(docs/08).
 #
 #   bash scripts/cost-report.sh          Slack 으로 보낸다
 #   bash scripts/cost-report.sh --dry    화면에만 출력 (설정 확인용)

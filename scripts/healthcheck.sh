@@ -21,7 +21,7 @@
 #   · 백업 최신성          pg_dump cron 이 멈춘 걸 알아채기 위해
 #   · 인증서 만료          4차. 없으면 정보만
 #
-# "서버가 죽었는가" 는 여기서 못 본다 — 그건 CloudWatch StatusCheckFailed 담당.
+# "서버가 죽었는가" 는 여기서 못 본다 — 밖에서 보는 감시(UptimeRobot·클라우드 상태 점검·기관 관제) 담당(docs/04 §11, docs/08).
 set -uo pipefail          # -e 는 쓰지 않는다. 한 항목이 실패해도 나머지는 점검한다.
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

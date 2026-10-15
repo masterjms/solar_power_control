@@ -1,4 +1,4 @@
-# solar_power_control 운영 스택 — 개발 EC2(t3.small) 1대에 이 구성 한 벌.
+# solar_power_control 운영 스택 — 서버 1대에 이 구성 한 벌(지금은 AWS EC2, 어느 클라우드·온프레미스든 같다 — docs/08).
 #
 # 서비스 4개: mosquitto / backend / postgres / web(nginx, 관리 화면). Icecast·TTS 는 없다
 # (마을방송과 다른 제품이다).
@@ -30,7 +30,7 @@ services:
     logging: *default-logging
     ports:
       # 1883 평문 — 1차~3차 시험 단말 + PC 시험 도구. 인터넷 전체에 열지 말고
-      #            AWS Security Group 에서 시험 접속원 IP 로 제한한다(사양서 §0.3).
+      #            클라우드 방화벽(AWS 는 Security Group)에서 시험 접속원 IP 로 제한한다(사양서 §0.3).
       #            4차부터는 운영 계정을 거부하고(§1.2.4) 결국 호스트 공개를 닫는다.
       # 8883 TLS  — 4차. infra/certs/server.crt 가 없으면 리스너 자체가 생성되지
       #            않는다(entrypoint.sh 가 효력 conf 를 조립한다). 포트만 열어 둔다.
@@ -72,6 +72,8 @@ services:
 
   backend:
     build: ./backend
+    # 납품 묶음(scripts/package-release.sh)은 이 이름·버전으로 이미지를 저장하고, 설치(install-offline.sh)는 빌드 없이 이것을 쓴다.
+    image: iotlight-backend:${APP_VERSION:-local}
     container_name: iotlight-backend
     restart: unless-stopped
     logging: *default-logging
@@ -114,6 +116,7 @@ services:
   # docker-compose.tls.yml 이 인증서를 물리면 켜진다(frontend/nginx/40-tls.sh, ADR-006).
   web:
     build: ./frontend
+    image: iotlight-web:${APP_VERSION:-local}
     container_name: iotlight-web
     restart: unless-stopped
     logging: *default-logging
