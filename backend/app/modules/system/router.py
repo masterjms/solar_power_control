@@ -11,12 +11,14 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core import accounts as ac
 from app.core import ids
-from app.models.region import Region
 from app.core.auth import Principal, current_user
 from app.core.metrics import metrics
 from app.core.server_settings import runtime
 from app.db import get_db
+from app.models.region import Region
+from app.models.system import AdminUser
 from app.modules.deps import get_broker_log, get_buffer, get_config_sync, get_connection
 from app.modules.mqtt_auth.router import active_key_ids
 from app.mqtt.config_sync import ConfigSyncQueue
@@ -123,10 +125,25 @@ async def me(principal: Principal = Depends(current_user),
         rows = await db.execute(select(Region.id, Region.name).where(Region.id.in_(principal.region_ids)))
         names = dict(rows.all())
         regions = [names.get(i, f"#{i}") for i in principal.region_ids]
+    # 문제점 54번: 비밀번호를 바꿔야 하나(관리자가 정한 것·90일 지남) — 화면이 바꾸기 창을 닫을 수 없게 띄운다
+    must_change = False
+    reason = None
+    if principal.source == "db":
+        row = await db.scalar(select(AdminUser).where(AdminUser.username == principal.user))
+        if row is not None:
+            now = dt.datetime.now(dt.timezone.utc)
+            if row.must_change_password:
+                must_change, reason = True, "최고관리자가 정해 준 비밀번호입니다 — 본인만 아는 비밀번호로 바꿔 주세요."
+            elif ac.password_expired(row.password_changed_at, now):
+                must_change, reason = True, f"비밀번호를 바꾼 지 {ac.PASSWORD_MAX_AGE_DAYS}일이 지났습니다 — 새 비밀번호로 바꿔 주세요."
     return {"user": principal.user, "role": principal.role, "source": principal.source,
             "region_ids": list(principal.region_ids) if principal.region_ids is not None else None,
             "regions": regions, "expires_at": principal.expires_at,
-            "can_change_password": principal.source == "db"}
+            "can_change_password": principal.source == "db",
+            "must_change_password": must_change, "password_reason": reason,
+            "password_rule": ac.PASSWORD_RULE,
+            # 무동작 자동 로그아웃(분, 0 = 끔) — 서버 설정
+            "idle_logout_min": runtime.get("idle_logout_min")}
 
 
 @router.post("/api/admin/rollup")

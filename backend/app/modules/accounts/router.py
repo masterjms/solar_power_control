@@ -87,6 +87,9 @@ def _out(a: AdminUser, tops: dict[int, str], now: dt.datetime) -> dict[str, Any]
         "expiring": exp is not None and now < exp <= now + dt.timedelta(days=EXPIRING_DAYS),
         "disabled": a.disabled, "created_by": a.created_by, "created_at": a.created_at,
         "last_login_at": a.last_login_at, "source": "db",
+        # 문제점 54번: 관리자가 정한 비밀번호(바꿔야 함)·90일 지남
+        "must_change_password": a.must_change_password,
+        "password_expired": ac.password_expired(a.password_changed_at, now),
     }
 
 
@@ -111,6 +114,18 @@ async def list_accounts(me: Principal = Depends(current_user),
     now = _now()
     rows = (await db.execute(select(AdminUser).order_by(AdminUser.role, AdminUser.username))).scalars()
     items = _env_rows() + [_out(a, tops, now) for a in rows]
+    # 잠김(연속 실패) 표시 — 최근 기록만 보므로 계정 수만큼 가벼운 조회
+    recent = (await db.execute(
+        select(LoginLog.username, LoginLog.at, LoginLog.ok, LoginLog.reason)
+        .where(LoginLog.at > now - dt.timedelta(minutes=ac.LOCK_MINUTES))
+        .order_by(LoginLog.at.desc()))).all()
+    by_user: dict[str, list[tuple[dt.datetime, bool, str]]] = {}
+    for u, at, ok, reason in recent:
+        by_user.setdefault(u, []).append((at, ok, reason))
+    for it in items:
+        until = ac.lock_until(by_user.get(it["username"], []), now)
+        it["locked_until"] = until
+        it["must_change_password"] = it.get("must_change_password", False)
     return {"items": items, "regions": [{"id": i, "name": n} for i, n in sorted(tops.items(), key=lambda x: x[1])],
             "max_super": ac.MAX_SUPER, "super_count": await _super_count(db),
             "expiry_choices": list(ac.EXPIRY_DAYS)}
@@ -137,7 +152,7 @@ async def create_account(body: AccountIn, me: Principal = Depends(current_user),
         raise AccountInvalid(detail={"fields": errors})
     a = AdminUser(username=username, password_hash=ac.hash_password(body.password), role=body.role,
                   region_ids=None if body.role == ac.ROLE_SUPER else sorted(set(body.region_ids or [])),
-                  expires_at=expires, created_by=me.user)
+                  expires_at=expires, created_by=me.user, must_change_password=True)
     db.add(a)
     await db.flush()
     log.info("계정 만듦: %s(%s) by %s", username, body.role, me.user)
@@ -153,11 +168,28 @@ async def my_password(body: MyPasswordIn, me: Principal = Depends(current_user),
         raise Forbidden(".env 계정의 비밀번호는 서버 .env 에서 바꿉니다.", code="ENV_ACCOUNT")
     if not ac.verify_password(body.old, a.password_hash):
         raise LoginFailed("지금 비밀번호가 맞지 않습니다.", code="BAD_PASSWORD")
-    if len(body.new) < ac.PASSWORD_MIN:
-        raise AccountInvalid(detail={"fields": {"new": f"{ac.PASSWORD_MIN}자 이상"}})
+    if why := ac.password_problem(body.new):
+        raise AccountInvalid(detail={"fields": {"new": why}})
+    if ac.verify_password(body.new, a.password_hash):
+        raise AccountInvalid(detail={"fields": {"new": "지금 비밀번호와 다른 것으로"}})
     a.password_hash = ac.hash_password(body.new)
     a.password_changed_at = ac.password_changed_now(_now())
+    a.must_change_password = False
     return {"ok": True, "relogin": True}
+
+
+class UnlockIn(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/unlock")
+async def unlock(body: UnlockIn, me: Principal = Depends(current_user),
+                 db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """연속 실패 잠금 해제(문제점 54번) — .env 계정도 된다. 로그인 기록에 '잠금 해제'로 남는다."""
+    require_super(me, action="accounts.unlock")
+    db.add(LoginLog(username=body.username.strip()[:64], ok=True, reason="unlock", ip=None))
+    log.info("잠금 해제: %s by %s", body.username, me.user)
+    return {"ok": True}
 
 
 async def _get(db: AsyncSession, account_id: int) -> AdminUser:
@@ -204,10 +236,12 @@ async def reset_password(account_id: int, body: PasswordIn, me: Principal = Depe
                          db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     require_super(me, action="accounts.password")
     a = await _get(db, account_id)
-    if len(body.password) < ac.PASSWORD_MIN:
-        raise AccountInvalid(detail={"fields": {"password": f"{ac.PASSWORD_MIN}자 이상"}})
+    if why := ac.password_problem(body.password):
+        raise AccountInvalid(detail={"fields": {"password": why}})
     a.password_hash = ac.hash_password(body.password)
     a.password_changed_at = ac.password_changed_now(_now())
+    a.must_change_password = True  # 관리자가 정한 비밀번호 — 본인이 로그인하면 바꾸게
+    db.add(LoginLog(username=a.username, ok=True, reason="unlock", ip=None))  # 재설정은 잠금도 푼다
     log.info("비밀번호 재설정: %s by %s", a.username, me.user)
     return {"ok": True}
 

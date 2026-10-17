@@ -125,6 +125,8 @@ services:
       - "80:80"
     environment:
       ADMIN_USER: ${ADMIN_USER:-admin}
+      # 관리 화면을 열 수 있는 IP(쉼표로 여러 개, 비우면 전체) — 문제점 54번, frontend/nginx/35-access.sh
+      ADMIN_ALLOW_IPS: ${ADMIN_ALLOW_IPS:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       # 선택 — 두 번째(최고관리자가 아닌) 계정. 둘 다 비면 admin 하나만. (ADR-005 권한)
       OPERATOR_USER: ${OPERATOR_USER:-}

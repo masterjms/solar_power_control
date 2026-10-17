@@ -9,7 +9,7 @@ import DeviceConfig from "./DeviceConfig";
 import Profiles from "./Profiles";
 import System from "./System";
 import Accounts from "./Accounts";
-import { PasswordModal, BrandLogo } from "./Login";
+import { PasswordModal, BrandLogo, useIdleLogout } from "./Login";
 import ServerSettings from "./ServerSettings";
 import Regions from "./Regions";
 import GroupControl from "./GroupControl";
@@ -71,6 +71,7 @@ export default function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [meErr, setMeErr] = useState<string | null>(null);
   const [pwOpen, setPwOpen] = useState(false);
+  useIdleLogout(me?.idle_logout_min);
   const guest = me?.role === "guest";
   const isSuper = !me || me.role === "super_admin";
   // 역할에 없는 메뉴로 들어오면(주소창에 #… 직접) 대시보드로
@@ -221,7 +222,9 @@ export default function App() {
         {page === "system" && <System role={me?.role ?? null} />}
       </main>
 
-      {pwOpen && <PasswordModal onClose={() => setPwOpen(false)} />}
+      {pwOpen && !me?.must_change_password && <PasswordModal onClose={() => setPwOpen(false)} />}
+      {/* 문제점 54번: 관리자가 정한 비밀번호·90일 지난 비밀번호는 바꿔야 쓸 수 있다 */}
+      {me?.must_change_password && <PasswordModal onClose={() => undefined} forced={me.password_reason ?? "비밀번호를 바꿔 주세요."} />}
       {selected && <div className="ov" onClick={() => setSelected(null)} />}
       <aside className={`drawer wide ${selected ? "open" : ""}`} aria-label="단말 상세" aria-hidden={!selected}>
         {selected && (

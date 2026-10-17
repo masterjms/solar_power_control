@@ -107,8 +107,9 @@ export function PinIcon({ kind }: { kind: PinKind }) {
   return <span className="pinico" dangerouslySetInnerHTML={{ __html: pinSvg(kind, 15, 21) }} />;
 }
 
-/** 마우스를 올리면 뜨는 말풍선 — 시설명, 배터리 전압. 오프라인이어도 서버가 마지막으로 아는 전압을
- *  그대로 적고("마지막 값" 꼬리표 없음), 한 번도 받은 적이 없으면 0.0 V(문제점 13번 10/1 추가). */
+/** 마우스를 올리면 뜨는 말풍선 — 시설명 / 배터리 잔량 %, 전압(문제점 55번: "92%, 26.1 V").
+ *  오프라인이어도 서버가 마지막으로 아는 값을 그대로 적고("마지막 값" 꼬리표 없음), 전압을 한 번도 받은 적이 없으면 0.0 V,
+ *  잔량을 모르면 전압만(문제점 13번 10/1 추가). */
 function hoverEl(p: MapPoint): HTMLElement {
   const v = volt1(p.bv);
   const el = document.createElement("div");
@@ -116,12 +117,12 @@ function hoverEl(p: MapPoint): HTMLElement {
   const b = document.createElement("b");
   b.textContent = p.site ?? p.uuid;
   const s = document.createElement("span");
-  s.textContent = v || "0.0 V";
+  s.textContent = `${p.sc !== null && p.sc !== undefined ? `${p.sc}%, ` : ""}${v || "0.0 V"}`;
   el.append(b, s);
   return el;
 }
 
-/** 단말 핀 지도 — 색은 PIN. 가까운 핀은 묶는다. 핀에 마우스를 올리면 시설명·배터리 전압. */
+/** 단말 핀 지도 — 색은 PIN. 가까운 핀은 묶는다. 핀에 마우스를 올리면 시설명·배터리 %·전압. */
 export function DeviceMap({ points, onSelect, height = 420 }: { points: MapPoint[]; onSelect: (uuid: string) => void; height?: number }) {
   const { kakao, error } = useKakao();
   const box = useRef<HTMLDivElement>(null);

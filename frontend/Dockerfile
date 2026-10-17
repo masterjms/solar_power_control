@@ -20,13 +20,15 @@ COPY nginx/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY nginx/routes.conf /etc/nginx/iotlight/routes.conf
 # /docker-entrypoint.d/ 의 스크립트는 envsubst(20-envsubst-on-templates.sh) 뒤에 이름순으로 실행된다
 #   30-htpasswd.sh  .env 계정(ADMIN_*, OPERATOR_*) → /etc/nginx/.htpasswd
+#   35-access.sh    관리 화면 접근 IP 제한(ADMIN_ALLOW_IPS)·보안 헤더(문제점 54번)
 #   40-tls.sh       /etc/nginx/certs/server.crt 유무로 평문/TLS 모드 결정(4차)
 COPY nginx/30-htpasswd.sh /docker-entrypoint.d/30-htpasswd.sh
+COPY nginx/35-access.sh /docker-entrypoint.d/35-access.sh
 COPY nginx/40-tls.sh /docker-entrypoint.d/40-tls.sh
 # Windows 체크아웃이면 CRLF 가 섞일 수 있다 — sh 가 못 읽으므로 벗긴다.
 # /var/www/certbot = certbot --webroot 토큰 자리(compose 가 certbot-www 볼륨을 물린다).
-RUN sed -i 's/\r$//' /docker-entrypoint.d/30-htpasswd.sh /docker-entrypoint.d/40-tls.sh /etc/nginx/iotlight/routes.conf \
-    && chmod +x /docker-entrypoint.d/30-htpasswd.sh /docker-entrypoint.d/40-tls.sh \
+RUN sed -i 's/\r$//' /docker-entrypoint.d/30-htpasswd.sh /docker-entrypoint.d/35-access.sh /docker-entrypoint.d/40-tls.sh /etc/nginx/iotlight/routes.conf \
+    && chmod +x /docker-entrypoint.d/30-htpasswd.sh /docker-entrypoint.d/35-access.sh /docker-entrypoint.d/40-tls.sh \
     && mkdir -p /var/www/certbot
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80 443

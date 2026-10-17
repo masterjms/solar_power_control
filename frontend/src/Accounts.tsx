@@ -4,6 +4,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Account, AccountList, LoginRecord, Role, api, ApiErrorException, errorText } from "./api";
 import { localTime, relTime } from "./format";
+import { passwordProblem } from "./Login";
 import { Card, DEFAULT_PAGE_SIZE, PageSize, Pager, nf, pageCount } from "./ui";
 
 const EXPIRY_LABEL: Record<string, string> = {
@@ -14,7 +15,8 @@ const ROLE_OPTS: [Role, string, string][] = [
   ["guest", "게스트", "맡은 시·도의 대시보드만 봅니다(버튼 없음)"],
   ["super_admin", "최고관리자", "모든 기능(최대 3명)"],
 ];
-const REASON: Record<string, string> = { ok: "성공", bad_password: "비밀번호 틀림", expired: "기간 만료", disabled: "사용 중지" };
+const REASON: Record<string, string> = { ok: "성공", bad_password: "비밀번호 틀림", expired: "기간 만료", disabled: "사용 중지",
+  locked: "잠긴 동안 시도", unlock: "잠금 해제(최고관리자)" };
 
 function fieldErrors(e: unknown): Record<string, string> {
   return e instanceof ApiErrorException ? ((e.err.detail as { fields?: Record<string, string> } | undefined)?.fields ?? {}) : {};
@@ -69,7 +71,7 @@ function AccountForm({ data, onDone }: { data: AccountList; onDone: (msg: string
       <label>아이디 <small>영문·숫자·_·- 3~32자</small>
         <input value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />
         {errs.username && <small className="c-alarm">{errs.username}</small>}</label>
-      <label>처음 비밀번호 <small>8자 이상 — 본인이 로그인 뒤 바꿉니다</small>
+      <label>처음 비밀번호 <small>3종류 8자·2종류 10자 이상 — 본인이 처음 로그인하면 바꿔야 합니다</small>
         <input type="password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
         {errs.password && <small className="c-alarm">{errs.password}</small>}</label>
       <label className="w2">역할
@@ -146,10 +148,10 @@ function AccountEdit({ a, data, onDone, onClose }: { a: Account; data: AccountLi
           <span className="sp" />
           <button type="button" className="btn danger" onClick={() => confirm(`${a.username} 계정을 지울까요? 되돌릴 수 없습니다.`) && run(() => api.deleteAccount(a.id!), `${a.username} 지움`)}>삭제</button>
         </div>
-        <label className="w2">비밀번호 재설정 <small>8자 이상 — 그 계정의 지금 로그인은 끊깁니다</small>
+        <label className="w2">비밀번호 재설정 <small>3종류 8자·2종류 10자 이상 — 지금 로그인은 끊기고, 잠금도 풀리며, 본인이 로그인하면 바꿔야 합니다</small>
           <span className="bar2" style={{ flexWrap: "nowrap" }}>
             <input type="password" value={pw} autoComplete="new-password" style={{ flex: 1 }} onChange={(e) => setPw(e.target.value)} />
-            <button type="button" className="btn" disabled={pw.length < 8} onClick={() => run(() => api.resetPassword(a.id!, pw), `${a.username} 비밀번호 재설정`)}>재설정</button>
+            <button type="button" className="btn" disabled={!!passwordProblem(pw)} title={passwordProblem(pw) ?? ""} onClick={() => run(() => api.resetPassword(a.id!, pw), `${a.username} 비밀번호 재설정`)}>재설정</button>
           </span></label>
         {err && <div className="w2 err">{err}</div>}
       </div>
@@ -193,7 +195,13 @@ export default function Accounts({ role }: { role: string | null }) {
                   <td>{a.role_label}</td>
                   <td>{a.role === "super_admin" || a.role === "admin" ? <span className="muted">전 지역</span> : a.regions.join(", ")}</td>
                   <td className={a.expired ? "c-alarm" : a.expiring ? "c-warn" : ""}>{a.expires_at ? `${localTime(a.expires_at)}${a.expired ? " (만료)" : a.expiring ? " (곧 만료)" : ""}` : "무기한"}</td>
-                  <td>{a.source === "env" ? <span className="muted">기본 관리자 계정</span> : a.disabled ? <span className="c-alarm">사용 중지</span> : a.expired ? <span className="c-alarm">만료</span> : "사용 중"}</td>
+                  <td>
+                    {a.locked_until
+                      ? <><span className="c-alarm">잠김 · {new Date(a.locked_until).toTimeString().slice(0, 5)}까지</span>{" "}
+                          <button type="button" className="btn sm" onClick={() => api.unlockAccount(a.username).then(() => (setMsg(`${a.username} 잠금 해제`), load())).catch((e) => setErr(errorText(e)))}>잠금 해제</button></>
+                      : a.source === "env" ? <span className="muted">기본 관리자 계정</span> : a.disabled ? <span className="c-alarm">사용 중지</span> : a.expired ? <span className="c-alarm">만료</span> : "사용 중"}
+                    {(a.must_change_password || a.password_expired) && <div className="muted">{a.must_change_password ? "비밀번호 변경 전" : "비밀번호 90일 지남"}</div>}
+                  </td>
                   <td title={a.last_login_at ?? ""}>{a.last_login_at ? relTime(a.last_login_at) : "-"}</td>
                   <td>{a.created_by ?? "-"}</td>
                   <td>{a.source === "db" && <button type="button" className="btn sm" onClick={() => setEdit(edit === a.id ? null : a.id)}>바꾸기</button>}</td>

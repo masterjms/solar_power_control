@@ -56,6 +56,8 @@ class AdminUser(Base):
     password_changed_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    #: 최고관리자가 정한 비밀번호(처음 만들 때·재설정) — 본인이 로그인하면 바꾸게 한다(문제점 54번).
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
 
 
 class LoginLog(Base):
@@ -69,7 +71,7 @@ class LoginLog(Base):
     )
     username: Mapped[str] = mapped_column(Text, nullable=False)
     ok: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    #: ok / bad_password / expired / disabled
+    #: ok / bad_password / expired / disabled / locked(잠긴 동안 시도) / unlock(최고관리자가 잠금 해제·재설정)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     ip: Mapped[str | None] = mapped_column(Text)
 

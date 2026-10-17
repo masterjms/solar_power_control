@@ -37,7 +37,7 @@ def test_is_valid():
 
 
 def _check(**kw):
-    base = dict(username="gyeonggi1", password="password1", role=ac.ROLE_REGION, region_ids=[1],
+    base = dict(username="gyeonggi1", password="Passw0rd!", role=ac.ROLE_REGION, region_ids=[1],
                 reserved={"admin"}, top_ids={1, 2}, super_count=1)
     base.update(kw)
     return ac.check_new_account(**base)
@@ -49,6 +49,7 @@ def test_check_new_account_rules():
     assert "username" in _check(username="a.b.c")          # '.' 은 쿠키 구분자
     assert "username" in _check(username="admin")          # .env 이름
     assert "password" in _check(password="short")
+    assert "password" in _check(password="password1")      # 2종 9자 — 10자가 안 됨(문제점 54번)
     assert "role" in _check(role="admin")                  # 옛 역할은 못 만든다
     assert "region_ids" in _check(region_ids=[])
     assert "region_ids" in _check(region_ids=[3])          # 시·도가 아님
@@ -98,3 +99,33 @@ def test_password_changed_rounds_up_to_next_second():
     got = ac.password_changed_now(t)
     assert got == dt.datetime(2026, 10, 4, 9, 0, 6, tzinfo=dt.timezone.utc)
     assert int(t.timestamp()) < int(got.timestamp())  # 같은 초에 받은 옛 쿠키는 끊긴다
+
+
+def test_password_rule():
+    """문제점 54번: 3종 8자 이상 또는 2종 10자 이상."""
+    assert ac.password_problem("Abcdef1!") is None        # 4종 8자
+    assert ac.password_problem("abcdef1!") is None        # 3종 8자
+    assert ac.password_problem("abcdefgh12") is None      # 2종 10자
+    assert ac.password_problem("abcdefg12") is not None   # 2종 9자
+    assert ac.password_problem("abcdefghijkl") is not None  # 1종
+    assert ac.password_problem("Ab1!") is not None        # 짧음
+
+
+def test_lock_until():
+    now = dt.datetime(2026, 10, 17, 12, 0, tzinfo=dt.timezone.utc)
+    m = lambda n: now - dt.timedelta(minutes=n)  # noqa: E731
+    bad = lambda n: (m(n), False, "bad_password")  # noqa: E731
+    assert ac.lock_until([bad(1), bad(2), bad(3), bad(4)], now) is None           # 4회
+    until = ac.lock_until([bad(1), bad(2), bad(3), bad(4), bad(5)], now)
+    assert until == m(5) + dt.timedelta(minutes=30)                             # 5번째부터 30분
+    assert ac.lock_until([bad(1), bad(2), (m(3), True, "ok"), bad(4), bad(5), bad(6)], now) is None  # 성공에서 멈춤
+    assert ac.lock_until([bad(1), (m(2), True, "unlock"), bad(3), bad(4), bad(5), bad(6)], now) is None  # 잠금 해제
+    assert ac.lock_until([(m(1), False, "locked"), bad(2), bad(3), bad(4), bad(5), bad(6)], now) is not None  # 잠긴 동안 시도는 안 셈
+    assert ac.lock_until([bad(26), bad(27), bad(28), bad(29), bad(31)], now) is None  # 30분 지난 실패는 안 셈
+
+
+def test_password_expired():
+    now = dt.datetime(2026, 10, 17, tzinfo=dt.timezone.utc)
+    assert not ac.password_expired(now - dt.timedelta(days=89), now)
+    assert ac.password_expired(now - dt.timedelta(days=91), now)
+

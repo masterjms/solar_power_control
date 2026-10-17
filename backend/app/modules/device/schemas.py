@@ -266,6 +266,8 @@ class MapPoint(BaseModel):
     lit: bool | None = None
     #: 마지막 Telemetry 배터리 전압(x100 V, 2450 = 24.50 V). 오프라인이어도 마지막 값.
     bv: int | None = None
+    #: 마지막 Telemetry 배터리 잔량 %(문제점 55번 — 지도 말풍선). 오프라인이어도 마지막 값.
+    sc: int | None = None
     node_name: str | None
 
 

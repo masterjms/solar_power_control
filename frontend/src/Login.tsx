@@ -14,6 +14,14 @@ export function Login({ onDone }: { onDone: () => void }) {
   const [hint, setHint] = useState(false);
   const card = useRef<HTMLFormElement | null>(null);
   const [srv, setSrv] = useState<"ok" | "down" | null>(null);
+  // 자동 로그아웃으로 돌아왔으면 한 번 알려 준다(문제점 54번)
+  const [idleNote] = useState<string | null>(() => {
+    try {
+      const m = sessionStorage.getItem(IDLE_FLAG);
+      sessionStorage.removeItem(IDLE_FLAG);
+      return m ? `${m}분 동안 사용하지 않아 자동으로 로그아웃했습니다.` : null;
+    } catch { return null; }
+  });
 
   // 서버 상태 한 줄 — 로그인 전에도 열린 /healthz(ok/down)
   useEffect(() => {
@@ -77,6 +85,7 @@ export function Login({ onDone }: { onDone: () => void }) {
             <button type="button" className="lg-link" onClick={() => setHint((v) => !v)}>비밀번호 찾기</button>
           </div>
           {hint && <div className="lg-hint">비밀번호는 최고관리자가 계정 관리에서 다시 정해 줍니다 — 관리자에게 문의하세요.</div>}
+          {idleNote && !err && <div className="lg-hint">{idleNote}</div>}
           {err && <div className="lg-err" role="alert">{err}</div>}
           <button className={`lg-btn ${busy ? "loading" : ""}`} type="submit" disabled={busy}>
             <span className="label">로그인</span><span className="spin" />
@@ -215,7 +224,16 @@ export async function logout() {
 }
 
 /** 내 비밀번호 바꾸기(화면에서 만든 계정만, 문제점 21번). 바꾸면 다시 로그인한다. */
-export function PasswordModal({ onClose }: { onClose: () => void }) {
+/** 비밀번호 규칙(서버와 같은 것, 문제점 54번) — 3종 8자 이상 또는 2종 10자 이상. 화면에서 먼저 알려 주기만 하고 판정은 서버. */
+export function passwordProblem(pw: string): string | null {
+  const kinds = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((r) => r.test(pw)).length;
+  return (pw.length >= 8 && kinds >= 3) || (pw.length >= 10 && kinds >= 2) ? null : PASSWORD_RULE;
+}
+export const PASSWORD_RULE = "영문 대문자·소문자·숫자·특수문자 중 3종류 이상 8자 이상, 또는 2종류 이상 10자 이상";
+
+/** 내 비밀번호 바꾸기(화면에서 만든 계정만, 문제점 21번). 바꾸면 다시 로그인한다.
+ *  forced = 바꿔야만 쓸 수 있을 때(관리자가 정한 비밀번호·90일 지남, 문제점 54번) — 닫기 없음, 로그아웃만. */
+export function PasswordModal({ onClose, forced = null }: { onClose: () => void; forced?: string | null }) {
   const [old, setOld] = useState("");
   const [nw, setNw] = useState("");
   const [nw2, setNw2] = useState("");
@@ -223,8 +241,10 @@ export function PasswordModal({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (nw.length < 8) return setErr("새 비밀번호는 8자 이상");
+    const why = passwordProblem(nw);
+    if (why) return setErr(`새 비밀번호: ${why}`);
     if (nw !== nw2) return setErr("새 비밀번호 두 칸이 다릅니다");
+    if (nw === old) return setErr("지금 비밀번호와 다른 것으로 정하세요");
     setBusy(true);
     setErr(null);
     try {
@@ -238,17 +258,57 @@ export function PasswordModal({ onClose }: { onClose: () => void }) {
     }
   }
   return (
-    <div className="modal-ov" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-ov" onClick={(e) => !forced && e.target === e.currentTarget && onClose()}>
       <form className="modal" onSubmit={submit} role="dialog" aria-label="비밀번호 바꾸기">
-        <div className="dh"><h3>비밀번호 바꾸기</h3><button type="button" className="x" onClick={onClose} aria-label="닫기">✕</button></div>
+        <div className="dh"><h3>비밀번호 바꾸기</h3>
+          {!forced && <button type="button" className="x" onClick={onClose} aria-label="닫기">✕</button>}</div>
         <div className="db form2">
+          {forced && <div className="w2 cap c-warn">{forced}</div>}
           <label className="w2">지금 비밀번호<input type="password" value={old} autoComplete="current-password" onChange={(e) => setOld(e.target.value)} /></label>
-          <label>새 비밀번호 <small>8자 이상</small><input type="password" value={nw} autoComplete="new-password" onChange={(e) => setNw(e.target.value)} /></label>
+          <label>새 비밀번호<input type="password" value={nw} autoComplete="new-password" onChange={(e) => setNw(e.target.value)} /></label>
           <label>새 비밀번호 한 번 더<input type="password" value={nw2} autoComplete="new-password" onChange={(e) => setNw2(e.target.value)} /></label>
+          <div className="w2 cap">{PASSWORD_RULE}. 90일마다 바꿉니다.</div>
           {err && <div className="w2 err">{err}</div>}
-          <div className="w2 bar2"><span className="sp" /><button type="submit" className="btn pri" disabled={busy || !old || !nw}>{busy ? "바꾸는 중…" : "바꾸기"}</button></div>
+          <div className="w2 bar2">
+            {forced && <button type="button" className="btn" onClick={logout}>로그아웃</button>}
+            <span className="sp" />
+            <button type="submit" className="btn pri" disabled={busy || !old || !nw}>{busy ? "바꾸는 중…" : "바꾸기"}</button>
+          </div>
         </div>
       </form>
     </div>
   );
+}
+
+/** 무동작 자동 로그아웃(문제점 54번 — 공공 기본 항목). 마우스·키보드·터치·스크롤이 minutes 분 동안 없으면 로그아웃.
+ *  10초 자동 갱신은 '사용'이 아니다. 탭이 여러 개면 마지막 사용 시각을 localStorage 로 나눠 가진다. 0 이면 끔. */
+export const IDLE_KEY = "slc-last-active";
+export const IDLE_FLAG = "slc-idle-logout";
+export function useIdleLogout(minutes: number | undefined) {
+  useEffect(() => {
+    if (!minutes) return;
+    const mark = () => {
+      try { localStorage.setItem(IDLE_KEY, String(Date.now())); } catch { /* 무시 */ }
+    };
+    let last = Date.now();
+    const touch = () => {
+      const now = Date.now();
+      if (now - last > 5000) { last = now; mark(); } // 5초에 한 번만 적는다
+    };
+    mark();
+    const evs = ["mousemove", "mousedown", "keydown", "touchstart", "wheel", "scroll"] as const;
+    evs.forEach((e) => window.addEventListener(e, touch, { passive: true }));
+    const t = setInterval(() => {
+      let at = last;
+      try { at = Math.max(at, Number(localStorage.getItem(IDLE_KEY) || 0)); } catch { /* 무시 */ }
+      if (Date.now() - at > minutes * 60_000) {
+        try { sessionStorage.setItem(IDLE_FLAG, String(minutes)); } catch { /* 무시 */ }
+        void logout();
+      }
+    }, 20_000);
+    return () => {
+      evs.forEach((e) => window.removeEventListener(e, touch));
+      clearInterval(t);
+    };
+  }, [minutes]);
 }

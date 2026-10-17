@@ -62,6 +62,8 @@ server {
     include /etc/nginx/iotlight/routes.conf;
 }
 CONF
+    # HSTS(문제점 54번) — 브라우저가 이 도메인을 1년간 https 로만 연다. 평문 모드에선 붙이지 않는다.
+    echo 'add_header Strict-Transport-Security "max-age=31536000" always;' >> "$DIR/security-headers.conf"
     echo "TLS 모드: 443 활성, 80 → https 리다이렉트 ($(openssl x509 -noout -subject -enddate -in "$CRT" 2>/dev/null | tr '\n' ' '))"
 else
     if [ -e "$CRT" ] || [ -e "$KEY" ]; then

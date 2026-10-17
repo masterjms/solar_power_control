@@ -420,3 +420,10 @@ API 는 그대로 401 `{code: LOGIN_FAILED, message}`. 화면은 `api.userMessag
 ### 로그인 유지 (2026-10-14, 문제점 25번)
 `POST /api/auth/login` 본문에 `remember`(기본 true). true = 쿠키 `Max-Age` = SESSION_HOURS(기본 7일), false = 세션 쿠키(브라우저 닫으면 사라짐) + 토큰 12시간 만료.
 
+## 계정 보안 (2026-10-17, 문제점 54번 — docs/09)
+- 로그인: 5회 연속 실패 → 401 `ACCOUNT_LOCKED`(풀리는 시각 안내). 잠긴 동안 시도는 login_log `locked`.
+- `POST /api/accounts/unlock {username}`(최고관리자) — 잠금 해제(`.env` 계정도), login_log `unlock`. 비밀번호 재설정도 잠금을 푼다.
+- 비밀번호 규칙 위반 422(필드 이유 = 규칙 문장). 새 계정·재설정 비밀번호는 `must_change_password`.
+- `GET /api/me` 추가: `must_change_password`, `password_reason`, `password_rule`, `idle_logout_min`(서버 설정, 0 = 끔).
+- `GET /api/accounts` 줄 추가: `locked_until`, `must_change_password`, `password_expired`(90일).
+- 지도 `GET /api/devices/map` 에 `sc`(배터리 %, 55번).

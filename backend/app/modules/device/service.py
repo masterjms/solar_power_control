@@ -239,18 +239,19 @@ async def map_points(db: AsyncSession, *, state: str | None) -> list[MapPoint]:
                presence.online_clause(now).label("is_online"),
                Device.last_telemetry["on"].astext.label("on"),
                Device.last_telemetry["pw"].label("pw"),
-               Device.last_telemetry["bv"].astext.label("bv"), Region.name)
+               Device.last_telemetry["bv"].astext.label("bv"),
+               Device.last_telemetry["sc"].astext.label("sc"), Region.name)
         .join(Region, Region.id == Device.node_id, isouter=True)
         .where(Device.lat.is_not(None), Device.lon.is_not(None), in_scope(Device.node_id))
     )
     if state:
         stmt = stmt.where(Device.state == state.upper())
     out: list[MapPoint] = []
-    for uuid, site, lat, lon, st, online, on, pw, bv, node_name in await db.execute(stmt):
+    for uuid, site, lat, lon, st, online, on, pw, bv, sc, node_name in await db.execute(stmt):
         on_v = _int_or_none(on)
         out.append(MapPoint(uuid=uuid, site=site, lat=lat, lon=lon, state=st,
                             is_online=bool(online), on=on_v, lit=_lit(pw, on_v, bool(online)),
-                            bv=_int_or_none(bv), node_name=node_name))
+                            bv=_int_or_none(bv), sc=_int_or_none(sc), node_name=node_name))
     return out
 
 

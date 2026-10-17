@@ -34,6 +34,12 @@ ROLE_LABEL = {ROLE_SUPER: "최고관리자", ROLE_REGION: "지역관리자", ROL
 #: 최고관리자 최대 수(.env 최고관리자 포함) — 단말측 결정(10/3).
 MAX_SUPER = 3
 PASSWORD_MIN = 8
+#: 비밀번호 바꾼 지 이만큼 지나면 바꾸게 한다(문제점 54번 — 공공 기본 항목). .env 계정은 서버에서 관리하므로 빠진다.
+PASSWORD_MAX_AGE_DAYS = 90
+#: 연속 실패 잠금 — LOCK_FAILS 회 연속 틀리면 LOCK_MINUTES 분 잠금. 성공·관리자 잠금 해제가 셈을 지운다.
+LOCK_FAILS = 5
+LOCK_MINUTES = 30
+PASSWORD_RULE = "영문 대문자·소문자·숫자·특수문자 중 3종류 이상 8자 이상, 또는 2종류 이상 10자 이상"
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")  # '.' 은 세션 쿠키 구분자라 쓰지 않는다
 
 #: 사용 기간 고르기 — 단말측 결정(7·15·30·90·180일·1년·무한).
@@ -58,6 +64,37 @@ def verify_password(password: str, stored: str | None) -> bool:
         return hmac.compare_digest(dk, base64.b64decode(dk_b64))
     except (ValueError, TypeError):
         return False
+
+
+def password_problem(password: str) -> str | None:
+    """비밀번호 규칙(문제점 54번). 맞으면 None, 아니면 이유."""
+    pw = password or ""
+    kinds = sum((any(c.islower() for c in pw), any(c.isupper() for c in pw),
+                 any(c.isdigit() for c in pw), any(not c.isalnum() for c in pw)))
+    if (len(pw) >= 8 and kinds >= 3) or (len(pw) >= 10 and kinds >= 2):
+        return None
+    return PASSWORD_RULE
+
+
+def lock_until(rows: Iterable[tuple[dt.datetime, bool, str]], now: dt.datetime) -> dt.datetime | None:
+    """로그인 기록(최신순 (시각, 성공, 이유)) → 잠김이면 풀리는 시각, 아니면 None.
+    최근 LOCK_MINUTES 분 안의 '비밀번호 틀림'을 연속으로 센다 — 성공·잠금 해제(unlock)에서 멈추고,
+    잠긴 동안의 시도(locked)는 세지 않는다(잠금이 늘어나지 않게)."""
+    window = now - dt.timedelta(minutes=LOCK_MINUTES)
+    fails: list[dt.datetime] = []
+    for at, ok, reason in rows:
+        if at < window or ok or reason == "unlock":
+            break
+        if reason == "bad_password":
+            fails.append(at)
+    if len(fails) < LOCK_FAILS:
+        return None
+    until = fails[LOCK_FAILS - 1] + dt.timedelta(minutes=LOCK_MINUTES)
+    return until if until > now else None
+
+
+def password_expired(changed_at: dt.datetime | None, now: dt.datetime) -> bool:
+    return changed_at is not None and changed_at < now - dt.timedelta(days=PASSWORD_MAX_AGE_DAYS)
 
 
 def expires_from(choice: str, now: dt.datetime) -> dt.datetime | None:
@@ -89,8 +126,8 @@ def check_new_account(
         errors["username"] = "영문·숫자·_·- 3~32자"
     elif username in set(reserved):
         errors["username"] = "이미 있는 이름(.env 계정)"
-    if password is not None and len(password) < PASSWORD_MIN:
-        errors["password"] = f"{PASSWORD_MIN}자 이상"
+    if password is not None and (why := password_problem(password)):
+        errors["password"] = why
     if role not in CREATABLE_ROLES:
         errors["role"] = "최고관리자·지역관리자·게스트 중 하나"
     elif role == ROLE_SUPER:

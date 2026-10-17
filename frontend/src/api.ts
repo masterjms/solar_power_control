@@ -120,6 +120,8 @@ export interface MapPoint {
   lit?: boolean | null;
   /** 마지막 배터리 전압 x100 V. 오프라인이어도 마지막 값 */
   bv?: number | null;
+  /** 마지막 배터리 잔량 %(문제점 55번) */
+  sc?: number | null;
   node_name: string | null;
 }
 
@@ -283,6 +285,12 @@ export interface Me {
   regions?: string[];
   expires_at?: string | null;
   can_change_password?: boolean;
+  /** 비밀번호를 바꿔야 함(관리자가 정한 것·90일 지남, 문제점 54번) — 화면이 닫을 수 없는 바꾸기 창을 띄운다 */
+  must_change_password?: boolean;
+  password_reason?: string | null;
+  password_rule?: string;
+  /** 무동작 자동 로그아웃(분, 0 = 끔) */
+  idle_logout_min?: number;
 }
 
 /** GET /api/accounts 한 줄(문제점 21번). */
@@ -301,6 +309,10 @@ export interface Account {
   created_at: string | null;
   last_login_at: string | null;
   source: "env" | "db";
+  /** 연속 실패 잠금이면 풀리는 시각(문제점 54번) */
+  locked_until?: string | null;
+  must_change_password?: boolean;
+  password_expired?: boolean;
 }
 export interface AccountList {
   items: Account[];
@@ -803,6 +815,7 @@ export const api = {
   resetPassword: (id: number, password: string) => request<{ ok: boolean }>(`/api/accounts/${id}/password`, json("POST", { password })),
   deleteAccount: (id: number) => request<{ deleted: string }>(`/api/accounts/${id}`, json("DELETE")),
   loginLog: (p: { page: number; size: number }) => request<Paged<LoginRecord>>(`/api/accounts/logins?page=${p.page}&size=${p.size}`),
+  unlockAccount: (username: string) => request<{ ok: boolean }>("/api/accounts/unlock", json("POST", { username })),
   changeMyPassword: (old: string, nw: string) => request<{ ok: boolean }>("/api/accounts/me/password", json("POST", { old, new: nw })),
   systemStatus: () => request<SystemStatus>("/api/system/status"),
   activity: (p: { page: number; size: number; cat?: string; q?: string }) => {
