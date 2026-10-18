@@ -113,6 +113,11 @@ const EV_KEY: Record<string, string> = {
   grp: "그룹", lat: "위도", lon: "경도", result: "결과", ok: "결과", err: "오류", state: "상태",
 };
 const EV_STATE: Record<string, string> = { PENDING: "승인 대기", ACTIVE: "운영", SUSPENDED: "일시 중지", REJECTED: "거절", RETIRED: "폐기" };
+const OTA_RESULT: Record<string, string> = {
+  START: "받기 시작", DONE: "성공(새 펌웨어 확정)", ROLLBACK: "실패 — 이전 펌웨어로 되돌림", BAD: "시작 안 함(형식)",
+  STATE: "시작 안 함(승인 아님)", BATT: "시작 안 함(저전압)", BUSY: "시작 안 함(바쁨)", HTTP: "실패(다운로드)",
+  SIZE: "실패(크기)", HASH: "실패(파일 검사)", FLASH: "실패(저장)",
+};
 const EV_SOURCE: Record<string, string> = { broker_log: "단말 통신 서버 기록", lwt: "끊김 알림", backend: "서버" };
 export function eventText(kind: string, payload: unknown): string {
   const p = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
@@ -142,6 +147,9 @@ export function eventText(kind: string, payload: unknown): string {
     }
     case "LOST": case "REBOOT": return pick(["sq", "last_sq", "prev_sq", "gap"]);
     case "PING": case "PONG": return "";
+    // OTA(문제점 56번): 보낸 것은 작업 번호·파일 크기·회차, 단말 응답은 결과 코드
+    case "OTA_START": return [`OTA #${str(p.job_id)}`, p.size ? `${Math.round(Number(p.size) / 1024)}KB` : "", p.attempt ? `${str(p.attempt)}회째` : ""].filter(Boolean).join(" · ");
+    case "OTA_ACK": return `OTA #${str(p.job_id)} · ${OTA_RESULT[String(p.result)] ?? str(p.result)}`;
     default: return pick(Object.keys(EV_KEY));
   }
 }

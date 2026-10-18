@@ -46,6 +46,8 @@ from app.modules.device import service as device_service
 from app.modules.device.router import router as device_router
 from app.modules.energy.router import router as energy_router
 from app.modules.mqtt_auth.router import router as mqtt_auth_router
+from app.modules.ota.download import router as ota_download_router
+from app.modules.ota.router import router as ota_router
 from app.modules.profile.router import router as profile_router
 from app.modules.region.router import geo_router
 from app.modules.region.router import router as region_router
@@ -61,6 +63,7 @@ from app.mqtt.config_sync import ConfigSyncQueue
 from app.mqtt.connection import MqttConnection
 from app.mqtt.deploy_runner import DeployRunner
 from app.mqtt.handlers import Dispatcher
+from app.mqtt.ota_runner import OtaRunner
 from app.mqtt.publisher import MqttPublisher
 from app.mqtt.settings_sync import SettingsSync
 from app.mqtt.telemetry_buffer import TelemetryBuffer
@@ -130,6 +133,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     retrier = CommandRetrier(config_sync)
     settings_sync = SettingsSync(config_sync)
     deploy_runner = DeployRunner(publisher, settings_sync)
+    ota_runner = OtaRunner(publisher)
     telemetry_buffer = TelemetryBuffer(config_sync=config_sync, retrier=retrier,
                                        settings_sync=settings_sync, deploy_runner=deploy_runner)
     dispatcher = Dispatcher(buffer=telemetry_buffer, config_sync=config_sync, retrier=retrier,
@@ -142,6 +146,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.command_retrier = retrier
     app.state.settings_sync = settings_sync
     app.state.deploy_runner = deploy_runner
+    app.state.ota_runner = ota_runner
     app.state.telemetry_buffer = telemetry_buffer
     app.state.broker_log = broker_log
 
@@ -231,6 +236,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         deploy_runner.tick, "interval", seconds=settings.deploy_tick_sec, id="deploy-runner",
         coalesce=True, max_instances=1,
     )
+    # 7차 OTA 진행(문제점 56번): START 대기·결과 대기 시간 초과, 동시 대수·시간대 안에서 다음 단말 시작.
+    scheduler.add_job(
+        ota_runner.tick, "interval", seconds=5, id="ota-runner", coalesce=True, max_instances=1,
+    )
     # S-24 알람 재조정(ADR-009): 지금 DB 상태로 열린 알람을 맞춘다(멱등).
     scheduler.add_job(
         alarm_eval.run, "interval", seconds=settings.alarm_eval_sec, id="alarm-eval",
@@ -296,7 +305,9 @@ if settings.cors_origins:
 _guard = [Depends(access_guard)]
 app.include_router(auth_router)
 app.include_router(mqtt_auth_router)
+# 단말 OTA 다운로드(문제점 56번) — 로그인 대신 항목별 무작위 주소·2시간으로 확인한다(modules/ota/download).
+app.include_router(ota_download_router)
 for _r in (system_router, system_status_router, accounts_router, activity_router, server_settings_router,
            energy_router, alarm_router, schedule_router, schedule_device_router, profile_router,
-           device_router, region_router, geo_router, command_router, settings_router):
+           device_router, region_router, geo_router, command_router, settings_router, ota_router):
     app.include_router(_r, dependencies=_guard)

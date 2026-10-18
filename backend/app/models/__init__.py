@@ -7,6 +7,7 @@ from app.models.base import Base
 from app.models.command import Command, CommandAck, CommandTarget
 from app.models.device import Device
 from app.models.event import DeviceEvent
+from app.models.ota import OtaItem, OtaJob, OtaPackage
 from app.models.profile import ConfigProfile
 from app.models.region import Region
 from app.models.schedule import (
@@ -37,6 +38,9 @@ __all__ = [
     "DeviceSettingsHistory",
     "LoginLog",
     "MqttAccountExport",
+    "OtaItem",
+    "OtaJob",
+    "OtaPackage",
     "Region",
     "ScheduleAssign",
     "ScheduleProfile",

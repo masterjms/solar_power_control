@@ -56,6 +56,9 @@ class MsgType(str, Enum):
     SETTINGS_SET = "SETTINGS_SET"
     SETTINGS = "SETTINGS"
     SETTINGS_ACK = "SETTINGS_ACK"
+    #: 7차 OTA(사양서 §24.3). 서버 → 단말 OTA_START, 단말 → 서버 OTA_ACK(result topic).
+    OTA_START = "OTA_START"
+    OTA_ACK = "OTA_ACK"
 
 
 class EventKind(str, Enum):
@@ -86,6 +89,9 @@ class EventKind(str, Enum):
     #: S-23 단말 보고(SETTINGS)·응답(SETTINGS_ACK) 원본.
     SETTINGS = "SETTINGS"
     SETTINGS_ACK = "SETTINGS_ACK"
+    #: 7차 OTA_START 발송(첫 발송·다시 보내기, payload 그대로 + attempt·by)과 단말 OTA_ACK 원본.
+    OTA_START = "OTA_START"
+    OTA_ACK = "OTA_ACK"
 
 
 class DeviceState(str, Enum):

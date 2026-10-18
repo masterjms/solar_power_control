@@ -140,6 +140,9 @@ class Settings(BaseSettings):
     admin_password: str = ""
     operator_user: str = ""
     operator_password: str = ""
+    #: OTA 다운로드 주소의 앞부분(문제점 56번, 사양서 §24.3). 단말은 https://enerz.co.kr 로 시작하는 주소만 받는다
+    #: (다르면 BAD). 사내 시험 구성만 http://<사설IP> — 단말도 시험 빌드여야 한다.
+    ota_base_url: str = "https://enerz.co.kr"
     #: 세션 쿠키 서명 키. 비우면 계정 비밀번호에서 유도(비밀번호를 바꾸면 세션이 모두 끊긴다).
     session_secret: str = ""
     #: 로그인 유지 시간(시간). 스마트폰에서 자주 다시 로그인하지 않게 기본 7일.

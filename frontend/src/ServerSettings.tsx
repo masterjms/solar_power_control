@@ -81,7 +81,7 @@ export default function ServerSettings({ role }: { role: string | null }) {
 
   /** 통계 다시 시작(문제점 27번) — 시작일 = 오늘, 누적 0, 오늘 전 하루 요약 삭제. */
   async function resetStats() {
-    if (!confirm("통계를 오늘부터 다시 시작할까요?\n\n- 통계 시작일이 오늘로 바뀝니다\n- 모든 단말의 누적 발전·사용이 0 이 됩니다\n- 오늘 전의 하루 요약 기록이 지워집니다(10분 보고 원문은 보관 기간대로 따로 지워집니다)\n\n되돌릴 수 없습니다.")) return;
+    if (!confirm("통계를 오늘부터 다시 시작할까요?\n\n- 통계 시작일이 오늘로 바뀝니다\n- 모든 단말의 누적 발전·사용이 0 이 됩니다\n- 오늘 전의 하루 요약 기록이 지워집니다(단말 상태 원문은 보관 기간대로 따로 지워집니다)\n\n되돌릴 수 없습니다.")) return;
     setErr(null);
     setMsg(null);
     setBusy(true);

@@ -427,3 +427,37 @@ API 는 그대로 401 `{code: LOGIN_FAILED, message}`. 화면은 `api.userMessag
 - `GET /api/me` 추가: `must_change_password`, `password_reason`, `password_rule`, `idle_logout_min`(서버 설정, 0 = 끔).
 - `GET /api/accounts` 줄 추가: `locked_until`, `must_change_password`, `password_expired`(90일).
 - 지도 `GET /api/devices/map` 에 `sc`(배터리 %, 55번).
+
+### 아이디 중복 확인 (2026-10-18, 문제점 57번)
+- `GET /api/accounts/check?username=` (최고관리자) → `{ok, reason}`. 형식·`.env` 계정·이미 있는 계정(대소문자 무시)을 본다.
+  계정 만들기(`POST /api/accounts`)도 같은 판정을 다시 한다(그 사이 누가 만들 수 있으므로).
+- 화면: 칸별 오류는 칸 아래, 아래쪽에는 "빨간 글씨로 표시한 칸을 고쳐 주세요."만(영어 코드·JSON 을 보이지 않는다).
+
+## OTA API (2026-10-18, 문제점 56번, 사양서 §24 — docs/spec/OTA_사양_24.md) — 최고관리자 전용
+| 경로 | 내용 |
+|---|---|
+| `GET /api/ota/overview` | `{parallel, hour_start, hour_end, window_open, open:{waiting,sending,running}, base_url, chunk, fw_max}` |
+| `GET /api/ota/packages` | 올린 펌웨어 `[{id, filename, version, note, fw_size, size, sha256, created_by, created_at, jobs, done}]` |
+| `POST /api/ota/packages` | multipart `file`(.bin, 160KB 이하) + `version` + `note` → 서버가 base64 한 줄 pkg·SHA-256(pkg 글자 기준) 계산. 같은 파일 409 `OTA_FILE_EXISTS`, bin 아님·크기 초과 422 `OTA_FILE_INVALID` |
+| `DELETE /api/ota/packages/{id}` | 대기·진행 중인 단말이 있으면 409 `OTA_PACKAGE_IN_USE`. 보낸 기록은 남는다 |
+| `GET /api/ota/devices?node_id=` 또는 `?uuid=` | 대상 고르기 `[{uuid, site, fw, state, online, last_ota:{item_id, job_id, status, at}}]` |
+| `POST /api/ota/jobs` | `{package_id, kind: device\|node, id}` → 201 `{id, total, skipped_busy}`. node 는 **법정동(말단)만**(상위 422 `NODE_NOT_LEAF`), 운영(ACTIVE) 단말만, 이미 OTA 대기·진행 중인 단말은 뺀다(전부면 409 `OTA_NO_TARGETS`) |
+| `GET /api/ota/jobs?page=&size=` | 보낸 기록 `{items:[{..., counts:{상태: 수}}], total, page, size}` |
+| `GET /api/ota/jobs/{id}` | + `items:[{id(=job_id), uuid, site, status, detail, attempts, downloads, sent_at, started_at, finished_at, fw_before, fw_after, fw_now, online}]` |
+| `POST /api/ota/jobs/{id}/cancel` | 대기 단말만 CANCELLED(받는 중은 멈출 수 없다) |
+| `POST /api/ota/jobs/{id}/retry` | 실패·응답 없음 단말만 새 기록으로 |
+
+항목 상태: `waiting`(대기) → `sending`(OTA_START 보냄, START 기다림 30초 × 3회) → `running`(START 받음, 결과 기다림 1시간 30분)
+→ 끝: `DONE`(성공) / `ROLLBACK` / `BAD`·`STATE`·`BATT`·`BUSY`(시작 안 함) / `HTTP`·`SIZE`·`HASH`·`FLASH`(실패) / `NO_RESPONSE` / `CANCELLED` / `SKIPPED`(운영 아님).
+늦게 온 결과(응답 없음 뒤 DONE 등)는 결과로 바꾼다. DONE·ROLLBACK 이 1분마다 다시 와도 한 번으로 본다(device_event dedup).
+
+### 단말 다운로드 `GET|HEAD /ota/<항목 id>/<uuid>/<token>` (로그인 없음)
+- 주소 = `.env OTA_BASE_URL`(기본 `https://enerz.co.kr`) + 위 경로, 약 73자. token = 항목마다 무작위 22자(base64url).
+- 확인: 항목 id·uuid·token 일치(틀리면 404, 이유 안 알림) + 처음 보낸 때부터 2시간 + 항목이 보냄·받는 중(아니면 410).
+- `Range: bytes=a-b` → 206 + `Content-Range`, 형식·범위 오류 416. 2시간 안에서는 몇 번이든 받는다(조각 3,840 글자씩 약 48번).
+- nginx `/ota/` 는 관리 화면 IP 제한(ADMIN_ALLOW_IPS)·로그인 밖. 이력(device_event OTA_START)에는 token 을 남기지 않는다.
+
+### 서버 설정 "원격 펌웨어 갱신(OTA)"
+`ota_parallel`(동시 진행 대수 1~50, 기본 10) · `ota_hour_start`(0~23, 기본 10) · `ota_hour_end`(0~23, 기본 16, 같으면 하루 종일).
+시간대 밖에는 새 단말을 시작하지 않는다(이미 시작한 것은 끝까지). 오프라인 단말은 대기로 남았다가 접속하면 시작.
+OTA 를 받는 중(running)인 단말은 오프라인이어도 알람 "통신 두절"을 올리지 않는다.

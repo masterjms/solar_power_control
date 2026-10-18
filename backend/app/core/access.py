@@ -46,6 +46,7 @@ SUPER_ONLY: tuple[tuple[frozenset[str] | None, re.Pattern[str]], ...] = (
     (None, re.compile(r"^/api/admin/")),
     (None, re.compile(r"^/api/system/")),
     (None, re.compile(r"^/api/metrics$")),
+    (None, re.compile(r"^/api/ota(/|$)")),  # 펌웨어 갱신(문제점 56번) — 단말을 재부팅시키는 일이라 최고관리자만
     (frozenset({"POST"}), re.compile(r"^/api/energy/reset$")),
     (frozenset({"POST", "PATCH", "DELETE"}), re.compile(r"^/api/profiles")),
     (frozenset({"PATCH", "DELETE"}), re.compile(r"^/api/regions/\d+$")),

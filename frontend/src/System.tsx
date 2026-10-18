@@ -22,7 +22,7 @@ function uptime(sec: number): string {
 }
 
 const TABLE_LABEL: Record<string, string> = {
-  telemetry: "10분 보고 원문", telemetry_daily: "하루 요약", device_event: "단말 이벤트", alarm: "알람",
+  telemetry: "단말 상태 원문", telemetry_daily: "하루 요약", device_event: "단말 이벤트", alarm: "알람",
   command: "원격 명령", command_target: "명령 대상", device: "단말", device_settings_history: "설정 이력",
   deploy_item: "보낸 기록(단말별)", login_log: "로그인 기록", region: "지역 트리"
 };
@@ -74,7 +74,7 @@ export default function System({ role }: { role: string | null }) {
           <Met l="디스크 사용" v={d?.disk_used_pct !== null && d?.disk_used_pct !== undefined ? `${d.disk_used_pct}%` : "-"} cls={d?.disk_warn ? "a" : "k"}
             h={d ? `여유 ${bytes(d.disk_free_bytes)} / ${bytes(d.disk_total_bytes)} · 80% 넘으면 경고` : ""} />
           <Met l="마지막 하루 집계" v={d?.last_rollup_at ? relTime(d.last_rollup_at) : "재시작 뒤 아직"} h={d?.last_rollup_day ? `${d.last_rollup_day} 분 · 매일 00:30` : "매일 00:30"} />
-          <Met l="마지막 보관 정리" v={d?.last_purge_at ? relTime(d.last_purge_at) : "-"} h={d ? `10분 보고 원문 ${d.telemetry_months}개월 보관 · 매일 01:00` : ""} />
+          <Met l="마지막 보관 정리" v={d?.last_purge_at ? relTime(d.last_purge_at) : "-"} h={d ? `단말 상태 원문 ${d.telemetry_months}개월 보관 · 매일 01:00` : ""} />
         </div>
         {d && d.tables.length > 0 && (
           <div className="tw" style={{ marginTop: 8 }}>

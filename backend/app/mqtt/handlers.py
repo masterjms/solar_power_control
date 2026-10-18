@@ -72,8 +72,9 @@ from app.mqtt import topics
 from app.mqtt.command_retry import CommandRetrier
 from app.mqtt.config_decide import CONFIG_COLUMNS, DeviceConfigRow, decide_and_enqueue
 from app.mqtt.config_sync import ConfigSyncQueue, register_ack_job_for
-from app.mqtt.publisher import parse_kst_ts
 from app.mqtt.deploy_runner import DeployRunner
+from app.mqtt.ota_runner import handle_ack as ota_handle_ack
+from app.mqtt.publisher import parse_kst_ts
 from app.mqtt.settings_sync import SettingsSync
 from app.mqtt.telemetry_buffer import TelemetryBuffer
 from app.tasks.command_finisher import finish_due
@@ -354,6 +355,16 @@ class Dispatcher:
 
         if msg_type in (MsgType.SETTINGS.value, MsgType.SETTINGS_ACK.value):
             await self._handle_settings(db, uuid, msg_type, data, now)
+            return
+
+        if msg_type == MsgType.OTA_ACK.value:
+            # 7차 OTA(사양서 §24.3). DONE·ROLLBACK 은 1분마다 같은 내용으로 다시 온다 — dedup 으로 한 번만.
+            inserted = await _insert_event(
+                db, uuid=uuid, kind=EventKind.OTA_ACK, payload=data,
+                key=dedup_key(uuid, "OTA_ACK", _int(data.get("job_id")), data), received_at=now,
+            )
+            if inserted:
+                await ota_handle_ack(db, uuid, data, now)
             return
 
         metrics.unknown_type += 1

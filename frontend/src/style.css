@@ -191,10 +191,13 @@ details.info .grid2{margin-top:var(--s2)}
 .bar2{display:flex; gap:var(--s2); flex-wrap:wrap; align-items:center}
 .bar2 .sp{flex:1}
 .form2{display:grid; grid-template-columns:1fr 1fr; gap:var(--s3)}
-.form2 label{display:grid; gap:var(--s1); font-size:var(--f1); color:var(--muted)}
+.form2 label{display:grid; gap:var(--s1); font-size:var(--f1); color:var(--muted); align-content:start}
+.form2 .inrow{display:flex; gap:var(--s2)}
+.form2 .inrow input{flex:1; min-width:0}
 .form2 .w2{grid-column:1/-1}
 .form2 input,.form2 select{width:100%; text-align:left}
 .form2 small{color:var(--muted2)}
+.form2 small.c-alarm{color:var(--alarm)} .form2 small.c-ok{color:var(--ok)}
 .steps{list-style:none; margin:0; padding:0; display:grid; gap:var(--s2)}
 .steps li{display:grid; grid-template-columns:24px minmax(0,1fr) auto; gap:var(--s2); align-items:start}
 .steps .no{width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:var(--f1); background:var(--soft); border:1px solid var(--line); color:var(--muted)}

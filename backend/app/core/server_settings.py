@@ -40,6 +40,7 @@ GROUPS: tuple[tuple[str, str], ...] = (
     ("retention", "기록 보관 기간"),
     ("energy", "발전·사용 통계"),
     ("security", "보안"),
+    ("ota", "원격 펌웨어 갱신(OTA)"),
 )
 
 ITEMS: tuple[Item, ...] = (
@@ -50,8 +51,8 @@ ITEMS: tuple[Item, ...] = (
          "처음 보낸 것을 포함한 횟수. 마지막까지 응답이 없으면 '무응답(실패)'으로 끝난다.",
          "회", 1, 3, 2),
     # ── 보관 기간(개월). 지난 것은 매일 01:00 에 지운다. 지워도 하루 요약·누적·현재 값은 남는다.
-    Item("telemetry_months", "retention", "10분 보고 원문",
-         "단말이 10분마다 보내는 보고 원문. 달 단위로 지운다. "
+    Item("telemetry_months", "retention", "단말 상태 원문",
+         "단말의 주기적 상태 보고 원문. 달 단위로 지운다. "
          "하루 요약(발전·사용·점등 시간)은 영구히 남는다.",
          "개월", 1, 13, 3),
     Item("event_months", "retention", "단말 이벤트",
@@ -78,6 +79,17 @@ ITEMS: tuple[Item, ...] = (
          "화면을 이 시간 동안 만지지 않으면(마우스·키보드·터치 없음) 로그아웃한다. "
          "0 = 쓰지 않음(관제 화면을 벽 모니터에 계속 띄워 둘 때). 공공 납품 기준은 30분 이하.",
          "분", 0, 120, 30),
+    # ── OTA(문제점 56번, 사양서 §24.5) — 단말은 받는 동안 MQTT 를 끊고, 재부팅·맞바꾸기 동안 LED 가 20~30초 꺼진다
+    Item("ota_parallel", "ota", "동시 진행 대수",
+         "한꺼번에 받게 하는 단말 수. 한 대가 끝나면(성공·되돌림·오류 응답) 다음 단말을 시작한다. "
+         "단말 1대가 약 470KB 를 받는다.",
+         "대", 1, 50, 10),
+    Item("ota_hour_start", "ota", "진행 시작 시각",
+         "이 시각부터 새 단말을 시작한다(이미 시작한 단말은 끝까지 간다). 밤에는 점등 중이라 낮을 권장.",
+         "시", 0, 23, 10),
+    Item("ota_hour_end", "ota", "진행 끝 시각",
+         "이 시각부터는 새 단말을 시작하지 않는다. 시작 시각과 같으면 하루 종일.",
+         "시", 0, 23, 16),
 )
 
 BY_KEY: dict[str, Item] = {i.key: i for i in ITEMS}
@@ -180,6 +192,16 @@ class Runtime:
     @property
     def stats_since(self) -> dt.date | None:
         return date_of(self.get("stats_since"))
+
+
+def ota_window_open(now: dt.datetime, start_h: int, end_h: int) -> bool:
+    """지금(KST)이 OTA 를 새로 시작할 수 있는 시간대인가. start == end 면 하루 종일, start > end 면 자정을 넘는 구간."""
+    h = now.astimezone(dt.timezone(dt.timedelta(hours=9))).hour
+    if start_h == end_h:
+        return True
+    if start_h < end_h:
+        return start_h <= h < end_h
+    return h >= start_h or h < end_h
 
 
 runtime = Runtime()

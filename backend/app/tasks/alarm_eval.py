@@ -28,6 +28,7 @@ from app.models.device import Device
 from app.models.event import DeviceEvent
 from app.models.schedule import DeviceSchedule
 from app.models.settings import DeviceSettings
+from app.mqtt.ota_runner import running_uuids
 from app.tasks.daily_rollup import KST
 
 log = logging.getLogger(__name__)
@@ -61,13 +62,15 @@ async def desired(db: AsyncSession, now: dt.datetime) -> dict[tuple[str, str], a
         .join(DeviceSchedule, DeviceSchedule.uuid == Device.uuid, isouter=True)
         .where(Device.state == DeviceState.ACTIVE.value)
     )
+    # OTA 를 받는 중(START 받음)이면 단말이 일부러 MQTT 를 끊은 것 — 통신 두절로 올리지 않는다(사양서 §24.4).
+    in_ota = await running_uuids(db)
     for (uuid, tm, last_seen, offline_at, cv_dev, cv_srv, is_online, sync, ss_known, ss_dev,
          tbl_crc, applied_crc) in rows:
         tm = tm or {}
         er = _int(tm.get("er"))
         for kind in ar.er_kinds(er):
             out[(uuid, kind)] = ar.Want({"er": er})
-        if not is_online:
+        if not is_online and uuid not in in_ota:
             out[(uuid, "OFFLINE")] = ar.Want(
                 {"last_seen_at": last_seen.isoformat() if last_seen else None},
                 since=offline_at or last_seen)

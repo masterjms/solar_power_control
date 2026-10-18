@@ -2,7 +2,7 @@
 // 역할 셋: 최고관리자(최대 3명, .env 포함) · 지역관리자(시·도 여러 개) · 게스트(대시보드 보기). 사용 기간 7일~1년·무기한.
 // .env 계정(ADMIN_USER·OPERATOR_USER)은 보이기만 하고 여기서 바꾸지 않는다(서버 .env 에서).
 import { FormEvent, useEffect, useState } from "react";
-import { Account, AccountList, LoginRecord, Role, api, ApiErrorException, errorText } from "./api";
+import { Account, AccountList, LoginRecord, Role, api, ApiErrorException, errorText, userMessage } from "./api";
 import { localTime, relTime } from "./format";
 import { passwordProblem } from "./Login";
 import { Card, DEFAULT_PAGE_SIZE, PageSize, Pager, nf, pageCount } from "./ui";
@@ -47,7 +47,22 @@ function AccountForm({ data, onDone }: { data: AccountList; onDone: (msg: string
   const [errs, setErrs] = useState<Record<string, string>>({});
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 중복 확인 결과(문제점 57번) — 확인한 아이디와 지금 칸의 아이디가 같을 때만 보여 준다
+  const [checked, setChecked] = useState<{ name: string; ok: boolean; reason: string | null } | null>(null);
   const superFull = data.super_count >= data.max_super;
+  const name = username.trim();
+  const check = checked && checked.name === name ? checked : null;
+
+  async function checkName() {
+    if (!name) return;
+    try {
+      const r = await api.checkUsername(name);
+      setChecked({ name, ...r });
+      setErrs((x) => ({ ...x, username: "" }));
+    } catch (x) {
+      setChecked({ name, ok: false, reason: userMessage(x) });
+    }
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -59,8 +74,10 @@ function AccountForm({ data, onDone }: { data: AccountList; onDone: (msg: string
       onDone(`${username.trim()} 계정을 만들었습니다.`);
       setUsername(""); setPassword(""); setRegions([]);
     } catch (x) {
-      setErrs(fieldErrors(x));
-      setErr(errorText(x));
+      const f = fieldErrors(x);
+      setErrs(f);
+      // 칸별 오류는 칸 아래에 보이므로 아래쪽에는 짧게만(문제점 57번 — 영어 코드·JSON 을 보이지 않는다)
+      setErr(Object.keys(f).length ? "빨간 글씨로 표시한 칸을 고쳐 주세요." : userMessage(x));
     } finally {
       setBusy(false);
     }
@@ -68,12 +85,19 @@ function AccountForm({ data, onDone }: { data: AccountList; onDone: (msg: string
 
   return (
     <form className="form2" onSubmit={submit}>
-      <label>아이디 <small>영문·숫자·_·- 3~32자</small>
-        <input value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />
-        {errs.username && <small className="c-alarm">{errs.username}</small>}</label>
-      <label>처음 비밀번호 <small>3종류 8자·2종류 10자 이상 — 본인이 처음 로그인하면 바꿔야 합니다</small>
+      {/* 두 칸 모두 "제목 한 줄 → 입력 → 안내/오류" 순서라 입력칸 높이가 같다(문제점 57번) */}
+      <label>아이디
+        <span className="inrow">
+          <input value={username} autoComplete="off" onChange={(e) => setUsername(e.target.value)} />
+          <button type="button" className="btn" disabled={!name} onClick={checkName}>중복 확인</button>
+        </span>
+        {errs.username ? <small className="c-alarm">{errs.username}</small>
+          : check ? <small className={check.ok ? "c-ok" : "c-alarm"}>{check.ok ? "쓸 수 있는 아이디입니다" : check.reason}</small>
+          : <small>영문·숫자·_·- 3~32자</small>}</label>
+      <label>처음 비밀번호
         <input type="password" value={password} autoComplete="new-password" onChange={(e) => setPassword(e.target.value)} />
-        {errs.password && <small className="c-alarm">{errs.password}</small>}</label>
+        {errs.password ? <small className="c-alarm">{errs.password}</small>
+          : <small>3종류 8자·2종류 10자 이상 — 본인이 처음 로그인하면 바꿔야 합니다</small>}</label>
       <label className="w2">역할
         <span className="chips">
           {ROLE_OPTS.map(([r, l, h]) => (
@@ -114,7 +138,7 @@ function AccountEdit({ a, data, onDone, onClose }: { a: Account; data: AccountLi
   const [err, setErr] = useState<string | null>(null);
   const run = async (f: () => Promise<unknown>, msg: string) => {
     setErr(null); setErrs({});
-    try { await f(); onDone(msg); } catch (x) { setErrs(fieldErrors(x)); setErr(errorText(x)); }
+    try { await f(); onDone(msg); } catch (x) { const fe = fieldErrors(x); setErrs(fe); setErr(Object.keys(fe).length ? "빨간 글씨로 표시한 칸을 고쳐 주세요." : userMessage(x)); }
   };
   const superFull = data.super_count >= data.max_super && a.role !== "super_admin";
   return (

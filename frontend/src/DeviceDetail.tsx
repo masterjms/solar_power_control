@@ -66,7 +66,7 @@ function after(a: string | null | undefined, b: string | null | undefined): bool
 }
 
 const evClass = (kind: string) =>
-  ["REGISTER_ACK", "STATE_CHANGE", "CONFIG_SET", "PING", "COMMAND_SENT", "SETTINGS_SENT"].includes(kind) ? "dn"
+  ["REGISTER_ACK", "STATE_CHANGE", "CONFIG_SET", "PING", "COMMAND_SENT", "SETTINGS_SENT", "OTA_START"].includes(kind) ? "dn"
     : ["OFFLINE", "LWT", "LOST", "ERR"].includes(kind) ? "er" : "up";
 
 /** 이벤트 종류 → 화면 이름(모르는 종류는 그대로). */
@@ -75,6 +75,7 @@ const EV_NAME: Record<string, string> = {
   PING: "연결 확인", PONG: "응답", ONLINE: "접속", OFFLINE: "연결 끊김", LWT: "연결 끊김", LOST: "보고 빠짐", REBOOT: "재부팅", ERR: "오류",
   CMD_ACK: "명령 응답", COMMAND_SENT: "원격 명령 보냄", COMMAND_ACK: "명령 응답",
   SETTINGS_SENT: "설정 보내기", SETTINGS: "단말 설정 읽음", SETTINGS_ACK: "설정 응답",
+  OTA_START: "펌웨어 갱신 보냄", OTA_ACK: "펌웨어 갱신 응답",
 };
 const evName = (kind: string) => EV_NAME[kind] ?? kind;
 

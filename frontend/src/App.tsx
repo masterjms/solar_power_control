@@ -15,15 +15,16 @@ import Regions from "./Regions";
 import GroupControl from "./GroupControl";
 import Alarms from "./Alarms";
 import Schedule from "./Schedule";
+import Ota from "./Ota";
 import { logout } from "./Login";
 import { nf, MeCtx } from "./ui";
 
 const REFRESH_MS = 10_000;
 
-type Page = "dash" | "alarms" | "devices" | "pending" | "group" | "regions" | "config" | "schedule" | "profiles" | "server" | "accounts" | "system";
+type Page = "dash" | "alarms" | "devices" | "pending" | "group" | "regions" | "config" | "schedule" | "ota" | "profiles" | "server" | "accounts" | "system";
 
 /** 역할별로 보이는 메뉴(문제점 21번, ADR-013). 게스트는 대시보드만, 지역관리자는 서버·계정 관련을 뺀다. */
-const SUPER_PAGES: Page[] = ["profiles", "server", "accounts", "system"];
+const SUPER_PAGES: Page[] = ["ota", "profiles", "server", "accounts", "system"];
 export function pageAllowed(id: Page, role: Role | undefined): boolean {
   if (role === "guest") return id === "dash";
   if (role === "super_admin" || role === undefined) return !(role === undefined && SUPER_PAGES.includes(id));
@@ -39,6 +40,7 @@ const PAGES: { id: Page; ico: string; label: string; title: string }[] = [
   { id: "regions", ico: "⌥", label: "지역(법정동)", title: "지역(법정동) 트리" },
   { id: "config", ico: "≣", label: "단말 설정", title: "단말 설정" },
   { id: "schedule", ico: "◷", label: "그룹 스케줄 변경", title: "그룹 스케줄 변경" },
+  { id: "ota", ico: "⇪", label: "OTA 관리", title: "OTA 관리 (원격 펌웨어 갱신)" },
   { id: "profiles", ico: "◫", label: "통신 주기 설정", title: "통신 주기 설정" },
   { id: "server", ico: "☰", label: "서버 설정", title: "서버 설정" },
   { id: "accounts", ico: "☺", label: "계정 관리", title: "계정 관리" },
@@ -212,6 +214,7 @@ export default function App() {
         {page === "config" && <DeviceConfig tick={tick} onSelect={setSelected} />}
         {page === "alarms" && <Alarms tick={tick} onSelect={setSelected} />}
         {page === "schedule" && <Schedule tick={tick} onSelect={setSelected} />}
+        {page === "ota" && <Ota tick={tick} onSelect={setSelected} />}
         {page === "profiles" && (
           <div className="content">
             <Profiles onChanged={refresh} />

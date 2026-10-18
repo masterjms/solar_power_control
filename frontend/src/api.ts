@@ -815,6 +815,31 @@ export const api = {
   resetPassword: (id: number, password: string) => request<{ ok: boolean }>(`/api/accounts/${id}/password`, json("POST", { password })),
   deleteAccount: (id: number) => request<{ deleted: string }>(`/api/accounts/${id}`, json("DELETE")),
   loginLog: (p: { page: number; size: number }) => request<Paged<LoginRecord>>(`/api/accounts/logins?page=${p.page}&size=${p.size}`),
+  // OTA 관리(문제점 56번, 최고관리자)
+  otaOverview: () => request<OtaOverview>("/api/ota/overview"),
+  otaPackages: () => request<OtaPackage[]>("/api/ota/packages"),
+  otaUpload: (file: File, version: string, note: string) => {
+    const f = new FormData();
+    f.append("file", file);
+    f.append("version", version);
+    f.append("note", note);
+    return request<OtaPackage>("/api/ota/packages", { method: "POST", body: f });
+  },
+  otaDeletePackage: (id: number) => request<{ deleted: number }>(`/api/ota/packages/${id}`, json("DELETE")),
+  otaDevices: (p: { node_id?: number; uuid?: string }) => {
+    const q = new URLSearchParams();
+    if (p.node_id !== undefined) q.set("node_id", String(p.node_id));
+    if (p.uuid) q.set("uuid", p.uuid);
+    return request<{ items: OtaDevice[] }>(`/api/ota/devices?${q}`);
+  },
+  otaCreateJob: (body: { package_id: number; kind: "device" | "node"; id: string }) =>
+    request<OtaJobCreated>("/api/ota/jobs", json("POST", body)),
+  otaJobs: (page = 1, size = 20) => request<{ items: OtaJob[]; total: number; page: number; size: number }>(`/api/ota/jobs?page=${page}&size=${size}`),
+  otaJob: (id: number) => request<OtaJob & { items: OtaItem[] }>(`/api/ota/jobs/${id}`),
+  otaCancel: (id: number) => request<{ cancelled: number }>(`/api/ota/jobs/${id}/cancel`, json("POST")),
+  otaRetry: (id: number) => request<OtaJobCreated>(`/api/ota/jobs/${id}/retry`, json("POST")),
+  checkUsername: (username: string) =>
+    request<{ ok: boolean; reason: string | null }>(`/api/accounts/check?username=${encodeURIComponent(username)}`),
   unlockAccount: (username: string) => request<{ ok: boolean }>("/api/accounts/unlock", json("POST", { username })),
   changeMyPassword: (old: string, nw: string) => request<{ ok: boolean }>("/api/accounts/me/password", json("POST", { old, new: nw })),
   systemStatus: () => request<SystemStatus>("/api/system/status"),
@@ -948,6 +973,7 @@ const ERROR_HINT: Record<string, string> = {
   GEO_UNAVAILABLE: "주소 검색(카카오 키)을 쓸 수 없습니다",
   REGION_IN_USE: "하위 지역이나 배정된 단말이 있어 지울 수 없습니다",
   NODE_NOT_LEAF: "말단 법정동만 고를 수 있습니다",
+  OTA_NO_TARGETS: "보낼 단말이 없습니다(운영 단말이 없거나 모두 이미 OTA 대기·진행 중)",
   NODE_REQUIRED: "승인하려면 말단 법정동을 골라야 합니다",
   REGION_NOT_FOUND: "지역이 없습니다(다른 사람이 지웠을 수 있음)",
   COMMAND_NOT_FOUND: "명령이 없습니다",
@@ -980,4 +1006,80 @@ export function errorText(e: unknown): string {
     return `${hint ? `${hint} — ` : ""}[${e.status}] ${e.err.code}: ${e.err.message}${d}`;
   }
   return e instanceof Error ? e.message : String(e);
+}
+
+// ── OTA(문제점 56번, 사양서 §24) ──
+export interface OtaOverview {
+  parallel: number;
+  hour_start: number;
+  hour_end: number;
+  /** 지금 새 단말을 시작할 수 있는 시간대인가 */
+  window_open: boolean;
+  open: { waiting: number; sending: number; running: number };
+  base_url: string;
+  chunk: number;
+  fw_max: number;
+}
+export interface OtaPackage {
+  id: number;
+  filename: string;
+  version: string | null;
+  note: string | null;
+  fw_size: number;
+  /** pkg(base64 한 줄) 글자 수 = OTA_START.size */
+  size: number;
+  sha256: string;
+  created_by: string | null;
+  created_at: string;
+  /** 이 파일로 보낸 작업 수, 성공(DONE) 단말 수 */
+  jobs: number;
+  done: number;
+}
+export type OtaStatus = "waiting" | "sending" | "running" | "DONE" | "ROLLBACK" | "BAD" | "STATE" | "BATT" | "BUSY"
+  | "HTTP" | "SIZE" | "HASH" | "FLASH" | "NO_RESPONSE" | "CANCELLED" | "SKIPPED";
+export interface OtaDevice {
+  uuid: string;
+  site: string | null;
+  fw: string | null;
+  state: DeviceState;
+  online: boolean;
+  last_ota: { item_id: number; job_id: number; status: OtaStatus; at: string | null } | null;
+}
+export interface OtaJob {
+  id: number;
+  package_id: number | null;
+  filename: string;
+  version: string | null;
+  size: number;
+  sha256: string;
+  scope_kind: "device" | "node" | "retry";
+  scope_label: string | null;
+  total: number;
+  created_by: string | null;
+  created_at: string;
+  finished_at: string | null;
+  cancelled_at: string | null;
+  counts: Partial<Record<OtaStatus, number>>;
+}
+export interface OtaItem {
+  id: number;
+  uuid: string;
+  site: string | null;
+  status: OtaStatus;
+  detail: string | null;
+  attempts: number;
+  downloads: number;
+  sent_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  fw_before: string | null;
+  fw_after: string | null;
+  fw_now: string | null;
+  online: boolean;
+}
+export interface OtaJobCreated {
+  id: number;
+  total: number;
+  /** 이미 OTA 대기·진행 중이라 뺀 단말 */
+  skipped_busy: string[];
 }

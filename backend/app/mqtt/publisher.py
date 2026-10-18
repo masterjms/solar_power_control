@@ -214,6 +214,14 @@ class MqttPublisher:
         await self._send(topics.device_cmd(uuid), payload, qos=_QOS_CMD, retain=False)
         return len(raw)
 
+    async def publish_ota_start(self, *, uuid: str, payload: Mapping[str, Any]) -> int:
+        """7차 OTA_START(사양서 §24.3) — **개별 cmd topic 만**(그룹·전체로 오면 단말이 응답 없이 버린다). 보낸 바이트 수."""
+        if payload.get("type") != "OTA_START":
+            raise ValueError(f"OTA_START 가 아닌 payload: {payload.get('type')}")
+        raw = encode(payload)
+        await self._send(topics.device_cmd(uuid), payload, qos=_QOS_CMD, retain=False)
+        return len(raw)
+
     async def publish_command(self, *, topic: str, payload: Mapping[str, Any]) -> None:
         """5차 COMMAND — 개별·그룹·전체 cmd topic 공용. QoS1, **retain=False 고정**.
 

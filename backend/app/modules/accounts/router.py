@@ -7,6 +7,7 @@
   POST   /api/accounts/{id}/password   {password} — 재설정(그 계정의 기존 로그인 끊김)
   DELETE /api/accounts/{id}
   GET    /api/accounts/logins?page=&size=   로그인 기록 {items,total,page,size}(문제점 39번)
+  GET    /api/accounts/check?username=      아이디 쓸 수 있나 {ok, reason}(문제점 57번 — 중복 확인 버튼)
 누구나(DB 계정만):
   POST   /api/accounts/me/password     {old, new}
 """
@@ -131,6 +132,26 @@ async def list_accounts(me: Principal = Depends(current_user),
             "expiry_choices": list(ac.EXPIRY_DAYS)}
 
 
+async def _username_problem(db: AsyncSession, username: str) -> str | None:
+    """아이디 형식·.env 계정·이미 있는 계정 — 만들기와 '중복 확인' 버튼이 같은 판정을 쓴다."""
+    if not ac.USERNAME_RE.match(username or ""):
+        return "영문·숫자·_·- 3~32자로 정하세요"
+    if username in set(env_usernames()):
+        return "이미 있는 아이디입니다(서버 기본 계정)"
+    if await db.scalar(select(AdminUser.id).where(func.lower(AdminUser.username) == username.lower())):
+        return "이미 있는 아이디입니다"
+    return None
+
+
+@router.get("/check")
+async def check_username(username: str = Query(..., max_length=64), me: Principal = Depends(current_user),
+                         db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """아이디 중복 확인(문제점 57번). 만들 때도 똑같이 다시 확인한다(그 사이 누가 만들 수 있으므로)."""
+    require_super(me, action="accounts.create")
+    why = await _username_problem(db, username.strip())
+    return {"ok": why is None, "reason": why}
+
+
 @router.post("", status_code=201)
 async def create_account(body: AccountIn, me: Principal = Depends(current_user),
                          db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
@@ -141,8 +162,8 @@ async def create_account(body: AccountIn, me: Principal = Depends(current_user),
         username=username, password=body.password, role=body.role,
         region_ids=body.region_ids, reserved=env_usernames(), top_ids=tops,
         super_count=await _super_count(db))
-    if await db.scalar(select(AdminUser.id).where(AdminUser.username == username)):
-        errors["username"] = "이미 있는 이름"
+    if "username" not in errors and (why := await _username_problem(db, username)):
+        errors["username"] = why
     try:
         expires = ac.expires_from(body.expires, _now())
     except ValueError:
